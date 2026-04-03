@@ -1,0 +1,98 @@
+# Azure Pipeline for building and pushing Docker image to container registry
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/**
+      - requirements.txt
+      - Dockerfile
+      - azure-pipelines/**
+pr:
+  branches:
+    include:
+      - main
+variables:
+  dockerRegistryServiceConnection: 'YourDockerRegistry' # Set this to your Docker registry connection
+  imageRepository: 'kafka-wiremock'
+  containerRegistry: 'yourcontainer.azurecr.io' # Set this to your container registry
+  dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
+  tag: '$(Build.BuildId)'
+  latestTag: 'latest'
+stages:
+  - stage: Build
+    displayName: Build and Test
+    jobs:
+      - job: BuildAndTest
+        displayName: Build Docker Image and Run Tests
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+            displayName: 'Use Python 3.12'
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              pip install pytest pytest-cov
+            displayName: 'Install Python dependencies'
+          - script: |
+              python -m pytest tests/ -v --cov=src --cov-report=xml
+            displayName: 'Run Tests'
+          - script: |
+              python -m py_compile src/*.py
+            displayName: 'Check Python syntax'
+          - task: Docker@2
+            displayName: 'Build Docker image'
+            inputs:
+              command: 'build'
+              Dockerfile: '$(dockerfilePath)'
+              tags: |
+                $(containerRegistry)/$(imageRepository):$(tag)
+                $(containerRegistry)/$(imageRepository):$(latestTag)
+  - stage: Push
+    displayName: Push to Registry
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - job: PushImage
+        displayName: Push Docker Image
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+          - task: Docker@2
+            displayName: 'Login to Container Registry'
+            inputs:
+              command: 'login'
+              containerRegistry: '$(dockerRegistryServiceConnection)'
+          - task: Docker@2
+            displayName: 'Build and push image to registry'
+            inputs:
+              command: 'buildAndPush'
+              repository: '$(imageRepository)'
+              dockerfile: '$(dockerfilePath)'
+              containerRegistry: '$(dockerRegistryServiceConnection)'
+              tags: |
+                $(tag)
+                $(latestTag)
+  - stage: Deploy
+    displayName: Deploy to Dev
+    dependsOn: Push
+    condition: succeeded()
+    jobs:
+      - deployment: DeployDev
+        displayName: Deploy to Dev Environment
+        environment: 'dev'
+        pool:
+          vmImage: 'ubuntu-latest'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: echo "Deploying kafka-wiremock to dev environment"
+                  displayName: 'Deploy Step'
+                # Add your deployment steps here (e.g., using kubectl, docker-compose, etc.)
