@@ -166,9 +166,13 @@ class TestKafkaClientMocked(unittest.TestCase):
         self.assertEqual(messages[0]['value'], {'test': 'data'})
         self.assertEqual(messages[0]['key'], 'key1')
 
+    @patch('src.kafka_client.KafkaProducer')
     @patch('src.kafka_client.KafkaConsumer')
-    def test_consume_latest_messages(self, mock_consumer_class):
+    def test_consume_latest_messages(self, mock_consumer_class, mock_producer_class):
         """Test consuming latest messages."""
+        mock_producer = MagicMock()
+        mock_producer_class.return_value = mock_producer
+
         mock_consumer = MagicMock()
         mock_consumer_class.return_value = mock_consumer
 

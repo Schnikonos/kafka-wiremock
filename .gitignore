@@ -28,6 +28,7 @@ env/
 
 .coverage
 .coveragerc
+coverage.xml
 
 htmlcov/
 
