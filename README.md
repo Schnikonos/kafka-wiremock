@@ -258,6 +258,80 @@ See `/config/examples/` for working examples:
 8. `05-avro-output.yaml` - AVRO message output (produce AVRO)
 9. `06-avro-input.yaml` - AVRO message input (consume & match AVRO)
 
+## Schema Validation
+
+A JSON Schema for validating rule configuration YAML files is provided at **`rule-schema.json`** in the project root. Use it to catch configuration errors early in your editor or CI pipeline.
+
+### Schema Location
+
+```
+rule-schema.json   ← JSON Schema Draft 7
+```
+
+### IDE Integration
+
+#### VS Code
+
+Install the [YAML extension by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml), then add the following to your `.vscode/settings.json`:
+
+```json
+{
+  "yaml.schemas": {
+    "./rule-schema.json": "config/**/*.yaml"
+  }
+}
+```
+
+This enables in-editor validation, auto-complete, and hover documentation for all rule files under `config/`.
+
+#### IntelliJ IDEA / PyCharm
+
+1. Open **Settings** → **Languages & Frameworks** → **Schemas and DTDs** → **JSON Schema Mappings**
+2. Click **+** to add a new mapping
+3. Set **Schema file**: path to `rule-schema.json` in the project root
+4. Set **File path pattern**: `config/**/*.yaml`
+5. Click **OK**
+
+### Command-Line Validation
+
+#### Using `check-jsonschema` (Python, recommended)
+
+```bash
+# Install
+pip install check-jsonschema
+
+# Validate a single rule file
+check-jsonschema --schemafile rule-schema.json config/rules/my-rule.yaml
+
+# Validate all rule files at once (bash with globstar enabled)
+check-jsonschema --schemafile rule-schema.json config/**/*.yaml
+
+# Alternative using find (works in all POSIX shells)
+find config -name '*.yaml' -exec check-jsonschema --schemafile rule-schema.json {} +
+```
+
+#### Using `ajv-cli` (Node.js)
+
+```bash
+# Install
+npm install -g ajv-cli ajv-formats
+
+# Validate a rule file
+ajv validate -s rule-schema.json -d config/rules/my-rule.yaml
+```
+
+### CI/CD Integration
+
+Add a validation step to your pipeline to prevent invalid rules from being deployed:
+
+```yaml
+# GitHub Actions example
+- name: Validate rule configuration
+  run: |
+    pip install check-jsonschema
+    check-jsonschema --schemafile rule-schema.json config/**/*.yaml
+```
+
 ## API Endpoints
 
 ### Health Check

@@ -1,0 +1,249 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Schnikonos/kafka-wiremock/blob/main/rule-schema.json",
+  "title": "Kafka Wiremock Rule",
+  "description": "Schema for a single kafka-wiremock rule configuration file (one rule per YAML file).",
+  "type": "object",
+  "required": ["priority", "when", "then"],
+  "additionalProperties": false,
+  "properties": {
+    "priority": {
+      "type": "integer",
+      "description": "Rule evaluation order. Lower values are checked first. Use 10 for critical rules, 50 for normal, 100 for low priority, 999 for catch-all.",
+      "examples": [10, 50, 100, 999]
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable identifier used in log messages. Defaults to the filename when omitted.",
+      "examples": ["process-order", "payment-confirmed", "catch-all"]
+    },
+    "when": {
+      "type": "object",
+      "description": "Defines which incoming Kafka messages this rule matches.",
+      "required": ["topic"],
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "type": "string",
+          "description": "The Kafka topic to listen on.",
+          "minLength": 1,
+          "examples": ["orders.input", "payments.events", "transfers"]
+        },
+        "match": {
+          "type": "array",
+          "description": "Optional list of conditions that must ALL match (AND logic). Omit for a wildcard / catch-all rule.",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/matchCondition"
+          }
+        }
+      }
+    },
+    "then": {
+      "type": "array",
+      "description": "List of output messages produced when the rule matches. At least one output is required.",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/output"
+      }
+    }
+  },
+  "definitions": {
+    "matchCondition": {
+      "type": "object",
+      "description": "A single matching condition. All conditions in the 'match' array must match (AND logic).",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Matching strategy to apply.",
+          "enum": ["jsonpath", "exact", "partial", "regex"]
+        }
+      },
+      "oneOf": [
+        { "$ref": "#/definitions/jsonpathCondition" },
+        { "$ref": "#/definitions/exactCondition" },
+        { "$ref": "#/definitions/partialCondition" },
+        { "$ref": "#/definitions/regexCondition" }
+      ]
+    },
+    "jsonpathCondition": {
+      "type": "object",
+      "description": "Extracts a value from the message using a JSONPath expression and compares it with 'value' or 'regex'. Exactly one of 'value' or 'regex' must be provided.",
+      "required": ["type", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "jsonpath"
+        },
+        "expression": {
+          "type": "string",
+          "description": "JSONPath expression used to extract a value from the message (e.g. '$.eventType').",
+          "minLength": 1,
+          "examples": ["$.eventType", "$.order.status", "$.amount"]
+        },
+        "value": {
+          "description": "Expected exact value of the extracted field. Mutually exclusive with 'regex'.",
+          "examples": ["ORDER_CREATED", "CONFIRMED", "100.00"]
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to validate the extracted field value. Mutually exclusive with 'value'.",
+          "examples": ["^(PENDING|APPROVED)$", "ORDER-\\d{4}", "^[0-9]{1,10}\\.[0-9]{2}$"]
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["value"],
+          "not": { "required": ["regex"] }
+        },
+        {
+          "required": ["regex"],
+          "not": { "required": ["value"] }
+        }
+      ]
+    },
+    "exactCondition": {
+      "type": "object",
+      "description": "Matches when the full message string is exactly equal to 'value'.",
+      "required": ["type", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "exact"
+        },
+        "value": {
+          "type": "string",
+          "description": "The exact string the full message must equal.",
+          "minLength": 1,
+          "examples": ["ping", "order-created"]
+        }
+      }
+    },
+    "partialCondition": {
+      "type": "object",
+      "description": "Matches when the full message string contains 'value' as a substring.",
+      "required": ["type", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "partial"
+        },
+        "value": {
+          "type": "string",
+          "description": "The substring that must appear somewhere in the full message.",
+          "minLength": 1,
+          "examples": ["ORDER_CREATED", "error"]
+        }
+      }
+    },
+    "regexCondition": {
+      "type": "object",
+      "description": "Matches when the full message string matches the given regular expression.",
+      "required": ["type", "regex"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "regex"
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression pattern that the full message must match.",
+          "minLength": 1,
+          "examples": ["ORDER-\\d{4}", "^\\{.*\\}$"]
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "description": "A single Kafka message to produce when the rule matches.",
+      "required": ["topic"],
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "type": "string",
+          "description": "Kafka topic to publish the output message to.",
+          "minLength": 1,
+          "examples": ["payments.input", "shipments.output", "dlq.archive"]
+        },
+        "payload": {
+          "type": "string",
+          "description": "Message payload template. Supports built-in placeholders ({{uuid}}, {{now}}, {{now+5m}}, {{randomInt(1,100)}}) and JSONPath extraction ({{$.fieldName}}).",
+          "examples": [
+            "{\"paymentId\": \"{{uuid}}\", \"orderId\": \"{{$.orderId}}\", \"timestamp\": \"{{now}}\"}",
+            "{\"archived\": true, \"archivedAt\": \"{{now}}\"}"
+          ]
+        },
+        "delay_ms": {
+          "type": "integer",
+          "description": "Delay in milliseconds before producing the output message. Useful for simulating processing latency.",
+          "minimum": 0,
+          "default": 0,
+          "examples": [0, 100, 200, 500]
+        },
+        "headers": {
+          "type": "object",
+          "description": "Kafka message headers to include with the output. Values support the same template placeholders as 'payload'.",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "examples": [
+            {
+              "X-Correlation-ID": "{{$.correlationId}}",
+              "X-Order-ID": "{{$.orderId}}"
+            }
+          ]
+        },
+        "schema_id": {
+          "type": "integer",
+          "description": "Confluent Schema Registry schema ID. When set, the payload is serialized as AVRO using this schema.",
+          "minimum": 1,
+          "examples": [123, 456]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "priority": 10,
+      "name": "process-order",
+      "when": {
+        "topic": "orders.input",
+        "match": [
+          {
+            "type": "jsonpath",
+            "expression": "$.eventType",
+            "value": "ORDER_CREATED"
+          }
+        ]
+      },
+      "then": [
+        {
+          "topic": "payments.input",
+          "delay_ms": 200,
+          "headers": {
+            "X-Order-ID": "{{$.orderId}}"
+          },
+          "payload": "{\"paymentId\": \"{{uuid}}\", \"orderId\": \"{{$.orderId}}\", \"timestamp\": \"{{now}}\"}"
+        }
+      ]
+    },
+    {
+      "priority": 999,
+      "name": "catch-all",
+      "when": {
+        "topic": "dlq"
+      },
+      "then": [
+        {
+          "topic": "dlq.archive",
+          "payload": "{\"archived\": true, \"archivedAt\": \"{{now}}\"}"
+        }
+      ]
+    }
+  ]
+}
