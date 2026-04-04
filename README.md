@@ -81,7 +81,7 @@ config/
 
 **Both files are scanned recursively** - organize by subdirectories as your project grows!
 
-### New Configuration Format (Recommended)
+### Rule Configuration Format
 
 ```yaml
 priority: 10                           # Integer; lower = higher priority
@@ -204,9 +204,10 @@ PLACEHOLDERS = {
 
 `/config/custom_placeholders/20-calculations.py`:
 ```python
-from custom_placeholders import order
+from custom_placeholders import order, placeholder
 
 @order(10)
+@placeholder
 def final_price(context):
     """See discount from stage 1"""
     amount = float(context.get('$.amount', 0))
@@ -214,6 +215,7 @@ def final_price(context):
     return amount - discount
 
 @order(20)
+@placeholder
 def total_with_tax(context):
     """See final_price from @order(10)"""
     final = float(context.get('final_price', 0))
