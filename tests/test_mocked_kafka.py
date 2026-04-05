@@ -284,7 +284,7 @@ class TestKafkaClientMocked(unittest.TestCase):
 
         # poll() should have been called with timeout_ms <= poll_interval_ms
         call_kwargs = mock_consumer.poll.call_args
-        self.assertLessEqual(call_kwargs[1]['timeout_ms'], 300)
+        self.assertLessEqual(call_kwargs[1]['timeout_ms'], 150)
 
     def test_deserialize_json_message(self):
         """Test deserializing JSON message."""

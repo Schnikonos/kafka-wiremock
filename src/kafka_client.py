@@ -242,9 +242,9 @@ class KafkaClientWrapper:
                     break
 
                 remaining_needed = max_messages - len(messages)
-                actual_interval = min(poll_interval_ms, timeout_ms - elapsed_ms)
+                actual_interval = max(0, min(poll_interval_ms, timeout_ms - elapsed_ms))
 
-                poll_result = consumer.poll(timeout_ms=actual_interval, max_records=remaining_needed)
+                poll_result = consumer.poll(timeout_ms=actual_interval)
 
                 batch_size = 0
                 for tp_records in poll_result.values():
