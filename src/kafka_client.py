@@ -205,13 +205,20 @@ class KafkaClientWrapper:
             logger.error(f"Failed to consume from {topic}: {e}")
             return []
 
-    def consume_latest(self, topic: str, max_messages: int = 10) -> List[Dict[str, Any]]:
+    def consume_latest(self, topic: str, max_messages: int = 10,
+                       timeout_ms: int = 500, poll_interval_ms: int = 100) -> List[Dict[str, Any]]:
         """
-        Consume latest messages from a Kafka topic.
+        Consume latest messages from a Kafka topic using a smart polling loop.
+
+        Polls in short intervals and exits early when the consumer has caught up
+        (i.e. a poll returns fewer records than requested), avoiding unnecessary
+        waiting for hypothetical future messages.
 
         Args:
             topic: Topic to consume from
             max_messages: Maximum number of messages to retrieve
+            timeout_ms: Total time budget for polling in milliseconds (default: 500)
+            poll_interval_ms: Duration of each individual poll in milliseconds (default: 100)
 
         Returns:
             List of messages with metadata
@@ -221,16 +228,36 @@ class KafkaClientWrapper:
                 topic,
                 bootstrap_servers=self.bootstrap_servers,
                 auto_offset_reset='earliest',  # Start from beginning if no offset
-                consumer_timeout_ms=5000,  # Increased timeout to allow message collection
                 group_id=f"wiremock-consumer-latest-{topic}-{int(time.time())}",  # Unique group ID
                 max_poll_records=max_messages,
                 enable_auto_commit=False,  # Don't commit offsets
             )
 
             messages = []
-            for message in consumer:
-                messages.append(self._deserialize_message(message))
-                if len(messages) >= max_messages:
+            start_time = time.time()
+
+            while len(messages) < max_messages:
+                elapsed_ms = (time.time() - start_time) * 1000
+                if elapsed_ms >= timeout_ms:
+                    break
+
+                remaining_needed = max_messages - len(messages)
+                actual_interval = max(0, min(poll_interval_ms, timeout_ms - elapsed_ms))
+
+                poll_result = consumer.poll(timeout_ms=actual_interval)
+
+                batch_size = 0
+                for tp_records in poll_result.values():
+                    for record in tp_records:
+                        messages.append(self._deserialize_message(record))
+                        batch_size += 1
+                        if len(messages) >= max_messages:
+                            break
+                    if len(messages) >= max_messages:
+                        break
+
+                # Early exit: fewer records than requested means consumer has caught up
+                if batch_size < remaining_needed:
                     break
 
             consumer.close()
