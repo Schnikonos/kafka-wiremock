@@ -145,12 +145,16 @@ async def inject_message(
 async def get_messages(
     topic: str,
     limit: int = Query(10, ge=1, le=100),
+    timeout_ms: int = Query(500, ge=1, le=30000, description="Total polling timeout in milliseconds (default: 500)"),
+    poll_interval_ms: int = Query(100, ge=1, le=5000, description="Individual poll interval in milliseconds (default: 100)"),
 ) -> List[ConsumedMessage]:
     """
     Retrieve messages from a Kafka topic.
     Args:
         topic: Kafka topic to consume from
         limit: Maximum number of messages to retrieve (default: 10, max: 100)
+        timeout_ms: Total time budget for polling in milliseconds (default: 500)
+        poll_interval_ms: Duration of each individual poll in milliseconds (default: 100)
     Returns:
         List of consumed messages
     """
@@ -158,7 +162,8 @@ async def get_messages(
         raise HTTPException(status_code=503, detail="Kafka client not initialized")
     try:
         # Consume latest messages
-        messages = kafka_client.consume_latest(topic=topic, max_messages=limit)
+        messages = kafka_client.consume_latest(topic=topic, max_messages=limit,
+                                               timeout_ms=timeout_ms, poll_interval_ms=poll_interval_ms)
         # Convert to response format
         result = []
         for msg in messages:

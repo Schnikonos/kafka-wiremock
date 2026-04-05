@@ -169,7 +169,7 @@ class TestKafkaClientMocked(unittest.TestCase):
     @patch('src.kafka_client.KafkaProducer')
     @patch('src.kafka_client.KafkaConsumer')
     def test_consume_latest_messages(self, mock_consumer_class, mock_producer_class):
-        """Test consuming latest messages."""
+        """Test consuming latest messages using the polling loop."""
         mock_producer = MagicMock()
         mock_producer_class.return_value = mock_producer
 
@@ -184,16 +184,107 @@ class TestKafkaClientMocked(unittest.TestCase):
         mock_message.value = b'{"latest": true}'
         mock_message.headers = []
 
-        mock_consumer.__iter__.return_value = [mock_message]
+        # poll() returns fewer records than requested → early exit after first poll
+        mock_consumer.poll.return_value = {MagicMock(): [mock_message]}
 
-        messages = KafkaClientWrapper.consume_latest(
-            KafkaClientWrapper("localhost:9092"),
-            'test-topic',
-            max_messages=1
-        )
+        client = KafkaClientWrapper("localhost:9092")
+        messages = client.consume_latest('test-topic', max_messages=10)
 
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]['value'], {'latest': True})
+        mock_consumer.close.assert_called_once()
+
+    @patch('src.kafka_client.KafkaProducer')
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_early_exit_when_caught_up(self, mock_consumer_class, mock_producer_class):
+        """Test that consume_latest exits early when poll returns fewer messages than requested."""
+        mock_producer_class.return_value = MagicMock()
+
+        mock_consumer = MagicMock()
+        mock_consumer_class.return_value = mock_consumer
+
+        def make_msg(offset):
+            m = MagicMock()
+            m.timestamp = 1000
+            m.partition = 0
+            m.offset = offset
+            m.key = None
+            m.value = b'{"n": ' + str(offset).encode() + b'}'
+            m.headers = []
+            return m
+
+        # First poll returns 3 messages (fewer than max_messages=10) → should exit
+        mock_consumer.poll.return_value = {MagicMock(): [make_msg(i) for i in range(3)]}
+
+        client = KafkaClientWrapper("localhost:9092")
+        messages = client.consume_latest('test-topic', max_messages=10, timeout_ms=500, poll_interval_ms=100)
+
+        self.assertEqual(len(messages), 3)
+        # Should only have polled once since batch_size (3) < remaining_needed (10)
+        self.assertEqual(mock_consumer.poll.call_count, 1)
+        mock_consumer.close.assert_called_once()
+
+    @patch('src.kafka_client.KafkaProducer')
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_stops_at_max_messages(self, mock_consumer_class, mock_producer_class):
+        """Test that consume_latest stops collecting when max_messages is reached."""
+        mock_producer_class.return_value = MagicMock()
+
+        mock_consumer = MagicMock()
+        mock_consumer_class.return_value = mock_consumer
+
+        def make_msg(offset):
+            m = MagicMock()
+            m.timestamp = 1000
+            m.partition = 0
+            m.offset = offset
+            m.key = None
+            m.value = b'{"n": ' + str(offset).encode() + b'}'
+            m.headers = []
+            return m
+
+        # Poll always returns max_messages records (full batch)
+        mock_consumer.poll.return_value = {MagicMock(): [make_msg(i) for i in range(5)]}
+
+        client = KafkaClientWrapper("localhost:9092")
+        messages = client.consume_latest('test-topic', max_messages=5, timeout_ms=500, poll_interval_ms=100)
+
+        self.assertEqual(len(messages), 5)
+        mock_consumer.close.assert_called_once()
+
+    @patch('src.kafka_client.KafkaProducer')
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_empty_topic(self, mock_consumer_class, mock_producer_class):
+        """Test consume_latest on a topic with no messages exits after one poll."""
+        mock_producer_class.return_value = MagicMock()
+
+        mock_consumer = MagicMock()
+        mock_consumer_class.return_value = mock_consumer
+        mock_consumer.poll.return_value = {}  # No records
+
+        client = KafkaClientWrapper("localhost:9092")
+        messages = client.consume_latest('empty-topic', max_messages=10, timeout_ms=500, poll_interval_ms=100)
+
+        self.assertEqual(messages, [])
+        self.assertEqual(mock_consumer.poll.call_count, 1)
+        mock_consumer.close.assert_called_once()
+
+    @patch('src.kafka_client.KafkaProducer')
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_uses_poll_interval(self, mock_consumer_class, mock_producer_class):
+        """Test that consume_latest passes poll_interval_ms to consumer.poll()."""
+        mock_producer_class.return_value = MagicMock()
+
+        mock_consumer = MagicMock()
+        mock_consumer_class.return_value = mock_consumer
+        mock_consumer.poll.return_value = {}
+
+        client = KafkaClientWrapper("localhost:9092")
+        client.consume_latest('test-topic', max_messages=10, timeout_ms=300, poll_interval_ms=150)
+
+        # poll() should have been called with timeout_ms <= poll_interval_ms
+        call_kwargs = mock_consumer.poll.call_args
+        self.assertLessEqual(call_kwargs[1]['timeout_ms'], 300)
 
     def test_deserialize_json_message(self):
         """Test deserializing JSON message."""
