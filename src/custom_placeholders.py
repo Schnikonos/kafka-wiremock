@@ -205,6 +205,11 @@ class CustomPlaceholderRegistry:
         functions: List[Callable] = []
 
         try:
+            # Ensure src directory is in sys.path so custom placeholders can import from src modules
+            src_path = str(Path(__file__).parent)  # Gets the src/ directory path
+            if src_path not in sys.path:
+                sys.path.insert(0, src_path)
+
             # Dynamically import the module
             module_name = f"custom_placeholders_{py_file.stem}"
 

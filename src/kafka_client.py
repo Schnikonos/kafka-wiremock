@@ -54,6 +54,8 @@ class KafkaClientWrapper:
                     acks='all',
                     retries=3,
                     max_in_flight_requests_per_connection=1,
+                    # Prevent auto-topic creation at producer level
+                    request_timeout_ms=10000,
                 )
                 logger.info(f"Connected to Kafka at {self.bootstrap_servers}")
                 return
@@ -210,9 +212,7 @@ class KafkaClientWrapper:
         """
         Consume latest messages from a Kafka topic using a smart polling loop.
 
-        Polls in short intervals and exits early when the consumer has caught up
-        (i.e. a poll returns fewer records than requested), avoiding unnecessary
-        waiting for hypothetical future messages.
+        Manually assigns partitions to avoid consumer group coordination delays.
 
         Args:
             topic: Topic to consume from
@@ -221,51 +221,96 @@ class KafkaClientWrapper:
             poll_interval_ms: Duration of each individual poll in milliseconds (default: 100)
 
         Returns:
-            List of messages with metadata
+            List of messages with metadata (empty list if topic doesn't exist)
         """
         try:
+            # Check if topic exists before consuming (prevents auto-creation)
+            # This is CRITICAL - must happen before any KafkaConsumer creation
+            if not self._verify_topic_exists(topic):
+                logger.warning(f"Topic '{topic}' does not exist. Skipping consumption to prevent auto-creation.")
+                return []
+
+            # Create consumer WITHOUT group coordination
+            # We'll manually assign partitions instead
             consumer = KafkaConsumer(
-                topic,
                 bootstrap_servers=self.bootstrap_servers,
-                auto_offset_reset='earliest',  # Start from beginning if no offset
-                group_id=f"wiremock-consumer-latest-{topic}-{int(time.time())}",  # Unique group ID
-                max_poll_records=max_messages,
-                enable_auto_commit=False,  # Don't commit offsets
+                auto_offset_reset='latest',
+                enable_auto_commit=False,
+                fetch_max_wait_ms=50,
             )
+            logger.info(f"Created consumer for topic '{topic}'")
 
-            messages = []
-            start_time = time.time()
+            try:
+                # Get all partitions for the topic
+                partitions = consumer.partitions_for_topic(topic)
+                if not partitions:
+                    logger.info(f"Topic '{topic}' has no partitions - returning empty list")
+                    consumer.close()
+                    return []
 
-            while len(messages) < max_messages:
-                elapsed_ms = (time.time() - start_time) * 1000
-                if elapsed_ms >= timeout_ms:
-                    break
+                logger.info(f"Topic '{topic}' partitions: {sorted(partitions)}")
 
-                remaining_needed = max_messages - len(messages)
-                actual_interval = max(0, min(poll_interval_ms, timeout_ms - elapsed_ms))
+                # Manually assign all partitions
+                from kafka import TopicPartition
+                topic_partitions = [TopicPartition(topic, p) for p in partitions]
+                consumer.assign(topic_partitions)
+                logger.info(f"Assigned {len(topic_partitions)} partitions to consumer")
 
-                poll_result = consumer.poll(timeout_ms=actual_interval)
+                # Seek to end for all partitions, then back by max_messages
+                for tp in topic_partitions:
+                    try:
+                        consumer.seek_to_end(tp)
+                        end_offset = consumer.position(tp)
+                        # Seek to a position that captures the latest max_messages
+                        start_offset = max(0, end_offset - max_messages)
+                        consumer.seek(tp, start_offset)
+                        logger.info(f"Topic '{topic}' partition {tp.partition}: end_offset={end_offset}, seeking from {start_offset}")
+                    except Exception as e:
+                        logger.error(f"Error seeking in partition {tp.partition}: {e}")
+                        consumer.close()
+                        return []
 
-                batch_size = 0
-                for tp_records in poll_result.values():
-                    for record in tp_records:
-                        messages.append(self._deserialize_message(record))
-                        batch_size += 1
-                        if len(messages) >= max_messages:
-                            break
-                    if len(messages) >= max_messages:
+                messages = []
+                start_time = time.time()
+
+                while len(messages) < max_messages:
+                    elapsed_ms = (time.time() - start_time) * 1000
+                    if elapsed_ms >= timeout_ms:
+                        logger.debug(f"Timeout reached ({elapsed_ms:.0f}ms) for topic '{topic}'")
                         break
 
-                # Early exit: fewer records than requested means consumer has caught up
-                if batch_size < remaining_needed:
-                    break
+                    remaining_needed = max_messages - len(messages)
+                    actual_interval = max(0, min(poll_interval_ms, timeout_ms - elapsed_ms))
 
-            consumer.close()
-            logger.info(f"Consumed {len(messages)} messages from {topic}")
-            return messages
+                    poll_result = consumer.poll(timeout_ms=actual_interval)
+
+                    batch_size = 0
+                    for tp_records in poll_result.values():
+                        for record in tp_records:
+                            messages.append(self._deserialize_message(record))
+                            batch_size += 1
+                            if len(messages) >= max_messages:
+                                break
+                        if len(messages) >= max_messages:
+                            break
+
+                    logger.debug(f"Poll returned {batch_size} messages, total: {len(messages)}")
+
+                    # Early exit: only break if we got some messages but fewer than requested
+                    # (meaning consumer caught up). Keep polling if we got 0 messages.
+                    if batch_size > 0 and batch_size < remaining_needed:
+                        logger.debug(f"Early exit: got {batch_size} < {remaining_needed} messages")
+                        break
+
+                consumer.close()
+                logger.info(f"Consumed {len(messages)} messages from {topic}")
+                return messages
+
+            finally:
+                consumer.close()
 
         except Exception as e:
-            logger.error(f"Failed to consume latest from {topic}: {e}")
+            logger.error(f"Failed to consume latest from {topic}: {e}", exc_info=True)
             return []
 
     def _serialize_value(self, value: Any) -> bytes:

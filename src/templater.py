@@ -24,7 +24,7 @@ class TemplateRenderer:
     """Renders message templates with context substitution."""
 
     # ...existing code...
-    PLACEHOLDER_PATTERN = re.compile(r'\{\{[\s]*([a-zA-Z0-9_.$\[\](),-]+)[\s]*\}\}')
+    PLACEHOLDER_PATTERN = re.compile(r'\{\{[\s]*([a-zA-Z0-9_.$\[\](),\-+]+)[\s]*\}\}')
 
     @staticmethod
     def render(template: Any, context: Dict[str, Any]) -> str:
@@ -113,9 +113,10 @@ class TemplateRenderer:
             if key == 'now':
                 return datetime.utcnow().isoformat() + 'Z'
 
-            # Parse offset like +5m, -1h, +1d
+            # Parse offset like +5m, -1h, +1d, +24h (supports multi-digit numbers)
             match = re.match(r'now([+-])(\d+)([mhd])', key)
             if not match:
+                logger.debug(f"Could not parse now offset: {key}")
                 return datetime.utcnow().isoformat() + 'Z'
 
             sign, amount, unit = match.groups()

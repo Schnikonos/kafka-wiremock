@@ -89,23 +89,52 @@ class KafkaListenerEngine:
                     logger.info(f"Started listener thread for topic: {topic}")
 
     def _listen_topic(self, topic: str) -> None:
-        """Listen to a specific topic and process messages."""
+        """Listen to a specific topic and process messages.
+
+        Will only create a consumer if the topic exists.
+        If the topic doesn't exist, will retry periodically.
+        """
+        retry_interval = 10  # seconds between retries for non-existent topics
+        last_existence_check = 0
+        topic_existed = False
+
         try:
-            consumer = KafkaConsumer(
-                topic,
-                bootstrap_servers=self.bootstrap_servers,
-                auto_offset_reset='latest',
-                group_id=f"wiremock-listener-{topic}",
-                consumer_timeout_ms=1000,
-                value_deserializer=lambda x: x if x is None else x,
-            )
-
-            with self._lock:
-                self.consumers[topic] = consumer
-
-            logger.info(f"Listening to topic: {topic}")
-
             while self._running:
+                current_time = time.time()
+
+                # Check if topic exists (rate-limited every 10 seconds for non-existent topics)
+                if not topic_existed and (current_time - last_existence_check) < retry_interval:
+                    # Not yet time to re-check a non-existent topic
+                    time.sleep(1)
+                    continue
+
+                # Check if topic exists
+                if not self.kafka_client._verify_topic_exists(topic):
+                    last_existence_check = current_time
+                    if not topic_existed:
+                        logger.debug(f"Topic '{topic}' does not exist yet. Will retry in {retry_interval}s")
+                    time.sleep(1)
+                    continue
+
+                # Topic exists! Create consumer if we haven't already
+                topic_existed = True
+                if topic not in self.consumers:
+                    consumer = KafkaConsumer(
+                        topic,
+                        bootstrap_servers=self.bootstrap_servers,
+                        auto_offset_reset='latest',
+                        group_id=f"wiremock-listener-{topic}",
+                        consumer_timeout_ms=1000,
+                        value_deserializer=lambda x: x if x is None else x,
+                    )
+
+                    with self._lock:
+                        self.consumers[topic] = consumer
+
+                    logger.info(f"Topic '{topic}' now available. Started listening to topic.")
+
+                consumer = self.consumers[topic]
+
                 try:
                     # Check for config changes every 30s
                     if self.config_loader.check_and_reload():
@@ -127,11 +156,15 @@ class KafkaListenerEngine:
                     logger.error(f"Error polling topic {topic}: {e}")
 
         except Exception as e:
-            logger.warning(f"Topic '{topic}' not available or cannot be subscribed: {e}. Will skip this topic.")
+            logger.error(f"Unexpected error in listener thread for {topic}: {e}")
         finally:
             if topic in self.consumers:
-                self.consumers[topic].close()
+                try:
+                    self.consumers[topic].close()
+                except Exception as e:
+                    logger.debug(f"Error closing consumer for {topic}: {e}")
                 del self.consumers[topic]
+            logger.info(f"Listener thread for topic '{topic}' stopped")
 
     def _handle_config_reload(self) -> None:
         """Handle config reload by starting listeners for new topics."""
