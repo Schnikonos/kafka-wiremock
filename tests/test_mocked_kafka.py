@@ -166,21 +166,15 @@ class TestKafkaClientMocked(unittest.TestCase):
         self.assertEqual(messages[0]['value'], {'test': 'data'})
         self.assertEqual(messages[0]['key'], 'key1')
 
-    @patch('src.kafka_client.KafkaConsumer')
     @patch('src.kafka_client.KafkaProducer')
-    def test_consume_latest_messages(self, mock_producer_class, mock_consumer_class):
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_messages(self, mock_consumer_class, mock_producer_class):
         """Test consuming latest messages using the polling loop."""
         mock_producer = MagicMock()
         mock_producer_class.return_value = mock_producer
 
         mock_consumer = MagicMock()
         mock_consumer_class.return_value = mock_consumer
-
-        # Mock the partitions_for_topic to return partition 0
-        mock_consumer.partitions_for_topic.return_value = {0}
-        mock_consumer.assignment.return_value = set()
-        mock_consumer.position.return_value = 1000  # Mock offset position
-        mock_consumer.seek_to_end.return_value = None
 
         mock_message = MagicMock()
         mock_message.timestamp = 2000
@@ -194,28 +188,20 @@ class TestKafkaClientMocked(unittest.TestCase):
         mock_consumer.poll.return_value = {MagicMock(): [mock_message]}
 
         client = KafkaClientWrapper("localhost:9092")
-        # Mock the topic verification
-        with patch.object(client, '_verify_topic_exists', return_value=True):
-            messages = client.consume_latest('test-topic', max_messages=10)
+        messages = client.consume_latest('test-topic', max_messages=10)
 
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]['value'], {'latest': True})
-        mock_consumer.close.assert_called()
+        mock_consumer.close.assert_called_once()
 
-    @patch('src.kafka_client.KafkaConsumer')
     @patch('src.kafka_client.KafkaProducer')
-    def test_consume_latest_early_exit_when_caught_up(self, mock_producer_class, mock_consumer_class):
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_early_exit_when_caught_up(self, mock_consumer_class, mock_producer_class):
         """Test that consume_latest exits early when poll returns fewer messages than requested."""
         mock_producer_class.return_value = MagicMock()
 
         mock_consumer = MagicMock()
         mock_consumer_class.return_value = mock_consumer
-
-        # Mock the partitions_for_topic to return partition 0
-        mock_consumer.partitions_for_topic.return_value = {0}
-        mock_consumer.assignment.return_value = set()
-        mock_consumer.position.return_value = 1000  # Mock offset position
-        mock_consumer.seek_to_end.return_value = None
 
         def make_msg(offset):
             m = MagicMock()
@@ -231,29 +217,21 @@ class TestKafkaClientMocked(unittest.TestCase):
         mock_consumer.poll.return_value = {MagicMock(): [make_msg(i) for i in range(3)]}
 
         client = KafkaClientWrapper("localhost:9092")
-        # Mock the topic verification
-        with patch.object(client, '_verify_topic_exists', return_value=True):
-            messages = client.consume_latest('test-topic', max_messages=10, timeout_ms=500, poll_interval_ms=100)
+        messages = client.consume_latest('test-topic', max_messages=10, timeout_ms=500, poll_interval_ms=100)
 
         self.assertEqual(len(messages), 3)
         # Should only have polled once since batch_size (3) < remaining_needed (10)
         self.assertEqual(mock_consumer.poll.call_count, 1)
-        mock_consumer.close.assert_called()
+        mock_consumer.close.assert_called_once()
 
-    @patch('src.kafka_client.KafkaConsumer')
     @patch('src.kafka_client.KafkaProducer')
-    def test_consume_latest_stops_at_max_messages(self, mock_producer_class, mock_consumer_class):
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_stops_at_max_messages(self, mock_consumer_class, mock_producer_class):
         """Test that consume_latest stops collecting when max_messages is reached."""
         mock_producer_class.return_value = MagicMock()
 
         mock_consumer = MagicMock()
         mock_consumer_class.return_value = mock_consumer
-
-        # Mock the partitions_for_topic to return partition 0
-        mock_consumer.partitions_for_topic.return_value = {0}
-        mock_consumer.assignment.return_value = set()
-        mock_consumer.position.return_value = 1000  # Mock offset position
-        mock_consumer.seek_to_end.return_value = None
 
         def make_msg(offset):
             m = MagicMock()
@@ -269,70 +247,44 @@ class TestKafkaClientMocked(unittest.TestCase):
         mock_consumer.poll.return_value = {MagicMock(): [make_msg(i) for i in range(5)]}
 
         client = KafkaClientWrapper("localhost:9092")
-        # Mock the topic verification
-        with patch.object(client, '_verify_topic_exists', return_value=True):
-            messages = client.consume_latest('test-topic', max_messages=5, timeout_ms=500, poll_interval_ms=100)
+        messages = client.consume_latest('test-topic', max_messages=5, timeout_ms=500, poll_interval_ms=100)
 
         self.assertEqual(len(messages), 5)
-        mock_consumer.close.assert_called()
+        mock_consumer.close.assert_called_once()
 
-    @patch('src.kafka_client.KafkaConsumer')
     @patch('src.kafka_client.KafkaProducer')
-    def test_consume_latest_empty_topic(self, mock_producer_class, mock_consumer_class):
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_empty_topic(self, mock_consumer_class, mock_producer_class):
         """Test consume_latest on a topic with no messages exits after one poll."""
         mock_producer_class.return_value = MagicMock()
 
         mock_consumer = MagicMock()
         mock_consumer_class.return_value = mock_consumer
-
-        # Mock the partitions_for_topic to return partition 0
-        mock_consumer.partitions_for_topic.return_value = {0}
-        mock_consumer.assignment.return_value = set()
-        mock_consumer.position.return_value = 1000  # Mock offset position
-        mock_consumer.seek_to_end.return_value = None
         mock_consumer.poll.return_value = {}  # No records
 
         client = KafkaClientWrapper("localhost:9092")
-        # Mock the topic verification
-        with patch.object(client, '_verify_topic_exists', return_value=True):
-            messages = client.consume_latest('empty-topic', max_messages=10, timeout_ms=500, poll_interval_ms=100)
+        messages = client.consume_latest('empty-topic', max_messages=10, timeout_ms=500, poll_interval_ms=100)
 
         self.assertEqual(messages, [])
-        self.assertGreaterEqual(mock_consumer.poll.call_count, 1)
-        self.assertGreaterEqual(mock_consumer.close.call_count, 1)
+        self.assertEqual(mock_consumer.poll.call_count, 1)
+        mock_consumer.close.assert_called_once()
 
-    @patch('src.kafka_client.KafkaConsumer')
     @patch('src.kafka_client.KafkaProducer')
-    def test_consume_latest_uses_poll_interval(self, mock_producer_class, mock_consumer_class):
+    @patch('src.kafka_client.KafkaConsumer')
+    def test_consume_latest_uses_poll_interval(self, mock_consumer_class, mock_producer_class):
         """Test that consume_latest passes poll_interval_ms to consumer.poll()."""
         mock_producer_class.return_value = MagicMock()
 
         mock_consumer = MagicMock()
         mock_consumer_class.return_value = mock_consumer
-
-        # Mock the partitions_for_topic to return partition 0
-        mock_consumer.partitions_for_topic.return_value = {0}
-        mock_consumer.assignment.return_value = set()
-        mock_consumer.position.return_value = 1000  # Mock offset position
-        mock_consumer.seek_to_end.return_value = None
         mock_consumer.poll.return_value = {}
 
         client = KafkaClientWrapper("localhost:9092")
-        # Mock the topic verification
-        with patch.object(client, '_verify_topic_exists', return_value=True):
-            client.consume_latest('test-topic', max_messages=10, timeout_ms=300, poll_interval_ms=150)
+        client.consume_latest('test-topic', max_messages=10, timeout_ms=300, poll_interval_ms=150)
 
         # poll() should have been called with timeout_ms <= poll_interval_ms
-        # The first poll.call_args should have the timeout_ms parameter
-        self.assertGreater(mock_consumer.poll.call_count, 0)
-        # Check at least one call has timeout_ms parameter
-        poll_called = False
-        for call in mock_consumer.poll.call_args_list:
-            if 'timeout_ms' in call[1]:
-                self.assertLessEqual(call[1]['timeout_ms'], 150)
-                poll_called = True
-                break
-        self.assertTrue(poll_called, "poll() should have been called with timeout_ms parameter")
+        call_kwargs = mock_consumer.poll.call_args
+        self.assertLessEqual(call_kwargs[1]['timeout_ms'], 150)
 
     def test_deserialize_json_message(self):
         """Test deserializing JSON message."""
