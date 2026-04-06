@@ -5,6 +5,7 @@ import logging
 import json
 import os
 import uuid
+import asyncio
 from typing import Optional, Dict, Any, List, Union
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Query, Body
@@ -15,6 +16,8 @@ from .kafka_client import KafkaClientWrapper
 from .kafka_listener import KafkaListenerEngine
 from .custom_placeholders import CustomPlaceholderRegistry
 from .templater import set_custom_placeholder_registry
+from .test_loader import TestLoader
+from .test_suite import TestSuiteRunner, TestResultAggregator
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -47,17 +50,20 @@ config_loader: Optional[ConfigLoader] = None
 kafka_client: Optional[KafkaClientWrapper] = None
 listener_engine: Optional[KafkaListenerEngine] = None
 custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None
+test_loader: Optional[TestLoader] = None
+test_suite_runner: Optional[TestSuiteRunner] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown."""
-    global config_loader, kafka_client, listener_engine, custom_placeholder_registry
+    global config_loader, kafka_client, listener_engine, custom_placeholder_registry, test_loader, test_suite_runner
     # Startup
     logger.info("Starting Kafka Wiremock...")
     try:
         # Get Kafka bootstrap servers from environment
         bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         config_dir = os.getenv("CONFIG_DIR", "/config")
+        test_suite_dir = os.getenv("TEST_SUITE_DIR", "/testSuite")
         custom_placeholders_dir = os.getenv("CUSTOM_PLACEHOLDERS_DIR", "/config/custom_placeholders")
 
         # Initialize custom placeholder registry
@@ -75,6 +81,11 @@ async def lifespan(app: FastAPI):
         )
         # Start listener engine
         listener_engine.start()
+
+        # Initialize test suite components
+        test_loader = TestLoader(test_suite_dir=test_suite_dir)
+        test_suite_runner = TestSuiteRunner(kafka_client, custom_placeholder_registry, test_suite_dir)
+
         logger.info("Kafka Wiremock started successfully")
     except Exception as e:
         logger.error(f"Failed to start Kafka Wiremock: {e}")
@@ -292,3 +303,206 @@ async def get_custom_placeholders():
     except Exception as e:
         logger.error(f"Error retrieving custom placeholders: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Test Suite Endpoints
+# ============================================================================
+
+@app.get("/tests")
+async def list_tests() -> Dict[str, Any]:
+    """
+    List all discovered test definitions.
+    Returns:
+        Dictionary with test metadata
+    """
+    if not test_loader:
+        raise HTTPException(status_code=503, detail="Test loader not initialized")
+
+    try:
+        tests = test_loader.discover_tests()
+        result = []
+        for test in tests:
+            result.append({
+                "test_id": test.name,
+                "priority": test.priority,
+                "tags": test.tags,
+                "skip": test.skip,
+                "timeout_ms": test.timeout_ms,
+                "when_injections": len(test.when.inject),
+                "then_expectations": len(test.then.expectations)
+            })
+        return {
+            "total": len(result),
+            "tests": result
+        }
+    except Exception as e:
+        logger.error(f"Error listing tests: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/{test_id}")
+async def get_test_definition(test_id: str) -> Dict[str, Any]:
+    """
+    Get parsed test definition.
+    Args:
+        test_id: Test identifier (from test name)
+    Returns:
+        Test definition as dictionary
+    """
+    if not test_loader:
+        raise HTTPException(status_code=503, detail="Test loader not initialized")
+
+    try:
+        tests = test_loader.discover_tests()
+        test = next((t for t in tests if t.name == test_id), None)
+        if not test:
+            raise HTTPException(status_code=404, detail=f"Test not found: {test_id}")
+
+        return {
+            "name": test.name,
+            "priority": test.priority,
+            "tags": test.tags,
+            "skip": test.skip,
+            "timeout_ms": test.timeout_ms,
+            "when": {
+                "injections": [
+                    {
+                        "message_id": inj.message_id,
+                        "topic": inj.topic,
+                        "delay_ms": inj.delay_ms
+                    }
+                    for inj in test.when.inject
+                ],
+                "has_script": test.when.script is not None
+            },
+            "then": {
+                "expectations": [
+                    {
+                        "topic": exp.topic,
+                        "source_id": exp.source_id,
+                        "target_id": exp.target_id,
+                        "wait_ms": exp.wait_ms,
+                        "conditions_count": len(exp.match)
+                    }
+                    for exp in test.then.expectations
+                ],
+                "has_script": test.then.script is not None
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving test {test_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tests/{test_id}")
+async def run_single_test(test_id: str) -> Dict[str, Any]:
+    """
+    Run a single test by ID.
+    Args:
+        test_id: Test identifier
+    Returns:
+        Test result
+    """
+    if not test_loader or not test_suite_runner:
+        raise HTTPException(status_code=503, detail="Test suite not initialized")
+
+    try:
+        tests = test_loader.discover_tests()
+        test = next((t for t in tests if t.name == test_id), None)
+        if not test:
+            raise HTTPException(status_code=404, detail=f"Test not found: {test_id}")
+
+        # Run test
+        result = await test_suite_runner.executor.run_test(test)
+
+        # Convert result to JSON-serializable dict
+        return {
+            "test_id": result.test_id,
+            "status": result.status,
+            "elapsed_ms": result.elapsed_ms,
+            "when_result": {
+                "injected": result.when_result.injected,
+                "script_error": result.when_result.script_error
+            },
+            "then_result": {
+                "expectations": [
+                    {
+                        "index": exp.index,
+                        "topic": exp.topic,
+                        "expected": exp.expected,
+                        "received": exp.received,
+                        "status": exp.status,
+                        "elapsed_ms": exp.elapsed_ms,
+                        "error": exp.error
+                    }
+                    for exp in result.then_result.expectations
+                ],
+                "script_error": result.then_result.script_error
+            },
+            "errors": result.errors
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error running test {test_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tests:bulk")
+async def run_tests_bulk(
+    mode: str = Query("parallel", description="sequential or parallel"),
+    threads: int = Query(4, ge=1, le=32, description="Number of concurrent threads (for parallel mode)"),
+    iterations: int = Query(1, ge=1, le=1000, description="Number of iterations per test"),
+    filter_tags: Optional[List[str]] = Query(None, description="Optional tags to filter tests")
+) -> Dict[str, Any]:
+    """
+    Run all discovered tests in bulk.
+    Args:
+        mode: Execution mode (sequential or parallel)
+        threads: Number of concurrent threads
+        iterations: Number of iterations per test
+        filter_tags: Optional tags to filter tests
+    Returns:
+        Aggregated test results
+    """
+    if not test_loader or not test_suite_runner:
+        raise HTTPException(status_code=503, detail="Test suite not initialized")
+
+    try:
+        if mode not in ["sequential", "parallel"]:
+            raise HTTPException(status_code=400, detail="mode must be 'sequential' or 'parallel'")
+
+        # Discover tests
+        all_tests = test_loader.discover_tests()
+
+        # Filter by tags if specified
+        if filter_tags:
+            all_tests = test_loader.get_tests_by_tag(all_tests, filter_tags)
+
+        if not all_tests:
+            raise HTTPException(status_code=400, detail="No tests found matching criteria")
+
+        # Replicate tests for iterations
+        tests_to_run = all_tests * iterations
+
+        logger.info(f"Running {len(tests_to_run)} test instances ({len(all_tests)} tests × {iterations} iterations) in {mode} mode")
+
+        # Run tests
+        if mode == "sequential":
+            results = await test_suite_runner.run_tests_sequential(tests_to_run)
+        else:  # parallel
+            results = await test_suite_runner.run_tests_parallel(tests_to_run, threads=threads)
+
+        # Aggregate results
+        aggregated = TestResultAggregator.aggregate_results(results, mode=mode)
+
+        return aggregated
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error running bulk tests: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

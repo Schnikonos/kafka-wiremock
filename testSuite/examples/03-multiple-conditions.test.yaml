@@ -1,0 +1,37 @@
+priority: 30
+name: "multiple-conditions-test"
+tags: ["example", "advanced"]
+skip: false
+timeout_ms: 6000
+
+when:
+  inject:
+    - message_id: "user"
+      topic: "users.input"
+      payload: |
+        {
+          "userId": "USER-{{uuid}}",
+          "email": "test@example.com",
+          "status": "ACTIVE",
+          "balance": 1000.00
+        }
+
+then:
+  expectations:
+    - topic: "users.verified"
+      match:
+        - type: jsonpath
+          expression: "$.email"
+          value: "test@example.com"
+        - type: jsonpath
+          expression: "$.status"
+          regex: "ACTIVE|VERIFIED"
+      wait_ms: 2000
+
+    - topic: "audit.events"
+      match:
+        - type: jsonpath
+          expression: "$.eventType"
+          value: "USER_STATUS_CHANGED"
+      wait_ms: 2000
+

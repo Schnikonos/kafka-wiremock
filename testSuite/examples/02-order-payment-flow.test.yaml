@@ -1,0 +1,60 @@
+priority: 20
+name: "order-to-payment-flow"
+tags: ["example", "integration"]
+skip: false
+timeout_ms: 8000
+
+when:
+  inject:
+    - message_id: "order"
+      topic: "orders.input"
+      payload: |
+        {
+          "orderId": "ORD-{{testId}}-{{uuid}}",
+          "customerId": "CUST-456",
+          "amount": 150.50,
+          "currency": "USD",
+          "status": "CREATED"
+        }
+      delay_ms: 100
+      # Use external script for validation
+    - script_file: scripts/validate-order.py
+
+    - message_id: "notification"
+      topic: "notifications.input"
+      payload: |
+        {
+          "type": "order_created",
+          "orderId": "ORD-{{testId}}-{{uuid}}",
+          "timestamp": "{{now}}"
+        }
+      # Can also use inline script
+    - script: |
+        assert current_injection.get("payload", {}).get("type") == "order_created"
+
+then:
+  expectations:
+    - source_id: "order"
+      topic: "payments.input"
+      target_id: "$.orderId"
+      wait_ms: 3000
+      match:
+        - type: jsonpath
+          expression: "$.amount"
+          value: 150.50
+        - type: jsonpath
+          expression: "$.currency"
+          value: "USD"
+      # Validate payment with external script
+    - script_file: scripts/validate-payment.py
+
+    - source_id: "notification"
+      topic: "notifications.output"
+      target_id: "$.orderId"
+      wait_ms: 3000
+      # Inline script to validate notification
+    - script: |
+        notif = current_expectation.received_messages[0] if current_expectation.received_messages else {}
+        assert notif.get("value", {}).get("type") == "order_created"
+
+

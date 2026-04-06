@@ -14,11 +14,20 @@ Event-driven Kafka mock container for testing, similar to Pact for APIs. Interce
   - Read AVRO messages from topics (decoded to JSON for display)
   - Match against AVRO messages using JSONPath
   - Produce AVRO messages with schema registry IDs
+- **Test Suite** (NEW): 
+  - Define integration tests with `when` (inject) → `then` (validate) structure
+  - Message correlation via source_id/target_id
+  - Custom Python scripts for setup and validation
+  - Sequential or parallel test execution
+  - Bulk testing with statistics (average/max elapsed time)
 - **Hot-Reload Configuration**: Configuration files reloaded every 30 seconds
 - **HTTP API**: 
   - `POST /inject/<topic>` - Inject test messages (JSON/AVRO with schema-id header)
   - `GET /messages/<topic>` - Retrieve produced messages (JSON/AVRO decoded)
   - `GET /custom-placeholders` - List custom placeholders
+  - `GET /tests` - List all test definitions
+  - `POST /tests/<test_id>` - Run single test
+  - `POST /tests:bulk` - Run all tests (sequential/parallel)
   - `GET /health` - Health check
   - `GET /rules` - List all configured rules
   - `GET /rules/<topic>` - List rules for specific topic
@@ -603,6 +612,205 @@ services:
          │  (input & output)              │
          └────────────────────────────────┘
 ```
+
+## Test Suite Feature
+
+The Test Suite allows you to define integration tests that verify your Kafka event flows end-to-end. Tests can inject messages, wait for expected outputs, and validate using custom Python scripts.
+
+### Quick Start: Running Tests
+
+#### 1. List all available tests
+```bash
+curl http://localhost:8000/tests
+```
+
+#### 2. Run a single test
+```bash
+curl -X POST http://localhost:8000/tests/simple-injection-test
+```
+
+#### 3. Run all tests in parallel (10 iterations each)
+```bash
+curl -X POST "http://localhost:8000/tests:bulk?mode=parallel&threads=4&iterations=10"
+```
+
+#### 4. Run tests sequentially with tag filter
+```bash
+curl -X POST "http://localhost:8000/tests:bulk?mode=sequential&filter_tags=critical&filter_tags=e2e"
+```
+
+### Test Definition Format
+
+Create test files in `/testSuite/` directory (any subdirectories) with `*.test.yaml` extension:
+
+```yaml
+priority: 10                    # Optional; default 999. Lower = runs first
+name: "order-to-payment-flow"   # Required; test identifier
+tags: ["critical", "e2e"]       # Optional; for filtering
+skip: false                     # Optional; skip test
+timeout_ms: 5000               # Optional; overall test timeout
+
+# INPUT PHASE: Inject messages
+when:
+  inject:
+    - message_id: "order1"      # Correlation ID
+      topic: "orders.input"     # Target topic
+      payload: |
+        {
+          "orderId": "{{testId}}-{{uuid}}",
+          "amount": 100.50,
+          "status": "NEW"
+        }
+      headers:                  # Optional; custom headers
+        X-Order-ID: "{{uuid}}"
+      delay_ms: 100            # Optional; delay before injection
+    
+    - message_id: "notification"
+      topic: "notifications.input"
+      payload: '{"type": "order_created"}'
+  
+  script: |                     # Optional; Python setup code
+    # Pre-conditions, assertions, custom logic
+    assert len(injected) == 2, "Expected 2 injections"
+    print(f"Setup phase: {len(injected)} messages injected")
+
+# VALIDATION PHASE: Expect messages
+then:
+  expectations:
+    - source_id: "order1"       # Optional; correlate to injected message
+      target_id: "$.orderId"    # Field in received message to match source_id
+      topic: "payments.input"   # Required; topic to consume from
+      wait_ms: 2000            # Optional; timeout waiting for message (default 2000)
+      match:                    # Optional; additional validation
+        - type: jsonpath
+          expression: "$.amount"
+          value: 100.50
+        - type: jsonpath
+          expression: "$.status"
+          regex: "PENDING|CONFIRMED"
+    
+    - source_id: "notification"
+      target_id: "$.orderId"
+      topic: "notifications.output"
+      wait_ms: 3000
+  
+  script: |                     # Optional; custom validation code
+    # Context has: injected[], received{}, stats{}
+    payments = received.get("expectation_0", [])
+    assert len(payments) == 1, f"Expected 1 payment, got {len(payments)}"
+    print(f"✓ Validation passed: {len(payments)} payments received")
+```
+
+### Message Correlation
+
+Use `source_id` and `target_id` to correlate injected messages with expected outputs:
+
+```yaml
+when:
+  inject:
+    - message_id: "order"       # Unique ID for this injection
+      topic: "orders.input"
+      payload: '{"orderId": "ORD-{{uuid}}", "amount": 50.0}'
+
+then:
+  expectations:
+    - source_id: "order"        # Reference the injected message
+      target_id: "$.orderId"    # Field in received message to match
+      topic: "payments.input"
+      # Wiremock will extract orderId from injected message
+      # and match it against $.orderId in received messages
+```
+
+If `source_id`/`target_id` are not specified, **any message matching the conditions is accepted**.
+
+### API Endpoints for Tests
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/tests` | GET | List all discovered tests |
+| `/tests/{test_id}` | GET | Get test definition |
+| `/tests/{test_id}` | POST | Run single test |
+| `/tests:bulk` | POST | Run all tests (sequential or parallel) |
+
+**Query Parameters for `/tests:bulk`**:
+- `mode`: `sequential` or `parallel` (default: `parallel`)
+- `threads`: Number of concurrent threads (1-32, default: 4)
+- `iterations`: Iterations per test (1-1000, default: 1)
+- `filter_tags`: Tag names to filter (repeatable: `?filter_tags=tag1&filter_tags=tag2`)
+
+### Test Result Format
+
+```json
+{
+  "test_id": "order-flow-test",
+  "status": "PASSED",           // PASSED, FAILED, SKIPPED, TIMEOUT
+  "elapsed_ms": 1234,
+  "when_result": {
+    "injected": [
+      {"message_id": "order1", "topic": "orders.input", "status": "ok"},
+      {"message_id": "notif1", "topic": "notifications.input", "status": "ok"}
+    ],
+    "script_error": null
+  },
+  "then_result": {
+    "expectations": [
+      {
+        "index": 0,
+        "topic": "payments.input",
+        "expected": 1,
+        "received": 1,
+        "status": "MATCHED",
+        "elapsed_ms": 145,
+        "error": null
+      }
+    ],
+    "script_error": null
+  },
+  "errors": []
+}
+```
+
+### Bulk Test Result Format
+
+```json
+{
+  "mode": "parallel",
+  "total_tests": 30,            // 3 tests × 10 iterations
+  "passed": 28,
+  "failed": 2,
+  "skipped": 0,
+  "duration_ms": 12345,
+  "stats": {
+    "order-flow-test": {
+      "passed": 9,
+      "failed": 1,
+      "elapsed_ms_avg": 234.5,
+      "elapsed_ms_max": 421,
+      "elapsed_ms_min": 145
+    }
+  },
+  "failed_tests": [
+    {
+      "test_id": "order-flow-test",
+      "error": "Expectation failed for payments.input: timeout waiting for message",
+      "elapsed_ms": 2001
+    }
+  ]
+}
+```
+
+### Environment Variables
+
+```bash
+TEST_SUITE_DIR=/testSuite              # Directory for test files (default: /testSuite)
+```
+
+### Example Tests
+
+See `/testSuite/examples/` for sample test files:
+- `01-simple-injection.test.yaml` — Basic single injection + expectation
+- `02-order-payment-flow.test.yaml` — Complex flow with multiple messages and correlation
+- `03-multiple-conditions.test.yaml` — Tests with multiple validation conditions
 
 ## Docker Compose useful commands
 ```shell
