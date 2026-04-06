@@ -1,0 +1,32 @@
+# Example: Complex placeholders and random data generation
+priority: 5
+
+when:
+  topic: users.commands
+  match:
+    - type: jsonpath
+      expression: "$.action"
+      value: "REGISTER"
+
+then:
+  - topic: users.events
+    payload: |
+      {
+        "userId": "{{uuid}}",
+        "username": "{{$.username}}",
+        "email": "{{$.email}}",
+        "registeredAt": "{{now}}",
+        "verificationCodeExpiry": "{{now+24h}}",
+        "temporaryToken": "token_{{randomInt(100000,999999)}}",
+        "source": "{{$.source}}"
+      }
+
+  - topic: audit.log
+    payload: |
+      {
+        "event": "USER_REGISTERED",
+        "username": "{{$.username}}",
+        "timestamp": "{{now}}",
+        "requestId": "{{$.requestId}}"
+      }
+

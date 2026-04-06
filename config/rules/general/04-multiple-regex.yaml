@@ -1,0 +1,33 @@
+# Example: Multiple regex matches in a single rule
+priority: 15
+
+when:
+  topic: transactions.input
+  match:
+    - type: jsonpath
+      expression: "$.type"
+      value: "TRANSFER"
+    - type: jsonpath
+      expression: "$.amount"
+      regex: "^[0-9]{1,10}\\.[0-9]{2}$"  # Amount must be decimal format like 123.45
+    - type: jsonpath
+      expression: "$.status"
+      regex: "^(PENDING|APPROVED)$"      # Status must be one of these
+
+then:
+  - topic: transfers.processing
+    delay_ms: 500
+    headers:
+      X-Transaction-ID: "{{$.transactionId}}"
+      X-Priority: "{{$.priority}}"
+    payload: |
+      {
+        "transferId": "{{uuid}}",
+        "from": "{{$.fromAccount}}",
+        "to": "{{$.toAccount}}",
+        "amount": "{{$.amount}}",
+        "initiatedAt": "{{now}}",
+        "expectedCompletion": "{{now+2h}}",
+        "transactionId": "{{$.transactionId}}"
+      }
+

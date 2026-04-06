@@ -42,10 +42,6 @@ htmlcov/
 *.log
 logs/
 
-# Config and state
-config/
-!config/examples/
-
 # OS
 .DS_Store
 Thumbs.db

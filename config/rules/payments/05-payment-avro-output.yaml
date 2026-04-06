@@ -1,0 +1,35 @@
+# Example: AVRO message output with schema registry
+# Requires Confluent Schema Registry configured
+priority: 20
+
+when:
+  topic: orders.input
+  match:
+    - type: jsonpath
+      expression: "$.eventType"
+      value: "ORDER_CREATED"
+
+then:
+  - topic: payments.avro
+    delay_ms: 100
+    schema_id: 123              # AVRO schema ID from registry
+    headers:
+      X-Order-ID: "{{$.orderId}}"
+    payload: |
+      {
+        "paymentId": "{{uuid}}",
+        "orderId": "{{$.orderId}}",
+        "amount": "{{$.amount}}",
+        "timestamp": "{{now}}"
+      }
+
+  - topic: audit.avro
+    schema_id: 456
+    payload: |
+      {
+        "eventType": "PAYMENT_INITIATED",
+        "orderId": "{{$.orderId}}",
+        "auditId": "{{uuid}}",
+        "timestamp": "{{now}}"
+      }
+

@@ -1,0 +1,37 @@
+# Example: Process order created event and generate payment + notification
+priority: 10
+
+when:
+  topic: orders.input
+  match:                      # All conditions are ANDed together
+    - type: jsonpath
+      expression: "$.eventType"
+      value: "ORDER_CREATED"
+    - type: jsonpath
+      expression: "$.amount"
+      regex: "[0-9]+"         # Regex variant - amount must be numeric
+
+then:
+  - topic: payments.input
+    delay_ms: 200             # Simulate processing delay
+    headers:
+      correlationId: "{{$.correlationId}}"   # Placeholder from request
+      source: "order-service"
+    payload: |
+      {
+        "paymentId": "{{uuid}}",
+        "orderId": "{{$.orderId}}",
+        "amount": "{{$.amount}}",
+        "timestamp": "{{now}}",
+        "correlationId": "{{$.correlationId}}"
+      }
+
+  - topic: notifications.events   # Multiple outputs supported
+    delay_ms: 100
+    payload: |
+      { 
+        "type": "ORDER_ACK", 
+        "orderId": "{{$.orderId}}",
+        "notificationId": "{{uuid}}"
+      }
+

@@ -604,6 +604,12 @@ services:
          └────────────────────────────────┘
 ```
 
+## Docker Compose useful commands
+```shell
+docker-compose -f docker-compose.full.yml build --no-cache  # Build all services without cache (useful after code changes)
+docker-compose -f docker-compose.full.yml up -d  # Start all services
+```
+
 ## Contributing
 
 To add features or fix bugs:

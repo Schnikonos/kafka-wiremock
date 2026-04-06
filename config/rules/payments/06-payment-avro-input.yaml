@@ -1,0 +1,35 @@
+# Example: Process AVRO input messages
+# Demonstrates reading and matching AVRO messages, producing JSON output
+priority: 10
+
+when:
+  topic: payments.avro           # Listen to AVRO messages
+  match:
+    - type: jsonpath
+      expression: "$.status"
+      value: "CONFIRMED"         # Match on decoded AVRO content
+
+then:
+  - topic: audit.events
+    delay_ms: 50
+    headers:
+      X-Payment-ID: "{{$.paymentId}}"
+    payload: |
+      {
+        "auditId": "{{uuid}}",
+        "paymentId": "{{$.paymentId}}",
+        "orderId": "{{$.orderId}}",
+        "amount": "{{$.amount}}",
+        "status": "{{$.status}}",
+        "auditedAt": "{{now}}"
+      }
+
+  - topic: notifications.confirmed
+    payload: |
+      {
+        "type": "PAYMENT_CONFIRMED",
+        "paymentId": "{{$.paymentId}}",
+        "notificationId": "{{uuid}}",
+        "sentAt": "{{now}}"
+      }
+

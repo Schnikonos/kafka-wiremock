@@ -1,0 +1,32 @@
+# Example 2: JSONPath matching with templated response
+# This rule matches JSON messages where user.status equals "verified"
+# and produces a welcome email message with user information from the input
+
+priority: 20
+name: "user-verified-to-email"
+
+when:
+  topic: user-events
+  match:
+    - type: jsonpath
+      expression: "$.user.status"
+      value: "verified"
+
+then:
+  - topic: emails
+    payload: |
+      {
+        "recipient": "{{$.user.email}}",
+        "subject": "Welcome {{$.user.name}}",
+        "body": "Thank you for verifying your email",
+        "emailId": "{{uuid}}"
+      }
+
+  - topic: analytics
+    payload: |
+      {
+        "event_type": "user_verified",
+        "user_id": "{{$.user.id}}",
+        "timestamp": "{{now}}"
+      }
+

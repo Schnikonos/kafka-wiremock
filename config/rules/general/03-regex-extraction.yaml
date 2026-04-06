@@ -1,0 +1,23 @@
+# Example 3: Regex matching with captured groups
+# This rule matches messages containing an order ID pattern (ORDER-XXXX)
+# and extracts it for use in the response template
+
+priority: 30
+name: "order-id-pattern-match"
+
+when:
+  topic: order-requests
+  match:
+    - type: regex
+      regex: "ORDER-(?P<order_id>\\d{4})"
+
+then:
+  - topic: order-confirmations
+    payload: |
+      {
+        "confirmation_id": "CONF-{{order_id}}",
+        "status": "confirmed",
+        "order_details": "{{full_message}}",
+        "confirmationId": "{{uuid}}"
+      }
+
