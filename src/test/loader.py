@@ -270,6 +270,8 @@ class TestLoader:
         """
         self.test_suite_dir = Path(test_suite_dir)
         self.test_suite_dir.mkdir(parents=True, exist_ok=True)
+        # Track validation errors per file
+        self.validation_errors: Dict[str, List[str]] = {}
 
     def discover_tests(self) -> List[TestDefinition]:
         """

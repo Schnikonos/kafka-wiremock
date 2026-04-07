@@ -232,11 +232,15 @@ async def get_messages(
         logger.error(f"Error consuming messages from {topic}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 @app.get("/rules")
-async def get_rules():
+async def get_rules(errors: bool = Query(False, description="If true, include validation errors")):
     """
     Get all configured rules.
+
+    Args:
+        errors: If true, include validation errors for all rule files
+
     Returns:
-        List of rules with details
+        List of rules with details, optionally including validation errors
     """
     if not config_loader:
         raise HTTPException(status_code=503, detail="Config loader not initialized")
@@ -270,7 +274,15 @@ async def get_rules():
                 "input_topic": rule.input_topic,
                 "outputs": outputs,
             })
-        return result
+
+        response = {"rules": result}
+
+        # Add validation errors if requested
+        if errors:
+            response["validation_errors"] = config_loader.validation_errors or {}
+            response["has_errors"] = bool(config_loader.validation_errors)
+
+        return response
     except Exception as e:
         logger.error(f"Error retrieving rules: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -396,11 +408,15 @@ async def get_dependency_status() -> Dict[str, Any]:
 # ============================================================================
 
 @app.get("/tests")
-async def list_tests() -> Dict[str, Any]:
+async def list_tests(errors: bool = Query(False, description="If true, include validation errors")) -> Dict[str, Any]:
     """
     List all discovered test definitions.
+
+    Args:
+        errors: If true, include validation errors for all test files
+
     Returns:
-        Dictionary with test metadata
+        Dictionary with test metadata, optionally including validation errors
     """
     if not test_loader:
         raise HTTPException(status_code=503, detail="Test loader not initialized")
@@ -420,10 +436,18 @@ async def list_tests() -> Dict[str, Any]:
                 "when_injections": when_injections,
                 "then_expectations": then_expectations
             })
-        return {
+
+        response = {
             "total": len(result),
             "tests": result
         }
+
+        # Add validation errors if requested
+        if errors:
+            response["validation_errors"] = test_loader.validation_errors or {}
+            response["has_errors"] = bool(test_loader.validation_errors)
+
+        return response
     except Exception as e:
         logger.error(f"Error listing tests: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -831,4 +855,137 @@ async def list_jobs(test_id: Optional[str] = Query(None, description="Filter by 
     except Exception as e:
         logger.error(f"Error listing jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/rules:match")
+async def explain_rule_match(
+    topic: str = Query(..., description="Input topic"),
+    message: Union[Dict[str, Any], str] = Body(..., description="Message to test against rules")
+) -> Dict[str, Any]:
+    """
+    Dry-run endpoint: Show which rule would match a message and why.
+
+    Args:
+        topic: Input topic for the message
+        message: Message payload (JSON object or string)
+
+    Returns:
+        Matching rule details with matcher context and extraction results
+    """
+    if not config_loader or not listener_engine:
+        raise HTTPException(status_code=503, detail="Services not initialized")
+
+    try:
+        # Get rules for the topic
+        rules = config_loader.get_rules_for_topic(topic)
+
+        if not rules:
+            return {
+                "matched": False,
+                "message": "No rules configured for this topic",
+                "message_preview": str(message)[:200],
+                "topic": topic,
+                "evaluated_rules": 0
+            }
+
+        # Try to match each rule
+        for rule in rules:
+            match_result = listener_engine.matcher_factory.match_rule(
+                message=message,
+                rule=rule
+            )
+
+            if match_result.matched:
+                # Extract details about what matched
+                conditions_detail = []
+                for i, cond in enumerate(rule.conditions):
+                    cond_match = match_result.context.get(f"condition_{i}")
+                    conditions_detail.append({
+                        "index": i,
+                        "type": cond.type,
+                        "expression": cond.expression,
+                        "value": cond.value,
+                        "regex": cond.regex,
+                        "matched": cond_match is not None,
+                        "extracted_context": dict(list(match_result.context.items())[i:i+1]) if cond_match else {}
+                    })
+
+                return {
+                    "matched": True,
+                    "rule": {
+                        "name": rule.rule_name,
+                        "priority": rule.priority,
+                        "input_topic": rule.input_topic
+                    },
+                    "conditions": conditions_detail,
+                    "context": match_result.context,
+                    "message_preview": str(message)[:200],
+                    "topic": topic,
+                    "outputs_count": len(rule.outputs),
+                    "outputs": [{"topic": o.topic, "delay_ms": o.delay_ms} for o in rule.outputs]
+                }
+
+        # No rule matched
+        return {
+            "matched": False,
+            "message": "No rules matched this message",
+            "message_preview": str(message)[:200],
+            "topic": topic,
+            "evaluated_rules": len(rules),
+            "available_rules": [
+                {
+                    "name": r.rule_name,
+                    "priority": r.priority,
+                    "conditions": len(r.conditions)
+                }
+                for r in rules
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error explaining rule match: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/templates:render")
+async def render_template(
+    template: str = Body(..., description="Template string with placeholders"),
+    context: Dict[str, Any] = Body({}, description="Context dictionary for placeholder substitution")
+) -> Dict[str, Any]:
+    """
+    Dry-run endpoint: Render a template with provided context.
+
+    Args:
+        template: Template string (e.g., '{"id": "{{uuid}}", "now": "{{now}}", "field": "{{$.myField}}"}')
+        context: Context dictionary with values to substitute
+
+    Returns:
+        Rendered template and available/used placeholders
+    """
+    try:
+        from .rules.templater import TemplateRenderer
+
+        # Render the template
+        rendered = TemplateRenderer.render(template, context)
+
+        # Extract placeholders from template to show what was available/used
+        import re
+        placeholder_pattern = re.compile(r'\{\{[\s]*([a-zA-Z0-9_.$\[\](),\-+]+)[\s]*\}\}')
+        found_placeholders = placeholder_pattern.findall(template)
+
+        return {
+            "success": True,
+            "template": template,
+            "rendered": rendered,
+            "placeholders_found": found_placeholders,
+            "context_keys": list(context.keys()),
+            "template_length": len(template),
+            "rendered_length": len(rendered)
+        }
+    except Exception as e:
+        logger.error(f"Error rendering template: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "template": template
+        }
 

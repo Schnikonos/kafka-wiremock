@@ -25,6 +25,8 @@ class ConfigLoader:
         self._lock = threading.Lock()
         self._last_reload = datetime.now()
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        # Track validation errors per file
+        self.validation_errors: Dict[str, List[str]] = {}
         self.reload()
 
     def get_rules_for_topic(self, input_topic: str) -> List[Rule]:
