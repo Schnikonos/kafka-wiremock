@@ -296,13 +296,13 @@ class KafkaClientWrapper:
 
                     logger.debug(f"Poll returned {batch_size} messages, total: {len(messages)}")
 
-                    # Early exit: only break if we got some messages but fewer than requested
-                    # (meaning consumer caught up). Keep polling if we got 0 messages.
-                    if batch_size > 0 and batch_size < remaining_needed:
+                    # Early exit conditions:
+                    # 1. Got some messages but fewer than requested (consumer caught up)
+                    # 2. Got 0 messages (no new messages to consume)
+                    if batch_size < remaining_needed:
                         logger.debug(f"Early exit: got {batch_size} < {remaining_needed} messages")
                         break
 
-                consumer.close()
                 logger.info(f"Consumed {len(messages)} messages from {topic}")
                 return messages
 

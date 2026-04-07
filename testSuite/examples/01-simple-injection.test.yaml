@@ -1,0 +1,42 @@
+priority: 10
+name: "simple-injection-test"
+tags: ["example", "basic"]
+skip: false
+timeout_ms: 5000
+
+when:
+  inject:
+    - message_id: "order1"
+      topic: "users.commands"
+      payload: |
+        {
+          "orderId": "{{testId}}-{{uuid}}",
+          "sourceId": "{{uuid}}",
+          "username": "ABC",
+          "action": "REGISTER",
+          "source": "SomeSource",
+          "email": "aaa@ing.com",
+          "customerId": "CUST-123",
+          "amount": 99.99,
+          "status": "NEW"
+        }
+
+then:
+  expectations:
+    - topic: "users.events"
+      message_id: "order1"
+      source_id: "$.sourceId"
+      target_id: "$.targetId"
+      wait_ms: 2000
+      match:
+        - type: jsonpath
+          expression: "$.source"
+          value: "SomeSource"
+        - type: jsonpath
+          expression: "$.status"
+          regex: "P2ROCESSED|ACCEPTED"
+
+
+
+
+

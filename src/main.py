@@ -5,16 +5,24 @@ import logging
 import json
 import os
 import uuid
+import asyncio
+from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Query, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from .config_loader import ConfigLoader
-from .kafka_client import KafkaClientWrapper
-from .kafka_listener import KafkaListenerEngine
-from .custom_placeholders import CustomPlaceholderRegistry
-from .templater import set_custom_placeholder_registry
+from .config.loader import ConfigLoader
+from .kafka.client import KafkaClientWrapper
+from .kafka.listener import KafkaListenerEngine
+from .custom.placeholders import CustomPlaceholderRegistry
+from .rules.templater import set_custom_placeholder_registry
+from .test.loader import TestLoader, TestInjection, TestExpectation, TestScript
+from .test.suite import TestSuiteRunner, TestResultAggregator
+from .test.jobs import TestJobManager
+from .test.cache import MessageCache
+from .test.listener_manager import TestListenerManager
+from .dependencies.manager import DependencyManager
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -47,34 +55,80 @@ config_loader: Optional[ConfigLoader] = None
 kafka_client: Optional[KafkaClientWrapper] = None
 listener_engine: Optional[KafkaListenerEngine] = None
 custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None
+test_loader: Optional[TestLoader] = None
+test_suite_runner: Optional[TestSuiteRunner] = None
+test_job_manager: Optional[TestJobManager] = None
+dependency_manager: Optional[DependencyManager] = None
+message_cache: Optional[MessageCache] = None
+test_listener_manager: Optional[TestListenerManager] = None
+message_cache: Optional[MessageCache] = None
+test_listener_manager: Optional[TestListenerManager] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown."""
-    global config_loader, kafka_client, listener_engine, custom_placeholder_registry
+    global config_loader, kafka_client, listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager, message_cache, test_listener_manager
     # Startup
     logger.info("Starting Kafka Wiremock...")
     try:
         # Get Kafka bootstrap servers from environment
         bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         config_dir = os.getenv("CONFIG_DIR", "/config")
+        test_suite_dir = os.getenv("TEST_SUITE_DIR", "/testSuite")
         custom_placeholders_dir = os.getenv("CUSTOM_PLACEHOLDERS_DIR", "/config/custom_placeholders")
+        python_requirements_dir = os.getenv("PYTHON_REQUIREMENTS_DIR", "/config/python-requirements")
+        python_requirements_scan_interval = int(os.getenv("PYTHON_REQUIREMENTS_SCAN_INTERVAL", "30"))
 
         # Initialize custom placeholder registry
         custom_placeholder_registry = CustomPlaceholderRegistry(config_dir=custom_placeholders_dir)
         set_custom_placeholder_registry(custom_placeholder_registry)
 
+        # Initialize dependency manager (background thread)
+        dependency_manager = DependencyManager(
+            requirements_dir=python_requirements_dir,
+            scan_interval=python_requirements_scan_interval
+        )
+        dependency_manager.start()
+
         # Initialize components
         config_loader = ConfigLoader(config_dir=config_dir, reload_interval=30)
         kafka_client = KafkaClientWrapper(bootstrap_servers=bootstrap_servers)
+
+        # Initialize message cache for tests FIRST (before listener engine)
+        message_cache = MessageCache(ttl_seconds=120, cleanup_interval_seconds=30)
+        message_cache.start_cleanup()
+
         listener_engine = KafkaListenerEngine(
             config_loader,
             kafka_client,
             bootstrap_servers,
-            custom_placeholder_registry=custom_placeholder_registry
+            custom_placeholder_registry=custom_placeholder_registry,
+            message_cache=message_cache
         )
         # Start listener engine
         listener_engine.start()
+
+        # Initialize test suite components
+        test_loader = TestLoader(test_suite_dir=test_suite_dir)
+
+        # Pass listener_engine and message_cache to test suite runner
+        test_suite_runner = TestSuiteRunner(
+            kafka_client,
+            custom_placeholder_registry,
+            test_suite_dir,
+            message_cache=message_cache,
+            listener_engine=listener_engine
+        )
+        test_job_manager = TestJobManager()
+
+        # Initialize test listener manager (scans test files and pre-starts listeners)
+        test_listener_manager = TestListenerManager(
+            listener_engine=listener_engine,
+            test_loader=test_loader,
+            scan_interval=30
+        )
+        test_listener_manager.start()
+
         logger.info("Kafka Wiremock started successfully")
     except Exception as e:
         logger.error(f"Failed to start Kafka Wiremock: {e}")
@@ -83,6 +137,12 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down Kafka Wiremock...")
     try:
+        if test_listener_manager:
+            test_listener_manager.stop()
+        if message_cache:
+            message_cache.stop_cleanup()
+        if dependency_manager:
+            dependency_manager.stop()
         if listener_engine:
             listener_engine.stop()
         if kafka_client:
@@ -292,3 +352,485 @@ async def get_custom_placeholders():
     except Exception as e:
         logger.error(f"Error retrieving custom placeholders: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dependencies")
+async def get_dependency_status() -> Dict[str, Any]:
+    """
+    Get status of Python dependency manager.
+
+    Returns:
+        Dependency status, requirements.txt existence, and last installation info
+    """
+    if not dependency_manager:
+        raise HTTPException(status_code=503, detail="Dependency manager not initialized")
+
+    try:
+        requirements_exists = dependency_manager.requirements_file.exists()
+        log_exists = dependency_manager.log_file.exists()
+        
+        result = {
+            "status": "running" if dependency_manager._running else "stopped",
+            "requirements_file": str(dependency_manager.requirements_file),
+            "requirements_exists": requirements_exists,
+            "log_file": str(dependency_manager.log_file),
+            "log_exists": log_exists,
+            "scan_interval_seconds": dependency_manager.scan_interval
+        }
+        
+        # Include last few lines of log if it exists
+        if log_exists:
+            try:
+                with open(dependency_manager.log_file, 'r') as f:
+                    log_content = f.read()
+                    result["last_installation_log"] = log_content
+            except Exception as e:
+                logger.warning(f"Failed to read dependency log: {e}")
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error retrieving dependency status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Test Suite Endpoints
+# ============================================================================
+
+@app.get("/tests")
+async def list_tests() -> Dict[str, Any]:
+    """
+    List all discovered test definitions.
+    Returns:
+        Dictionary with test metadata
+    """
+    if not test_loader:
+        raise HTTPException(status_code=503, detail="Test loader not initialized")
+
+    try:
+        tests = test_loader.discover_tests()
+        result = []
+        for test in tests:
+            when_injections = sum(1 for item in test.when.items if isinstance(item, TestInjection))
+            then_expectations = sum(1 for item in test.then.items if isinstance(item, TestExpectation))
+            result.append({
+                "test_id": test.name,
+                "priority": test.priority,
+                "tags": test.tags,
+                "skip": test.skip,
+                "timeout_ms": test.timeout_ms,
+                "when_injections": when_injections,
+                "then_expectations": then_expectations
+            })
+        return {
+            "total": len(result),
+            "tests": result
+        }
+    except Exception as e:
+        logger.error(f"Error listing tests: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/{test_id}")
+async def get_test_definition(test_id: str) -> Dict[str, Any]:
+    """
+    Get parsed test definition.
+    Args:
+        test_id: Test identifier (from test name)
+    Returns:
+        Test definition as dictionary
+    """
+    if not test_loader:
+        raise HTTPException(status_code=503, detail="Test loader not initialized")
+
+    try:
+        tests = test_loader.discover_tests()
+        test = next((t for t in tests if t.name == test_id), None)
+        if not test:
+            raise HTTPException(status_code=404, detail=f"Test not found: {test_id}")
+
+        return {
+            "name": test.name,
+            "priority": test.priority,
+            "tags": test.tags,
+            "skip": test.skip,
+            "timeout_ms": test.timeout_ms,
+            "when": {
+                "injections": [
+                    {
+                        "message_id": inj.message_id,
+                        "topic": inj.topic,
+                        "delay_ms": inj.delay_ms
+                    }
+                    for inj in test.when.items if isinstance(inj, TestInjection)
+                ],
+                "has_script": any(isinstance(item, TestScript) for item in test.when.items)
+            },
+            "then": {
+                "expectations": [
+                    {
+                        "topic": exp.topic,
+                        "source_id": exp.source_id,
+                        "target_id": exp.target_id,
+                        "wait_ms": exp.wait_ms,
+                        "conditions_count": len(exp.match)
+                    }
+                    for exp in test.then.items if isinstance(exp, TestExpectation)
+                ],
+                "has_script": any(isinstance(item, TestScript) for item in test.then.items)
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving test {test_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tests/{test_id}")
+async def run_single_test(
+    test_id: str,
+    async_mode: bool = Query(False, description="If true, run asynchronously and return job_id"),
+    verbose: bool = Query(False, description="If true, include received_messages and skipped_messages in logs")
+) -> Dict[str, Any]:
+    """
+    Run a single test by ID.
+
+    Args:
+        test_id: Test identifier
+        async_mode: If true, returns immediately with job_id (202 Accepted)
+        verbose: If true, include detailed message logs in test output
+
+    Returns:
+        If async_mode: {job_id, status, created_at}
+        If sync_mode: Full test result
+    """
+    if not test_loader or not test_suite_runner or not test_job_manager:
+        raise HTTPException(status_code=503, detail="Test suite not initialized")
+
+    try:
+        tests = test_loader.discover_tests()
+        test = next((t for t in tests if t.name == test_id), None)
+        if not test:
+            raise HTTPException(status_code=404, detail=f"Test not found: {test_id}")
+
+        if async_mode:
+            # Create async job
+            job_id = test_job_manager.create_job(test_id)
+            test_job_manager.start_job(job_id)
+
+            # Run test in background
+            import asyncio
+            asyncio.create_task(
+                _run_test_async(job_id, test, test_job_manager, test_suite_runner, test_loader, test_job_manager.list_jobs, verbose)
+            )
+
+            # Return 202 Accepted with job info
+            return {
+                "job_id": job_id,
+                "status": "RUNNING",
+                "created_at": test_job_manager.get_job(job_id).created_at,
+                "message": "Test running asynchronously. Use GET /tests/jobs/{job_id} to poll status."
+            }
+        else:
+            # Synchronous execution (current behavior)
+            # Use file_path stored in test definition
+            test_file_path = Path(test.file_path) if test.file_path else None
+
+            result = await test_suite_runner.executor.run_test(test, test_file_path, verbose=verbose)
+
+            # Convert result to JSON-serializable dict
+            return {
+                "test_id": result.test_id,
+                "status": result.status,
+                "elapsed_ms": result.elapsed_ms,
+                "when_result": {
+                    "injected": result.when_result.injected,
+                    "script_error": result.when_result.script_error
+                },
+                "then_result": {
+                    "expectations": [
+                        {
+                            "index": exp.index,
+                            "topic": exp.topic,
+                            "expected": exp.expected,
+                            "received": exp.received,
+                            "status": exp.status,
+                            "elapsed_ms": exp.elapsed_ms,
+                            "error": exp.error
+                        }
+                        for exp in result.then_result.expectations
+                    ],
+                    "script_error": result.then_result.script_error
+                },
+                "errors": result.errors
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error running test {test_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _run_test_async(
+    job_id: str,
+    test,
+    job_manager,
+    suite_runner,
+    loader,
+    list_jobs_fn,
+    verbose: bool = False
+):
+    """Helper to run test asynchronously and update job status."""
+    try:
+        # Use file_path stored in test definition
+        test_file_path = Path(test.file_path) if test.file_path else None
+
+        result = await suite_runner.executor.run_test(test, test_file_path, verbose=verbose)
+
+        # Convert to dict
+        result_dict = {
+            "test_id": result.test_id,
+            "status": result.status,
+            "elapsed_ms": result.elapsed_ms,
+            "when_result": {
+                "injected": result.when_result.injected,
+                "script_error": result.when_result.script_error
+            },
+            "then_result": {
+                "expectations": [
+                    {
+                        "index": exp.index,
+                        "topic": exp.topic,
+                        "expected": exp.expected,
+                        "received": exp.received,
+                        "status": exp.status,
+                        "elapsed_ms": exp.elapsed_ms,
+                        "error": exp.error
+                    }
+                    for exp in result.then_result.expectations
+                ],
+                "script_error": result.then_result.script_error
+            },
+            "errors": result.errors
+        }
+
+        job_manager.complete_job(job_id, result_dict)
+    except Exception as e:
+        logger.error(f"Async test {job_id} failed: {e}")
+        job_manager.fail_job(job_id, str(e))
+
+
+@app.post("/tests:bulk")
+async def run_tests_bulk(
+    mode: str = Query("parallel", description="sequential or parallel"),
+    threads: int = Query(4, ge=1, le=32, description="Number of concurrent threads (for parallel mode)"),
+    iterations: int = Query(1, ge=1, le=1000, description="Number of iterations per test"),
+    filter_tags: Optional[List[str]] = Query(None, description="Optional tags to filter tests"),
+    verbose: bool = Query(False, description="If true, include received_messages and skipped_messages in logs")
+) -> Dict[str, Any]:
+    """
+    Run all discovered tests in bulk.
+    Args:
+        mode: Execution mode (sequential or parallel)
+        threads: Number of concurrent threads
+        iterations: Number of iterations per test
+        filter_tags: Optional tags to filter tests
+        verbose: If true, include detailed message logs in test output
+    Returns:
+        Aggregated test results
+    """
+    if not test_loader or not test_suite_runner:
+        raise HTTPException(status_code=503, detail="Test suite not initialized")
+
+    try:
+        if mode not in ["sequential", "parallel"]:
+            raise HTTPException(status_code=400, detail="mode must be 'sequential' or 'parallel'")
+
+        # Discover tests
+        all_tests = test_loader.discover_tests()
+
+        # Filter by tags if specified
+        if filter_tags:
+            all_tests = test_loader.get_tests_by_tag(all_tests, filter_tags)
+
+        if not all_tests:
+            raise HTTPException(status_code=400, detail="No tests found matching criteria")
+
+        # Replicate tests for iterations
+        tests_to_run = all_tests * iterations
+
+        logger.info(f"Running {len(tests_to_run)} test instances ({len(all_tests)} tests × {iterations} iterations) in {mode} mode (verbose={verbose})")
+
+        # Run tests
+        if mode == "sequential":
+            results = await test_suite_runner.run_tests_sequential(tests_to_run, verbose=verbose)
+        else:  # parallel
+            results = await test_suite_runner.run_tests_parallel(tests_to_run, threads=threads, verbose=verbose)
+
+        # Aggregate results
+        aggregated = TestResultAggregator.aggregate_results(results, mode=mode)
+
+        return aggregated
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error running bulk tests: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/jobs/{job_id}")
+async def get_job_status(job_id: str) -> Dict[str, Any]:
+    """
+    Get status of an async test job.
+
+    Args:
+        job_id: Job ID returned from async test POST
+
+    Returns:
+        Job status, progress, and result if completed
+    """
+    if not test_job_manager:
+        raise HTTPException(status_code=503, detail="Job manager not initialized")
+
+    try:
+        job = test_job_manager.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+        response = job.to_dict()
+
+        # If job is complete, clean it up on next access
+        if job.status.value in ["COMPLETED", "FAILED", "CANCELLED"]:
+            # Mark for cleanup but return the result first
+            pass
+
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting job status {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/logs")
+async def list_test_logs() -> Dict[str, Any]:
+    """
+    List all test log files.
+
+    Returns:
+        Dictionary with log files and their content
+    """
+    try:
+        test_suite_dir = Path(os.getenv("TEST_SUITE_DIR", "/testSuite"))
+
+        # Find all .test.log files recursively
+        log_files = sorted(test_suite_dir.rglob("*.test.log"))
+
+        if not log_files:
+            return {
+                "total": 0,
+                "logs": [],
+                "test_suite_dir": str(test_suite_dir),
+                "test_suite_exists": test_suite_dir.exists()
+            }
+
+        logs = []
+        for log_file in log_files:
+            try:
+                with open(log_file, 'r') as f:
+                    content = f.read()
+                logs.append({
+                    "path": str(log_file),
+                    "relative_path": str(log_file.relative_to(test_suite_dir)),
+                    "size_bytes": log_file.stat().st_size,
+                    "modified": log_file.stat().st_mtime,
+                    "content_preview": content[:500] + ("..." if len(content) > 500 else "")
+                })
+            except Exception as e:
+                logger.error(f"Failed to read log file {log_file}: {e}")
+                logs.append({
+                    "path": str(log_file),
+                    "error": str(e)
+                })
+
+        return {
+            "total": len(logs),
+            "logs": logs,
+            "test_suite_dir": str(test_suite_dir)
+        }
+    except Exception as e:
+        logger.error(f"Error listing test logs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/logs/{test_id}")
+async def get_test_log(test_id: str) -> Dict[str, Any]:
+    """
+    Get the log file content for a specific test.
+
+    Args:
+        test_id: Test identifier (uses the test name to find the log)
+
+    Returns:
+        Full log file content
+    """
+    try:
+        test_suite_dir = Path(os.getenv("TEST_SUITE_DIR", "/testSuite"))
+
+        # Search for log file matching the test ID
+        log_files = list(test_suite_dir.rglob("*.test.log"))
+
+        matching_logs = [
+            lf for lf in log_files
+            if test_id in lf.name or test_id in lf.read_text()
+        ]
+
+        if not matching_logs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No log file found for test '{test_id}'"
+            )
+
+        log_file = matching_logs[0]
+
+        with open(log_file, 'r') as f:
+            content = f.read()
+
+        return {
+            "test_id": test_id,
+            "log_path": str(log_file),
+            "log_size_bytes": log_file.stat().st_size,
+            "content": content
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving log for test {test_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/jobs")
+async def list_jobs(test_id: Optional[str] = Query(None, description="Filter by test ID")) -> Dict[str, Any]:
+    """
+    List all running/completed jobs.
+
+    Args:
+        test_id: Optional test ID to filter by
+
+    Returns:
+        List of jobs with their status
+    """
+    if not test_job_manager:
+        raise HTTPException(status_code=503, detail="Job manager not initialized")
+
+    try:
+        jobs = test_job_manager.list_jobs(test_id)
+        return {
+            "total": len(jobs),
+            "jobs": jobs
+        }
+    except Exception as e:
+        logger.error(f"Error listing jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
