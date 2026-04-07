@@ -14,11 +14,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from jsonpath_ng import parse as jsonpath_parse
 from jsonpath_ng.exceptions import JSONPathError
 
-from .test_loader import TestDefinition, TestInjection, TestExpectation, TestScript
-from .kafka_client import KafkaClientWrapper
-from .matcher import MatcherFactory
-from .templater import TemplateRenderer
-from .custom_placeholders import CustomPlaceholderRegistry
+from .loader import TestDefinition, TestInjection, TestExpectation, TestScript
+from ..kafka.client import KafkaClientWrapper
+from ..rules.matcher import MatcherFactory
+from ..rules.templater import TemplateRenderer
+from ..custom.placeholders import CustomPlaceholderRegistry
+from .logger import TestLogger
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +98,15 @@ class TestExecutor:
         self.matcher_factory = MatcherFactory()
         self.test_suite_dir = test_suite_dir
 
-    async def run_test(self, test: TestDefinition) -> TestResult:
+    async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None) -> TestResult:
         """Execute a single test."""
         start_time = time.time()
         result = TestResult(test_id=test.name, status="PENDING")
+
+        # Initialize test logger if file path provided
+        test_logger = None
+        if test_file_path:
+            test_logger = TestLogger(test_file_path, verbose=False)
 
         try:
             if test.skip:
@@ -109,23 +115,27 @@ class TestExecutor:
                 return result
 
             # Phase 1: Execute "when"
-            when_result = await self._execute_when(test)
+            when_result = await self._execute_when(test, test_logger)
             result.when_result = when_result
 
             if when_result.script_error:
                 result.status = "FAILED"
                 result.errors.append(f"When phase failed: {when_result.script_error}")
                 result.elapsed_ms = int((time.time() - start_time) * 1000)
+                if test_logger:
+                    test_logger.write_log_file(test.name, result.status, result.elapsed_ms, result.errors)
                 return result
 
             # Phase 2: Execute "then"
-            then_result = await self._execute_then(test, result.when_result)
+            then_result = await self._execute_then(test, result.when_result, test_logger)
             result.then_result = then_result
 
             if then_result.script_error:
                 result.status = "FAILED"
                 result.errors.append(f"Then phase failed: {then_result.script_error}")
                 result.elapsed_ms = int((time.time() - start_time) * 1000)
+                if test_logger:
+                    test_logger.write_log_file(test.name, result.status, result.elapsed_ms, result.errors)
                 return result
 
             # Check if all expectations matched
@@ -147,9 +157,14 @@ class TestExecutor:
             result.errors.append(f"Test execution error: {str(e)}")
 
         result.elapsed_ms = int((time.time() - start_time) * 1000)
+
+        # Write log file
+        if test_logger:
+            test_logger.write_log_file(test.name, result.status, result.elapsed_ms, result.errors)
+
         return result
 
-    async def _execute_when(self, test: TestDefinition) -> WhenResult:
+    async def _execute_when(self, test: TestDefinition, test_logger: Optional[TestLogger] = None) -> WhenResult:
         """Execute 'when' phase: injections and scripts, sequential."""
         result = WhenResult()
         injected_messages = []
@@ -209,6 +224,15 @@ class TestExecutor:
                         )
                         injected_messages.append(injected_msg)
 
+                        # Log sent message
+                        if test_logger:
+                            test_logger.log_sent_message(
+                                topic=item.topic,
+                                payload=payload_obj,
+                                message_id=item.message_id,
+                                headers=rendered_headers
+                            )
+
                         if item.delay_ms > 0:
                             await asyncio.sleep(item.delay_ms / 1000.0)
 
@@ -245,7 +269,7 @@ class TestExecutor:
 
         return result
 
-    async def _execute_then(self, test: TestDefinition, when_result: WhenResult) -> ThenResult:
+    async def _execute_then(self, test: TestDefinition, when_result: WhenResult, test_logger: Optional[TestLogger] = None) -> ThenResult:
         """Execute 'then' phase: expectations and scripts, sequential."""
         result = ThenResult()
         context = {}
@@ -260,7 +284,7 @@ class TestExecutor:
                 if isinstance(item, TestExpectation):
                     # Collect expectation messages
                     exp_result = await self._collect_expectation_messages(
-                        item, len(collected_results), when_result, injections_dict, context
+                        item, len(collected_results), when_result, injections_dict, context, test_logger
                     )
                     result.expectations.append(exp_result)
                     collected_results.append(exp_result)
@@ -294,7 +318,8 @@ class TestExecutor:
         exp_idx: int,
         when_result: WhenResult,
         injections_dict: Dict[str, Any],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
+        test_logger: Optional[TestLogger] = None
     ) -> ExpectationResult:
         """Collect messages for a single expectation with correlation."""
         exp_result = ExpectationResult(
@@ -388,6 +413,20 @@ class TestExecutor:
                         headers=msg.get("headers")
                     )
                     received_messages.append(received_msg)
+
+                    # Log received message
+                    if test_logger:
+                        test_logger.log_received_message(
+                            topic=expectation.topic,
+                            payload=msg_value,
+                            message_id=expectation.message_id,
+                            source_id=expectation.source_id,
+                            target_id=expectation.target_id,
+                            correlation_matched=True,
+                            conditions_matched=len(expectation.match),
+                            total_conditions=len(expectation.match),
+                            headers=msg.get("headers")
+                        )
 
                 if received_messages:
                     break

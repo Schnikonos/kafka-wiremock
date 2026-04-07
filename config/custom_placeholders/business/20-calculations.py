@@ -2,7 +2,7 @@
 Example: Calculations using results from previous placeholders
 Order: 20 (sees results from unordered placeholders)
 """
-from custom_placeholders import placeholder, order
+from src.custom.placeholders import placeholder, order
 
 @placeholder
 def final_price(context):

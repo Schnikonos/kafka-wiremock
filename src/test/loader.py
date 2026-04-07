@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Set, Union
 from dataclasses import dataclass, field
-from .config_loader import Condition
+from src.config.models import Condition
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,8 @@ class TestInjection:
     """A message to inject during test setup (when phase)."""
     message_id: str
     topic: str
-    payload: str  # String (will be templated)
+    payload: Optional[str] = None  # String (will be templated)
+    payload_file: Optional[str] = None  # Path to external payload file (relative to test file)
     headers: Optional[Dict[str, str]] = None
     delay_ms: int = 0
 
@@ -37,6 +38,7 @@ class TestExpectation:
     target_id: Optional[str] = None  # Field in received message to match against
     wait_ms: int = 2000  # Default 2s timeout
     match: List[Condition] = field(default_factory=list)  # Optional conditions
+    match_file: Optional[str] = None  # Path to external match conditions file (YAML)
 
 
 @dataclass
@@ -172,13 +174,14 @@ class TestValidator:
                     raise ValueError(f"Injection at index {idx} missing 'message_id'")
                 if "topic" not in item_dict:
                     raise ValueError(f"Injection at index {idx} missing 'topic'")
-                if "payload" not in item_dict:
-                    raise ValueError(f"Injection at index {idx} missing 'payload'")
+                if "payload" not in item_dict and "payload_file" not in item_dict:
+                    raise ValueError(f"Injection at index {idx} missing 'payload' or 'payload_file'")
 
                 injection = TestInjection(
                     message_id=str(item_dict["message_id"]),
                     topic=str(item_dict["topic"]),
-                    payload=str(item_dict["payload"]),
+                    payload=str(item_dict["payload"]) if "payload" in item_dict else None,
+                    payload_file=item_dict.get("payload_file"),
                     headers=item_dict.get("headers"),
                     delay_ms=int(item_dict.get("delay_ms", 0))
                 )
@@ -236,7 +239,8 @@ class TestValidator:
                     source_id=item_dict.get("source_id"),
                     target_id=item_dict.get("target_id"),
                     wait_ms=int(item_dict.get("wait_ms", 2000)),
-                    match=conditions
+                    match=conditions,
+                    match_file=item_dict.get("match_file")
                 )
                 items.append(expectation)
 
@@ -303,9 +307,62 @@ class TestLoader:
 
             test_dict = TestYamlParser.parse_test_yaml(yaml_content, str(file_path))
             test = TestValidator.validate_test_definition(test_dict, str(file_path))
+            
+            # Resolve payload files relative to test file directory
+            test_dir = Path(file_path).parent
+            self._resolve_payload_files(test, test_dir)
+            
             return test
         except Exception as e:
             raise ValueError(f"Failed to load test from {file_path}: {e}")
+
+    def _resolve_payload_files(self, test: TestDefinition, test_dir: Path):
+        """
+        Resolve external payload files in test definition.
+
+        Args:
+            test: Test definition to resolve
+            test_dir: Directory where test file is located
+        """
+        # Resolve payloads in when phase
+        for item in test.when.items:
+            if isinstance(item, TestInjection) and item.payload_file:
+                payload_path = test_dir / item.payload_file
+                if not payload_path.exists():
+                    logger.warning(f"Payload file not found: {payload_path}")
+                else:
+                    try:
+                        with open(payload_path, "r") as f:
+                            item.payload = f.read()
+                        logger.debug(f"Loaded payload from {item.payload_file}")
+                    except Exception as e:
+                        logger.error(f"Failed to load payload file {item.payload_file}: {e}")
+
+        # Resolve match files in then phase
+        for item in test.then.items:
+            if isinstance(item, TestExpectation) and item.match_file:
+                match_path = test_dir / item.match_file
+                if not match_path.exists():
+                    logger.warning(f"Match file not found: {match_path}")
+                else:
+                    try:
+                        with open(match_path, "r") as f:
+                            import yaml
+                            match_data = yaml.safe_load(f)
+                            if isinstance(match_data, list):
+                                # Each item in match file is a condition
+                                for match_dict in match_data:
+                                    if isinstance(match_dict, dict):
+                                        condition = Condition(
+                                            type=str(match_dict.get("type", "")),
+                                            expression=match_dict.get("expression"),
+                                            value=match_dict.get("value"),
+                                            regex=match_dict.get("regex")
+                                        )
+                                        item.match.append(condition)
+                        logger.debug(f"Loaded match conditions from {item.match_file}")
+                    except Exception as e:
+                        logger.error(f"Failed to load match file {item.match_file}: {e}")
 
     def discover_then_topics(self, tests: List[TestDefinition]) -> Set[str]:
         """
@@ -319,8 +376,9 @@ class TestLoader:
         """
         topics = set()
         for test in tests:
-            for expectation in test.then.expectations:
-                topics.add(expectation.topic)
+            for item in test.then.items:
+                if isinstance(item, TestExpectation):
+                    topics.add(item.topic)
         return topics
 
     def get_tests_by_tag(self, tests: List[TestDefinition], tags: List[str]) -> List[TestDefinition]:

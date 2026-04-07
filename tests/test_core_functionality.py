@@ -13,10 +13,11 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.matcher import MatcherFactory, JSONPathMatcher, ExactMatcher, PartialMatcher, RegexMatcher
-from src.templater import TemplateRenderer
-from src.config_loader import ConfigLoader, Condition, Output, Rule
-from src.custom_placeholders import CustomPlaceholderRegistry, placeholder, order
+from src.rules.matcher import MatcherFactory, JSONPathMatcher, ExactMatcher, PartialMatcher, RegexMatcher
+from src.rules.templater import TemplateRenderer
+from src.config.loader import ConfigLoader
+from src.config.models import Condition, Output, Rule
+from src.custom.placeholders import CustomPlaceholderRegistry, placeholder, order
 import yaml
 
 class TestTemplaterBasic(unittest.TestCase):
@@ -942,7 +943,7 @@ PLACEHOLDERS = {
             ph_file.write_text('''
 import sys
 sys.path.insert(0, "/home/nico/work/tools/kafka-wiremock")
-from src.custom_placeholders import placeholder
+from src.custom.placeholders import placeholder
 
 @placeholder
 def decorated_func(context):
@@ -985,7 +986,7 @@ class TestPlaceholderOrdering(unittest.TestCase):
             ph_file.write_text('''
 import sys
 sys.path.insert(0, "/home/nico/work/tools/kafka-wiremock")
-from src.custom_placeholders import placeholder, order
+from src.custom.placeholders import placeholder, order
 
 @placeholder
 def unordered(context):
@@ -1012,7 +1013,7 @@ def ordered(context):
             ph_file.write_text('''
 import sys
 sys.path.insert(0, "/home/nico/work/tools/kafka-wiremock")
-from src.custom_placeholders import placeholder, order
+from src.custom.placeholders import placeholder, order
 
 @placeholder
 @order(30)
@@ -1049,7 +1050,7 @@ class TestPipelineExecution(unittest.TestCase):
             ph_file.write_text('''
 import sys
 sys.path.insert(0, "/home/nico/work/tools/kafka-wiremock")
-from src.custom_placeholders import placeholder
+from src.custom.placeholders import placeholder
 
 @placeholder
 def get_name(context):
@@ -1073,7 +1074,7 @@ def get_age(context):
             ph_file.write_text('''
 import sys
 sys.path.insert(0, "/home/nico/work/tools/kafka-wiremock")
-from src.custom_placeholders import placeholder
+from src.custom.placeholders import placeholder
 
 @placeholder
 def extract_name(context):
@@ -1098,7 +1099,7 @@ def uppercase_name(context):
             ph_file.write_text('''
 import sys
 sys.path.insert(0, "/home/nico/work/tools/kafka-wiremock")
-from src.custom_placeholders import placeholder
+from src.custom.placeholders import placeholder
 
 @placeholder
 def failing_func(context):

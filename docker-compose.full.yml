@@ -75,7 +75,7 @@ services:
       PORT: 8000
       WORKERS: 1
     volumes:
-      - ./config:/config:ro
+      - ./config:/config
       - ./testSuite:/testSuite
       - ./logs:/var/log/wiremock
     healthcheck:

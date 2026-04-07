@@ -16,11 +16,12 @@ try:
 except ImportError:
     AVRO_AVAILABLE = False
 
-from .matcher import MatcherFactory
-from .templater import TemplateRenderer
-from .config_loader import ConfigLoader, Rule
-from .kafka_client import KafkaClientWrapper
-from .custom_placeholders import CustomPlaceholderRegistry
+from ..rules.matcher import MatcherFactory
+from ..rules.templater import TemplateRenderer
+from ..config.loader import ConfigLoader
+from ..config.models import Rule
+from .client import KafkaClientWrapper
+from ..custom.placeholders import CustomPlaceholderRegistry
 
 logger = logging.getLogger(__name__)
 
