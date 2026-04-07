@@ -19,6 +19,7 @@ from ..kafka.client import KafkaClientWrapper
 from ..rules.matcher import MatcherFactory
 from ..rules.templater import TemplateRenderer
 from ..custom.placeholders import CustomPlaceholderRegistry
+from ..fault.injector import FaultInjector
 from .logger import TestLogger
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class ThenResult:
 class WhenResult:
     """Result of 'when' phase."""
     injected: List[Dict[str, Any]] = field(default_factory=list)
+    faulted_injections: List[str] = field(default_factory=list)  # message_ids with faults (and check_result=False)
     script_error: Optional[str] = None
 
 
@@ -227,11 +229,38 @@ class TestExecutor:
                         except json.JSONDecodeError:
                             payload_obj = rendered_payload
 
+                        # Apply fault injection if configured
+                        fault_applied = False
+                        if item.fault:
+                            is_json = isinstance(payload_obj, dict)
+                            should_produce, payload_obj = FaultInjector.apply_fault(payload_obj, item.fault, is_json)
+
+                            if not should_produce:
+                                logger.info(f"Test injection message to {item.topic} was dropped due to fault injection")
+                                fault_applied = True
+                                # Don't add to injected messages since it was dropped
+                                continue
+
+                            # Apply random latency if configured
+                            random_latency_ms = FaultInjector.get_random_latency_ms(item.fault)
+                            if random_latency_ms:
+                                logger.debug(f"Applying random latency {random_latency_ms}ms to test injection")
+                                await asyncio.sleep(random_latency_ms / 1000.0)
+
                         self.kafka_client.produce(
                             topic=item.topic,
                             message=payload_obj,
                             headers=rendered_headers
                         )
+
+                        # Handle message duplication if configured
+                        if item.fault and FaultInjector.should_duplicate(item.fault):
+                            logger.info(f"Duplicating test injection message to {item.topic} (fault injection)")
+                            self.kafka_client.produce(
+                                topic=item.topic,
+                                message=payload_obj,
+                                headers=rendered_headers
+                            )
 
                         injected_msg = InjectedMessage(
                             message_id=item.message_id,
@@ -242,6 +271,12 @@ class TestExecutor:
                             status="ok"
                         )
                         injected_messages.append(injected_msg)
+
+                        # Track if this injection had fault with check_result=False
+                        # (if check_result=True, we still want to validate)
+                        if item.fault and not item.fault.check_result:
+                            result.faulted_injections.append(item.message_id)
+                            logger.info(f"Marked injection {item.message_id} as faulted (check_result=False)")
 
                         # Log sent message
                         if test_logger:
@@ -353,6 +388,16 @@ class TestExecutor:
         start_time = time.time()
 
         try:
+            # Check if this expectation is correlated to a faulted injection (and check_result=False)
+            if expectation.correlate and expectation.correlate.message_id:
+                corr_msg_id = expectation.correlate.message_id
+                if corr_msg_id in when_result.faulted_injections:
+                    logger.info(f"Skipping expectation for topic {expectation.topic} (correlated to faulted injection {corr_msg_id} with check_result=False)")
+                    exp_result.status = "SKIPPED_DUE_TO_FAULT"
+                    exp_result.elapsed_ms = 0
+                    return exp_result
+
+            # ... existing correlation and message collection code ..."""
             # Resolve correlation if specified
             correlation_value = None
             if expectation.correlate:

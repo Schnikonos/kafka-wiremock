@@ -25,6 +25,7 @@ from .client import KafkaClientWrapper
 from .topic_metadata import TopicMetadataManager
 from .schema_registry import SchemaRegistry
 from ..custom.placeholders import CustomPlaceholderRegistry
+from ..fault.injector import FaultInjector
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +445,11 @@ class KafkaListenerEngine:
     def _execute_rule(self, rule: Rule, message_data: any) -> None:
         """Execute a rule by producing output messages."""
         try:
+            # Check if rule is skipped
+            if rule.skip:
+                logger.debug(f"Rule {rule.rule_name} is skipped, not executing")
+                return
+
             # Get matcher and match result to get context
             matcher_contexts = {}
             for condition in rule.conditions:
@@ -516,6 +522,21 @@ class KafkaListenerEngine:
                     except json.JSONDecodeError:
                         message_to_send = rendered_message
 
+                    # Apply fault injection if configured
+                    if output.fault:
+                        is_json = isinstance(message_to_send, dict)
+                        should_produce, message_to_send = FaultInjector.apply_fault(message_to_send, output.fault, is_json)
+
+                        if not should_produce:
+                            logger.info(f"Message to {output.topic} was dropped due to fault injection")
+                            continue
+
+                        # Apply random latency if configured
+                        random_latency_ms = FaultInjector.get_random_latency_ms(output.fault)
+                        if random_latency_ms:
+                            logger.debug(f"Applying random latency {random_latency_ms}ms")
+                            time.sleep(random_latency_ms / 1000.0)
+
                     # Render headers if present
                     headers_to_send = None
                     if output.headers:
@@ -532,6 +553,16 @@ class KafkaListenerEngine:
                         schema_id=output.schema_id
                     )
                     logger.info(f"Produced message to {output.topic} (rule: {rule.rule_name})")
+
+                    # Handle message duplication if configured
+                    if output.fault and FaultInjector.should_duplicate(output.fault):
+                        logger.info(f"Duplicating message to {output.topic} (fault injection)")
+                        self.kafka_client.produce(
+                            output.topic,
+                            message_to_send,
+                            headers=headers_to_send,
+                            schema_id=output.schema_id
+                        )
 
                 except Exception as e:
                     logger.error(f"Failed to execute output for {output.topic}: {e}")

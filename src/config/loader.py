@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import threading
 
-from .models import Condition, Output, Rule, CorrelationInput, CorrelationOutput
+from .models import Condition, Output, Rule, CorrelationInput, CorrelationOutput, Fault
 from .topic_config import TopicConfigLoader
 
 logger = logging.getLogger(__name__)
@@ -184,6 +184,7 @@ class ConfigLoader:
         if priority is None:
             raise ValueError("Priority is required")
         rule_name = rule_data.get('name') or filename.replace('.yaml', '').replace('.yml', '')
+        skip = rule_data.get('skip', False)
         when_block = rule_data.get('when')
         if not when_block:
             raise ValueError("'when' block is required")
@@ -252,6 +253,19 @@ class ConfigLoader:
                     to_headers=corr_data.get("to_headers")
                 )
 
+            # Parse optional fault injection for output
+            fault = None
+            if "fault" in then_item:
+                fault_data = then_item["fault"]
+                fault = Fault(
+                    drop=float(fault_data.get('drop', 0.0)),
+                    duplicate=float(fault_data.get('duplicate', 0.0)),
+                    random_latency=fault_data.get('random_latency'),
+                    poison_pill=float(fault_data.get('poison_pill', 0.0)),
+                    poison_pill_type=fault_data.get('poison_pill_type', ['truncate']),
+                    check_result=bool(fault_data.get('check_result', False))
+                )
+
             output = Output(
                 topic=output_topic,
                 payload=then_item.get('payload'),
@@ -259,7 +273,8 @@ class ConfigLoader:
                 delay_ms=then_item.get('delay_ms', 0),
                 headers=then_item.get('headers'),
                 schema_id=then_item.get('schema_id'),
-                correlation=correlation
+                correlation=correlation,
+                fault=fault
             )
             outputs.append(output)
 
@@ -276,7 +291,8 @@ class ConfigLoader:
             conditions=conditions,
             outputs=outputs,
             rule_name=rule_name,
-            correlation=input_correlation
+            correlation=input_correlation,
+            skip=skip
         )
 
     def _parse_rule_old_format(self, rule_data: Dict[str, Any], filename: str, index: int) -> Rule:

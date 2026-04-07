@@ -32,6 +32,7 @@ Files are scanned **recursively** - organize by subdirectories as your project g
 ```yaml
 priority: 10                           # Integer; lower = higher priority
 name: "rule-name"                      # Friendly name for logging
+skip: false                            # Optional; set to true to disable rule
 
 when:
   topic: input-topic                   # Topic to listen to
@@ -54,6 +55,24 @@ then:                                  # List of output messages
         "timestamp": "{{now}}"
       }
 ```
+
+### Disabling Rules
+
+Set `skip: true` to disable a rule without removing it:
+
+```yaml
+priority: 10
+name: "disabled-rule"
+skip: true              # This rule will not be evaluated
+
+when:
+  topic: orders
+  # ...
+then:
+  # ...
+```
+
+This is useful for temporary disablement during testing or maintenance without deleting the rule configuration.
 
 ## Matching Strategies
 
@@ -161,6 +180,30 @@ then:
     delay_ms: 1000   # Wait 1 second before producing
     payload: '{"status": "completed"}'
 ```
+
+### Fault Injection
+
+Simulate failure scenarios by introducing faults to output messages:
+
+```yaml
+then:
+  - topic: risky-topic
+    payload: '{"status": "processing"}'
+    fault:
+      drop: 0.1                           # 10% chance message is dropped (not produced)
+      duplicate: 0.05                     # 5% chance message is duplicated (sent twice)
+      random_latency: "0-500"             # 0-500ms random delay
+      poison_pill: 0.1                    # 10% chance message is corrupted
+      poison_pill_type: ["truncate", "invalid-json"]  # Corruption types (optional)
+```
+
+**Fault Parameters**:
+- `drop` (0.0-1.0): Probability message is dropped entirely (no output produced)
+- `duplicate` (0.0-1.0): Probability message is produced twice
+- `random_latency` (string): Range in milliseconds (format: "min-max", e.g., "0-100")
+- `poison_pill` (0.0-1.0): Probability message payload is corrupted
+- `poison_pill_type` (array): Corruption strategies: `truncate` (incomplete), `invalid-json`, `corrupt-headers`
+- `check_result` (boolean): For test suites - if true, expectations validate faulted messages; if false, expectations are skipped (default: false)
 
 ## Template Placeholders
 
@@ -293,6 +336,39 @@ then:
   - topic: dlq.archive
     payload: '{"archived": true, "archivedAt": "{{now}}"}'
 ```
+
+### Example 4: Fault Injection for Resilience Testing
+
+```yaml
+priority: 50
+name: "risky-payment-processing"
+skip: false
+
+when:
+  topic: payments.input
+  match:
+    - type: jsonpath
+      expression: "$.type"
+      value: "PAYMENT"
+
+then:
+  - topic: payments.processed
+    delay_ms: 100
+    payload: |
+      {
+        "paymentId": "{{$.paymentId}}",
+        "status": "processed",
+        "processedAt": "{{now}}"
+      }
+    fault:
+      drop: 0.05                              # 5% chance payment is dropped (network failure)
+      duplicate: 0.02                         # 2% chance payment is duplicated
+      random_latency: "50-500"                # Random 50-500ms latency
+      poison_pill: 0.03                       # 3% chance corrupted response
+      poison_pill_type: ["truncate", "invalid-json"]
+```
+
+This rule simulates realistic failures: message loss (drop), duplicates, latency variations, and corrupted responses.
 
 ## Best Practices
 

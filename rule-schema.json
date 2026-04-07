@@ -17,6 +17,11 @@
       "description": "Human-readable identifier used in log messages. Defaults to the filename when omitted.",
       "examples": ["process-order", "payment-confirmed", "catch-all"]
     },
+    "skip": {
+      "type": "boolean",
+      "description": "Set to true to disable this rule without removing it from the configuration.",
+      "default": false
+    },
     "when": {
       "type": "object",
       "description": "Defines which incoming Kafka messages this rule matches.",
@@ -252,6 +257,9 @@
               }
             }
           }
+        },
+        "fault": {
+          "$ref": "#/definitions/faultInjection"
         }
       },
       "oneOf": [
@@ -264,6 +272,58 @@
           "not": { "required": ["payload"] }
         }
       ]
+    },
+    "faultInjection": {
+      "type": "object",
+      "description": "Optional fault injection configuration to simulate message failures. All probabilities are independent.",
+      "additionalProperties": false,
+      "properties": {
+        "drop": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is dropped (not produced). Value 0.1 = 10% chance.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1, 0.2]
+        },
+        "duplicate": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is duplicated (produced twice). Value 0.1 = 10% chance.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1]
+        },
+        "random_latency": {
+          "type": "string",
+          "description": "Range in milliseconds for random latency injection (e.g., '0-100' means 0-100ms delay). Format: 'min-max'.",
+          "pattern": "^[0-9]+-[0-9]+$",
+          "examples": ["0-100", "50-200", "100-500"]
+        },
+        "poison_pill": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is corrupted (malformed). Value 0.1 = 10% chance.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1, 0.2]
+        },
+        "poison_pill_type": {
+          "type": "array",
+          "description": "Corruption strategies to randomly apply: 'truncate' (remove tail), 'invalid-json' (incomplete JSON), 'corrupt-headers' (add garbage). Omit to default to ['truncate'].",
+          "items": {
+            "type": "string",
+            "enum": ["truncate", "invalid-json", "corrupt-headers"]
+          },
+          "default": ["truncate"],
+          "examples": [["truncate"], ["truncate", "invalid-json"], ["invalid-json", "corrupt-headers"]]
+        },
+        "check_result": {
+          "type": "boolean",
+          "description": "If true, test expectations will validate faulted messages. If false, expectations are skipped. Default is false.",
+          "default": false
+        }
+      }
     }
   },
   "examples": [

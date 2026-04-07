@@ -139,6 +139,9 @@
           "description": "Optional override correlation ID for this message (auto-generated if not specified).",
           "minLength": 1,
           "examples": ["my-correlation-123"]
+        },
+        "fault": {
+          "$ref": "#/definitions/faultInjection"
         }
       },
       "oneOf": [
@@ -368,6 +371,58 @@
           "examples": ["^[0-9]+$", "^\\{.*\\}$"]
         }
       }
+    },
+    "faultInjection": {
+      "type": "object",
+      "description": "Optional fault injection configuration to simulate message failures during test injection. When a fault is injected and check_result=false, correlated expectations are skipped.",
+      "additionalProperties": false,
+      "properties": {
+        "drop": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is dropped (not produced). Value 0.1 = 10% chance.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1, 0.2]
+        },
+        "duplicate": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is duplicated (produced twice). Value 0.1 = 10% chance.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1]
+        },
+        "random_latency": {
+          "type": "string",
+          "description": "Range in milliseconds for random latency injection (e.g., '0-100' means 0-100ms delay). Format: 'min-max'.",
+          "pattern": "^[0-9]+-[0-9]+$",
+          "examples": ["0-100", "50-200", "100-500"]
+        },
+        "poison_pill": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is corrupted (malformed). Value 0.1 = 10% chance.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1, 0.2]
+        },
+        "poison_pill_type": {
+          "type": "array",
+          "description": "Corruption strategies to randomly apply: 'truncate' (remove tail), 'invalid-json' (incomplete JSON), 'corrupt-headers' (add garbage). Omit to default to ['truncate'].",
+          "items": {
+            "type": "string",
+            "enum": ["truncate", "invalid-json", "corrupt-headers"]
+          },
+          "default": ["truncate"],
+          "examples": [["truncate"], ["truncate", "invalid-json"], ["invalid-json", "corrupt-headers"]]
+        },
+        "check_result": {
+          "type": "boolean",
+          "description": "If true, expectations correlated to this injection will be validated even if fault is applied. If false (default), correlated expectations are skipped. Only applies when fault is actually injected.",
+          "default": false
+        }
+      }
     }
   },
   "examples": [
@@ -457,13 +512,3 @@
     }
   ]
 }
-
-
-
-
-
-
-
-
-
-

@@ -10,6 +10,8 @@ Event-driven Kafka mock container for testing, similar to Pact for APIs. Interce
 - ✅ **Multiple Outputs**: Single rule → multiple messages to different topics
 - ✅ **Message Headers**: Custom correlation IDs and headers
 - ✅ **Execution Delays**: Simulate processing latency
+- ✅ **Fault Injection**: Simulate failures (drop, duplicate, corruption, latency) in rules and tests
+- ✅ **Skip Rules & Tests**: Disable rules/tests without removing them (set `skip: true`)
 - ✅ **AVRO Support**: Read, match, and produce AVRO messages
 - ✅ **Test Suite**: Integration tests with injection, correlation, and validation
 - ✅ **Hot-Reload**: Configuration updates every 30 seconds (no restart needed)
@@ -46,6 +48,46 @@ curl http://localhost:8000/messages/shipments?limit=10
 ```bash
 curl http://localhost:8000/rules
 ```
+
+## What's New (April 2026)
+
+### Fault Injection Engine
+
+Simulate realistic failure scenarios in both rules and test injections:
+
+```yaml
+# In rules
+fault:
+  drop: 0.1              # 10% drop rate
+  duplicate: 0.05        # 5% duplication
+  poison_pill: 0.1       # 10% corruption
+  random_latency: 0-500  # 0-500ms random delay
+  poison_pill_type: ["truncate", "invalid-json", "corrupt-headers"]
+  check_result: false    # For tests: skip expectations when fault applied
+
+# In test injections
+# Same structure - failures automatically tracked and expectations skipped
+```
+
+**Use Cases**:
+- Test resilience handling of dropped messages
+- Verify duplicate handling logic
+- Validate corruption recovery
+- Test response timing requirements
+
+### Rule & Test Skip Feature
+
+Disable rules and tests without removing them:
+
+```yaml
+# Temporarily disable this rule
+skip: true
+
+# Or in tests
+skip: true
+```
+
+Useful for maintenance, A/B testing, and gradual rollouts.
 
 ## Documentation
 

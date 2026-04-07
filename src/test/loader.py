@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Set, Union
 from dataclasses import dataclass, field
-from src.config.models import Condition
+from src.config.models import Condition, Fault
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ class TestInjection:
     headers: Optional[Dict[str, str]] = None
     delay_ms: int = 0
     correlation_id: Optional[str] = None  # Optional override correlation ID
+    fault: Optional[Fault] = None  # Optional fault injection configuration
 
 
 @dataclass
@@ -99,6 +100,20 @@ class TestYamlParser:
             return data
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML in {file_path}: {e}")
+
+    @staticmethod
+    def _parse_fault(fault_dict: Optional[Dict[str, Any]]) -> Optional[Fault]:
+        """Parse optional fault injection configuration."""
+        if not fault_dict:
+            return None
+        return Fault(
+            drop=float(fault_dict.get('drop', 0.0)),
+            duplicate=float(fault_dict.get('duplicate', 0.0)),
+            random_latency=fault_dict.get('random_latency'),
+            poison_pill=float(fault_dict.get('poison_pill', 0.0)),
+            poison_pill_type=fault_dict.get('poison_pill_type', ['truncate']),
+            check_result=bool(fault_dict.get('check_result', False))
+        )
 
 
 class TestValidator:
@@ -199,7 +214,8 @@ class TestValidator:
                     payload_file=item_dict.get("payload_file"),
                     headers=item_dict.get("headers"),
                     delay_ms=int(item_dict.get("delay_ms", 0)),
-                    correlation_id=item_dict.get("correlation_id")
+                    correlation_id=item_dict.get("correlation_id"),
+                    fault=TestYamlParser._parse_fault(item_dict.get("fault"))
                 )
                 items.append(injection)
 
@@ -462,4 +478,3 @@ class TestLoader:
         if not tags:
             return tests
         return [test for test in tests if any(tag in test.tags for tag in tags)]
-

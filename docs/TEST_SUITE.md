@@ -117,6 +117,40 @@ when:
 - `payload` (required): JSON or string message
 - `headers` (optional): Custom message headers
 - `delay_ms` (optional): Delay before injection (default: 0)
+- `fault` (optional): Fault injection configuration (see below)
+
+### Fault Injection in Test Injections
+
+Simulate failure scenarios during test message injection:
+
+```yaml
+when:
+  inject:
+    - message_id: "order"
+      topic: "orders"
+      payload: |
+        {
+          "orderId": "ORD-{{testId}}-{{uuid}}",
+          "amount": 100.50
+        }
+      fault:
+        drop: 0.2                    # 20% chance message is dropped
+        duplicate: 0.1               # 10% chance message is duplicated
+        random_latency: "0-200"      # 0-200ms random delay
+        poison_pill: 0.15            # 15% chance message is corrupted
+        poison_pill_type: ["truncate", "invalid-json"]
+        check_result: false          # Don't validate expectations for this injection
+```
+
+**Fault Parameters**:
+- `drop` (0.0-1.0): Probability message is dropped (not produced at all)
+- `duplicate` (0.0-1.0): Probability message is produced twice
+- `random_latency` (string): Random delay range in ms (format: "min-max")
+- `poison_pill` (0.0-1.0): Probability message payload is corrupted
+- `poison_pill_type` (array): Corruption types: `truncate`, `invalid-json`, `corrupt-headers`
+- `check_result` (boolean): If false (default), correlated expectations are automatically skipped when fault is applied. If true, expectations will still try to validate the faulted message.
+
+When `check_result=false` and a fault is actually injected, any expectation correlated to that injection via `correlate.message_id` will be skipped with status `SKIPPED_DUE_TO_FAULT`.
 
 ### Template Placeholders in Injections
 
