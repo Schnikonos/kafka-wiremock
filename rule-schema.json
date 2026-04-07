@@ -172,11 +172,16 @@
         },
         "payload": {
           "type": "string",
-          "description": "Message payload template. Supports built-in placeholders ({{uuid}}, {{now}}, {{now+5m}}, {{randomInt(1,100)}}) and JSONPath extraction ({{$.fieldName}}).",
+          "description": "Message payload template. Supports built-in placeholders ({{uuid}}, {{now}}, {{now+5m}}, {{randomInt(1,100)}}) and JSONPath extraction ({{$.fieldName}}). Mutually exclusive with 'payload_file'.",
           "examples": [
             "{\"paymentId\": \"{{uuid}}\", \"orderId\": \"{{$.orderId}}\", \"timestamp\": \"{{now}}\"}",
             "{\"archived\": true, \"archivedAt\": \"{{now}}\"}"
           ]
+        },
+        "payload_file": {
+          "type": "string",
+          "description": "Path to external file containing the message payload template (relative to rule file). Mutually exclusive with 'payload'.",
+          "examples": ["payloads/order-created.json", "../shared/payment.json"]
         },
         "delay_ms": {
           "type": "integer",
@@ -204,7 +209,17 @@
           "minimum": 1,
           "examples": [123, 456]
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": ["payload"],
+          "not": { "required": ["payload_file"] }
+        },
+        {
+          "required": ["payload_file"],
+          "not": { "required": ["payload"] }
+        }
+      ]
     }
   },
   "examples": [

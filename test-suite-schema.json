@@ -1,0 +1,425 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Schnikonos/kafka-wiremock/blob/main/test-suite-schema.json",
+  "title": "Kafka Wiremock Test Suite",
+  "description": "Schema for Kafka Wiremock test definitions (one test per YAML file, *.test.yaml).",
+  "type": "object",
+  "required": ["name", "when", "then"],
+  "additionalProperties": false,
+  "properties": {
+    "priority": {
+      "type": "integer",
+      "description": "Test execution order. Lower values run first. Default is 999 (run last). Use 10 for critical tests.",
+      "minimum": 1,
+      "default": 999,
+      "examples": [10, 20, 50, 100, 999]
+    },
+    "name": {
+      "type": "string",
+      "description": "Unique test identifier used in logs and API responses.",
+      "minLength": 1,
+      "examples": ["order-to-payment-flow", "simple-injection-test", "multiple-conditions-test"]
+    },
+    "tags": {
+      "type": "array",
+      "description": "Optional tags for filtering tests (e.g., 'critical', 'e2e', 'integration'). Use for selective test execution.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "examples": [["critical", "e2e"], ["example", "basic"], ["integration"]]
+    },
+    "skip": {
+      "type": "boolean",
+      "description": "Set to true to skip this test during execution.",
+      "default": false
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "description": "Maximum duration for the entire test in milliseconds. Test fails if it exceeds this time.",
+      "minimum": 1000,
+      "default": 30000,
+      "examples": [5000, 8000, 10000, 30000]
+    },
+    "when": {
+      "type": "object",
+      "description": "INPUT PHASE: Defines messages to inject into Kafka topics.",
+      "required": ["inject"],
+      "additionalProperties": false,
+      "properties": {
+        "inject": {
+          "type": "array",
+          "description": "List of messages to inject or inline/file-based setup scripts.",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "$ref": "#/definitions/injectionMessage" },
+              { "$ref": "#/definitions/inlineScript" }
+            ]
+          }
+        }
+      }
+    },
+    "then": {
+      "type": "object",
+      "description": "VALIDATION PHASE: Defines expected outputs and validation logic.",
+      "required": ["expectations"],
+      "additionalProperties": false,
+      "properties": {
+        "expectations": {
+          "type": "array",
+          "description": "List of expected messages to receive from Kafka or validation scripts.",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "$ref": "#/definitions/expectation" },
+              { "$ref": "#/definitions/inlineScript" }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "injectionMessage": {
+      "type": "object",
+      "description": "A message to inject into a Kafka topic.",
+      "required": ["message_id", "topic"],
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "type": "string",
+          "description": "Unique identifier for this injected message, used for correlation with expectations via source_id.",
+          "minLength": 1,
+          "examples": ["order1", "order", "notification", "payment"]
+        },
+        "topic": {
+          "type": "string",
+          "description": "Kafka topic to inject the message into.",
+          "minLength": 1,
+          "examples": ["orders.input", "payments.input", "notifications.input"]
+        },
+        "payload": {
+          "type": "string",
+          "description": "JSON message payload. Supports template placeholders: {{uuid}}, {{now}}, {{now+5m}}, {{randomInt(1,100)}}, {{testId}}, {{$.fieldName}}. Mutually exclusive with 'payload_file'.",
+          "minLength": 1,
+          "examples": [
+            "{\"orderId\": \"ORD-{{testId}}-{{uuid}}\", \"amount\": 100.50}",
+            "{\"customerId\": \"CUST-123\", \"status\": \"ACTIVE\"}"
+          ]
+        },
+        "payload_file": {
+          "type": "string",
+          "description": "Path to external file containing the message payload (relative to test file). Mutually exclusive with 'payload'.",
+          "minLength": 1,
+          "examples": ["payloads/order.json", "../shared/notification.json"]
+        },
+        "headers": {
+          "type": "object",
+          "description": "Optional Kafka message headers. Values support the same template placeholders as payload.",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "examples": [
+            {
+              "X-Correlation-ID": "{{uuid}}",
+              "X-Order-ID": "{{$.orderId}}"
+            }
+          ]
+        },
+        "delay_ms": {
+          "type": "integer",
+          "description": "Optional delay in milliseconds before injecting this message.",
+          "minimum": 0,
+          "default": 0,
+          "examples": [0, 100, 500]
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["payload"],
+          "not": { "required": ["payload_file"] }
+        },
+        {
+          "required": ["payload_file"],
+          "not": { "required": ["payload"] }
+        }
+      ]
+    },
+    "expectation": {
+      "type": "object",
+      "description": "An expected message to be produced and validated.",
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "description": "Links this expectation to an injected message via message_id. Used for message correlation.",
+          "minLength": 1,
+          "examples": ["order1", "order", "notification"]
+        },
+        "message_id": {
+          "type": "string",
+          "description": "Deprecated: Use source_id instead. Legacy field for referencing injected message identifiers.",
+          "minLength": 1,
+          "examples": ["order1", "order", "notification"]
+        },
+        "topic": {
+          "type": "string",
+          "description": "Kafka topic to consume messages from.",
+          "minLength": 1,
+          "examples": ["payments.input", "orders.processed", "notifications.output"]
+        },
+        "target_id": {
+          "type": "string",
+          "description": "JSONPath expression to extract a value from the received message. Matched against the source message's message_id or source_id value.",
+          "minLength": 1,
+          "examples": ["$.orderId", "$.customerId", "$.id"]
+        },
+        "wait_ms": {
+          "type": "integer",
+          "description": "Maximum time in milliseconds to wait for the expected message.",
+          "minimum": 100,
+          "maximum": 60000,
+          "default": 2000,
+          "examples": [1000, 2000, 3000, 5000]
+        },
+        "match": {
+          "type": "array",
+          "description": "Optional additional conditions the message must satisfy (same as rule matching strategies). Mutually exclusive with 'match_file'.",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/matchCondition"
+          }
+        },
+        "match_file": {
+          "type": "string",
+          "description": "Path to external YAML file containing match conditions (relative to test file). Mutually exclusive with 'match'.",
+          "minLength": 1,
+          "examples": ["conditions/payment-validation.yaml", "../shared/status-checks.yaml"]
+        }
+      },
+      "required": ["topic"],
+      "not": {
+        "required": ["match", "match_file"]
+      }
+    },
+    "inlineScript": {
+      "type": "object",
+      "description": "Python code to execute inline. In 'when', has access to current_injections. In 'then', has access to current_expectations.",
+      "required": ["script"],
+      "additionalProperties": false,
+      "properties": {
+        "script": {
+          "type": "string",
+          "description": "Python code to execute. Can contain assertions and custom validation logic.",
+          "minLength": 1
+        }
+      }
+    },
+    "matchCondition": {
+      "type": "object",
+      "description": "A validation condition for expected messages (same as rule matching).",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Matching strategy to apply.",
+          "enum": ["jsonpath", "exact", "partial", "regex"]
+        }
+      },
+      "oneOf": [
+        { "$ref": "#/definitions/jsonpathCondition" },
+        { "$ref": "#/definitions/exactCondition" },
+        { "$ref": "#/definitions/partialCondition" },
+        { "$ref": "#/definitions/regexCondition" }
+      ]
+    },
+    "jsonpathCondition": {
+      "type": "object",
+      "description": "Extracts a value from the message using JSONPath and validates it.",
+      "required": ["type", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "jsonpath"
+        },
+        "expression": {
+          "type": "string",
+          "description": "JSONPath expression (e.g., '$.amount', '$.order.status').",
+          "minLength": 1,
+          "examples": ["$.orderId", "$.status", "$.amount", "$.order.status"]
+        },
+        "value": {
+          "description": "Expected exact value of the extracted field. Mutually exclusive with 'regex'.",
+          "examples": ["ACTIVE", "VERIFIED", "100.50"]
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to validate the extracted field value. Mutually exclusive with 'value'.",
+          "examples": ["^(ACTIVE|VERIFIED)$", "PROCESSED|ACCEPTED"]
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["value"],
+          "not": { "required": ["regex"] }
+        },
+        {
+          "required": ["regex"],
+          "not": { "required": ["value"] }
+        }
+      ]
+    },
+    "exactCondition": {
+      "type": "object",
+      "description": "Matches when the full message string equals the value exactly.",
+      "required": ["type", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "exact"
+        },
+        "value": {
+          "type": "string",
+          "description": "The exact string the full message must equal.",
+          "minLength": 1,
+          "examples": ["success", "ok"]
+        }
+      }
+    },
+    "partialCondition": {
+      "type": "object",
+      "description": "Matches when the full message string contains the value as a substring.",
+      "required": ["type", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "partial"
+        },
+        "value": {
+          "type": "string",
+          "description": "Substring that must appear in the message.",
+          "minLength": 1,
+          "examples": ["ACTIVE", "success"]
+        }
+      }
+    },
+    "regexCondition": {
+      "type": "object",
+      "description": "Matches when the full message matches the regular expression.",
+      "required": ["type", "regex"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "regex"
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression pattern the message must match.",
+          "minLength": 1,
+          "examples": ["^[0-9]+$", "^\\{.*\\}$"]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "priority": 10,
+      "name": "simple-injection-test",
+      "tags": ["example", "basic"],
+      "skip": false,
+      "timeout_ms": 5000,
+      "when": {
+        "inject": [
+          {
+            "message_id": "order1",
+            "topic": "orders.input",
+            "payload": "{\"orderId\": \"{{testId}}-{{uuid}}\", \"customerId\": \"CUST-123\", \"amount\": 99.99, \"status\": \"NEW\"}",
+            "delay_ms": 0
+          }
+        ]
+      },
+      "then": {
+        "expectations": [
+          {
+            "topic": "orders.processed",
+            "source_id": "order1",
+            "target_id": "$.orderId",
+            "wait_ms": 2000,
+            "match": [
+              {
+                "type": "jsonpath",
+                "expression": "$.status",
+                "regex": "PROCESSED|ACCEPTED"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "priority": 20,
+      "name": "order-to-payment-flow",
+      "tags": ["example", "integration"],
+      "skip": false,
+      "timeout_ms": 8000,
+      "when": {
+        "inject": [
+          {
+            "message_id": "order",
+            "topic": "orders.input",
+            "payload": "{\"orderId\": \"ORD-{{testId}}-{{uuid}}\", \"customerId\": \"CUST-456\", \"amount\": 150.50, \"currency\": \"USD\", \"status\": \"CREATED\"}",
+            "delay_ms": 100
+          },
+          {
+            "message_id": "notification",
+            "topic": "notifications.input",
+            "payload": "{\"type\": \"order_created\", \"orderId\": \"ORD-{{testId}}-{{uuid}}\", \"timestamp\": \"{{now}}\"}"
+          }
+        ]
+      },
+      "then": {
+        "expectations": [
+          {
+            "source_id": "order",
+            "topic": "payments.input",
+            "target_id": "$.orderId",
+            "wait_ms": 3000,
+            "match": [
+              {
+                "type": "jsonpath",
+                "expression": "$.amount",
+                "value": 150.50
+              },
+              {
+                "type": "jsonpath",
+                "expression": "$.currency",
+                "value": "USD"
+              }
+            ]
+          },
+          {
+            "source_id": "notification",
+            "topic": "notifications.output",
+            "target_id": "$.orderId",
+            "wait_ms": 3000
+          }
+        ]
+      }
+    }
+  ]
+}
+
+
+
+
+
+
+
+
+
+
