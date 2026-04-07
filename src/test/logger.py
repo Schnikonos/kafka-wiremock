@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ class TestLogger:
     ):
         """Log a message sent during test setup (when phase)."""
         msg = LogMessage(
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
             direction="SENT",
             topic=topic,
             payload=payload,
@@ -90,7 +90,7 @@ class TestLogger:
     ):
         """Log a message received during test validation (then phase)."""
         msg = LogMessage(
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
             direction="RECEIVED",
             topic=topic,
             payload=payload,
@@ -115,7 +115,7 @@ class TestLogger:
         if not self.verbose:
             return
         msg = LogMessage(
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
             direction="SKIPPED",
             topic=topic,
             payload=payload,
@@ -221,7 +221,7 @@ class TestLogger:
             log_content = {
                 "test_name": test_name,
                 "status": status,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
                 "elapsed_ms": elapsed_ms,
                 "errors": errors,
                 "sent_messages": [self._msg_to_dict(m) for m in self.sent_messages],

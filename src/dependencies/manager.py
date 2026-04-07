@@ -10,7 +10,7 @@ import hashlib
 import threading
 from pathlib import Path
 from typing import Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ class DependencyManager:
         try:
             with open(self.log_file, 'w') as f:
                 f.write("=" * 80 + "\n")
-                f.write(f"Timestamp: {datetime.utcnow().isoformat()}Z\n")
+                f.write(f"Timestamp: {datetime.now(timezone.utc).isoformat()}Z\n")
                 f.write(f"Python: {sys.executable}\n")
                 f.write(f"Python Version: {sys.version}\n")
                 f.write(f"Command: {' '.join(cmd)}\n")
@@ -262,7 +262,7 @@ class DependencyManager:
         try:
             with open(self.log_file, 'w') as f:
                 f.write("=" * 80 + "\n")
-                f.write(f"Timestamp: {datetime.utcnow().isoformat()}Z\n")
+                f.write(f"Timestamp: {datetime.now(timezone.utc).isoformat()}Z\n")
                 f.write(f"Python: {sys.executable}\n")
                 f.write("=" * 80 + "\n\n")
                 f.write("ERROR:\n")

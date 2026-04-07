@@ -20,6 +20,12 @@ COPY run.py .
 # Create config directory
 RUN mkdir -p /config
 
+# Create non-root user and set permissions
+RUN useradd -m appuser && \
+    chown -R appuser:appuser /app /config
+
+USER appuser
+
 # Expose port
 EXPOSE 8000
 

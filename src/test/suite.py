@@ -9,7 +9,7 @@ import time
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from jsonpath_ng import parse as jsonpath_parse
 from jsonpath_ng.exceptions import JSONPathError
@@ -198,7 +198,7 @@ class TestExecutor:
                         template_context = {
                             "testId": test.name,
                             "uuid": str(__import__('uuid').uuid4()),
-                            "now": datetime.utcnow().isoformat() + "Z",
+                            "now": datetime.now(timezone.utc).isoformat() + "Z",
                             "randomInt": lambda min_val=0, max_val=100: __import__('random').randint(min_val, max_val)
                         }
 

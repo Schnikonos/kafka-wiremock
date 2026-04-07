@@ -236,7 +236,6 @@ services:
 
 - **No message persistence**: Messages are not stored; only current in-flight messages are processed
 - **Single match per message**: First matching rule is executed; subsequent rules are skipped
-- **No correlation tracking**: No built-in way to correlate input/output messages
 
 ## Architecture
 

@@ -61,8 +61,6 @@ test_job_manager: Optional[TestJobManager] = None
 dependency_manager: Optional[DependencyManager] = None
 message_cache: Optional[MessageCache] = None
 test_listener_manager: Optional[TestListenerManager] = None
-message_cache: Optional[MessageCache] = None
-test_listener_manager: Optional[TestListenerManager] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

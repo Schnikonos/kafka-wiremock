@@ -6,7 +6,7 @@ import logging
 import uuid
 import random
 from typing import Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class TemplateRenderer:
             return str(uuid.uuid4())
 
         if key == 'now':
-            return datetime.utcnow().isoformat() + 'Z'
+            return datetime.now(timezone.utc).isoformat() + 'Z'
 
         # Handle now with offset like 'now+5m' or 'now-1h'
         if key.startswith('now'):
@@ -111,13 +111,13 @@ class TemplateRenderer:
         """
         try:
             if key == 'now':
-                return datetime.utcnow().isoformat() + 'Z'
+                return datetime.now(timezone.utc).isoformat() + 'Z'
 
             # Parse offset like +5m, -1h, +1d, +24h (supports multi-digit numbers)
             match = re.match(r'now([+-])(\d+)([mhd])', key)
             if not match:
                 logger.debug(f"Could not parse now offset: {key}")
-                return datetime.utcnow().isoformat() + 'Z'
+                return datetime.now(timezone.utc).isoformat() + 'Z'
 
             sign, amount, unit = match.groups()
             amount = int(amount)
@@ -132,13 +132,13 @@ class TemplateRenderer:
             elif unit == 'd':
                 delta = timedelta(days=amount)
             else:
-                return datetime.utcnow().isoformat() + 'Z'
+                return datetime.now(timezone.utc).isoformat() + 'Z'
 
-            result_time = datetime.utcnow() + delta
+            result_time = datetime.now(timezone.utc) + delta
             return result_time.isoformat() + 'Z'
         except Exception as e:
             logger.warning(f"Error resolving now offset '{key}': {e}")
-            return datetime.utcnow().isoformat() + 'Z'
+            return datetime.now(timezone.utc).isoformat() + 'Z'
 
     @staticmethod
     def _resolve_random_int(key: str) -> int:

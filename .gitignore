@@ -53,3 +53,6 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Internal documentation artifacts
+CLAUDE.md
+

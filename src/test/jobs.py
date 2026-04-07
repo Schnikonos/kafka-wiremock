@@ -5,7 +5,7 @@ Tracks test run status and results for polling-based execution.
 import logging
 import uuid
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 
@@ -27,7 +27,7 @@ class TestRunJob:
     job_id: str
     test_id: str
     status: JobStatus = JobStatus.PENDING
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat() + "Z")
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
@@ -81,7 +81,7 @@ class TestJobManager:
         job = self.get_job(job_id)
         if job:
             job.status = JobStatus.RUNNING
-            job.started_at = datetime.utcnow().isoformat() + "Z"
+            job.started_at = datetime.now(timezone.utc).isoformat() + "Z"
             logger.info(f"Job {job_id} started")
 
     def update_progress(self, job_id: str, progress_pct: int):
@@ -95,7 +95,7 @@ class TestJobManager:
         job = self.get_job(job_id)
         if job:
             job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.utcnow().isoformat() + "Z"
+            job.completed_at = datetime.now(timezone.utc).isoformat() + "Z"
             job.result = result
             job.progress_pct = 100
             logger.info(f"Job {job_id} completed")
@@ -105,7 +105,7 @@ class TestJobManager:
         job = self.get_job(job_id)
         if job:
             job.status = JobStatus.FAILED
-            job.completed_at = datetime.utcnow().isoformat() + "Z"
+            job.completed_at = datetime.now(timezone.utc).isoformat() + "Z"
             job.errors.append(error)
             logger.error(f"Job {job_id} failed: {error}")
 
@@ -114,7 +114,7 @@ class TestJobManager:
         job = self.get_job(job_id)
         if job:
             job.status = JobStatus.CANCELLED
-            job.completed_at = datetime.utcnow().isoformat() + "Z"
+            job.completed_at = datetime.now(timezone.utc).isoformat() + "Z"
             logger.info(f"Job {job_id} cancelled")
 
     def cleanup_completed_job(self, job_id: str) -> bool:
