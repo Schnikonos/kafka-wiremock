@@ -13,20 +13,12 @@ then:
     payload: |
       {
         "userId": "{{uuid}}",
+        "targetId": "{{$.sourceId}}",
         "username": "{{$.username}}",
         "email": "{{$.email}}",
+        "status": "PROCESSED",
         "registeredAt": "{{now}}",
         "verificationCodeExpiry": "{{now+24h}}",
         "temporaryToken": "token_{{randomInt(100000,999999)}}",
         "source": "{{$.source}}"
       }
-
-  - topic: audit.log
-    payload: |
-      {
-        "event": "USER_REGISTERED",
-        "username": "{{$.username}}",
-        "timestamp": "{{now}}",
-        "requestId": "{{$.requestId}}"
-      }
-

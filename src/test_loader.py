@@ -42,7 +42,7 @@ class TestExpectation:
 @dataclass
 class TestWhen:
     """Input phase of test: flat list of injections and scripts."""
-    items: List[Union[TestInjection, TestScript]]  # Mixed items, executed sequentially
+    items: List[Union[TestInjection, TestScript]] = field(default_factory=list)  # Mixed items, executed sequentially
 
 
 @dataclass

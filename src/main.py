@@ -16,7 +16,7 @@ from .kafka_client import KafkaClientWrapper
 from .kafka_listener import KafkaListenerEngine
 from .custom_placeholders import CustomPlaceholderRegistry
 from .templater import set_custom_placeholder_registry
-from .test_loader import TestLoader
+from .test_loader import TestLoader, TestInjection, TestExpectation, TestScript
 from .test_suite import TestSuiteRunner, TestResultAggregator
 # Configure logging
 logging.basicConfig(
@@ -323,14 +323,16 @@ async def list_tests() -> Dict[str, Any]:
         tests = test_loader.discover_tests()
         result = []
         for test in tests:
+            when_injections = sum(1 for item in test.when.items if isinstance(item, TestInjection))
+            then_expectations = sum(1 for item in test.then.items if isinstance(item, TestExpectation))
             result.append({
                 "test_id": test.name,
                 "priority": test.priority,
                 "tags": test.tags,
                 "skip": test.skip,
                 "timeout_ms": test.timeout_ms,
-                "when_injections": len(test.when.inject),
-                "then_expectations": len(test.then.expectations)
+                "when_injections": when_injections,
+                "then_expectations": then_expectations
             })
         return {
             "total": len(result),
@@ -372,9 +374,9 @@ async def get_test_definition(test_id: str) -> Dict[str, Any]:
                         "topic": inj.topic,
                         "delay_ms": inj.delay_ms
                     }
-                    for inj in test.when.inject
+                    for inj in test.when.items if isinstance(inj, TestInjection)
                 ],
-                "has_script": test.when.script is not None
+                "has_script": any(isinstance(item, TestScript) for item in test.when.items)
             },
             "then": {
                 "expectations": [
@@ -385,9 +387,9 @@ async def get_test_definition(test_id: str) -> Dict[str, Any]:
                         "wait_ms": exp.wait_ms,
                         "conditions_count": len(exp.match)
                     }
-                    for exp in test.then.expectations
+                    for exp in test.then.items if isinstance(exp, TestExpectation)
                 ],
-                "has_script": test.then.script is not None
+                "has_script": any(isinstance(item, TestScript) for item in test.then.items)
             }
         }
     except HTTPException:

@@ -100,7 +100,7 @@ class TestExecutor:
     async def run_test(self, test: TestDefinition) -> TestResult:
         """Execute a single test."""
         start_time = time.time()
-        result = TestResult(test_id=test.name)
+        result = TestResult(test_id=test.name, status="PENDING")
 
         try:
             if test.skip:
@@ -235,7 +235,7 @@ class TestExecutor:
                         break
 
             result.injected = [
-                {"message_id": m.message_id, "topic": m.topic, "status": m.status}
+                {"message_id": m.message_id, "topic": m.topic, "status": m.status, "payload": m.payload}
                 for m in injected_messages
             ]
 
@@ -301,7 +301,8 @@ class TestExecutor:
             index=exp_idx,
             topic=expectation.topic,
             expected=1,
-            received=0
+            received=0,
+            status="PENDING"
         )
 
         start_time = time.time()
@@ -310,11 +311,23 @@ class TestExecutor:
             # Resolve correlation if message_id specified
             correlation_value = None
             if expectation.message_id and expectation.source_id:
-                # Extract field from injected message
+                # Extract field from injected message using JSONPath
                 injected_data = injections_dict.get(expectation.message_id)
                 if injected_data:
-                    # Need to access the full payload - for now match on message_id itself
-                    correlation_value = expectation.message_id
+                    try:
+                        # Extract the source value from the injected message payload
+                        payload = injected_data.get("payload")
+                        if payload:
+                            source_expr = jsonpath_parse(expectation.source_id)
+                            matches = source_expr.find(payload)
+                            correlation_value = matches[0].value if matches else None
+                            if correlation_value is None:
+                                logger.warning(f"Could not extract {expectation.source_id} from payload")
+                        else:
+                            logger.warning(f"No payload in injected message {expectation.message_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to extract correlation value: {e}")
+                        correlation_value = None
                 else:
                     exp_result.error = f"Message not found: {expectation.message_id}"
                     exp_result.status = "NO_MATCH"
@@ -399,13 +412,29 @@ class TestExecutor:
             return True
 
         for condition in conditions:
-            matcher = self.matcher_factory.get_matcher(condition.type)
-            if not matcher:
-                logger.warning(f"Unknown matcher type: {condition.type}")
-                return False
+            try:
+                matcher = self.matcher_factory.create(condition.type)
+                if not matcher:
+                    logger.warning(f"Unknown matcher type: {condition.type}")
+                    return False
 
-            result = matcher.match(message, condition)
-            if not result.matched:
+                # Build matcher-specific condition dict
+                if condition.type == 'jsonpath':
+                    # JSONPathMatcher expects {'path', 'value', 'regex'}
+                    matcher_condition = {
+                        'path': condition.expression,
+                        'value': condition.value,
+                        'regex': condition.regex
+                    }
+                else:
+                    # Other matchers work with the condition object directly
+                    matcher_condition = condition
+
+                result = matcher.match(message, matcher_condition)
+                if not result.matched:
+                    return False
+            except Exception as e:
+                logger.warning(f"Error matching condition {condition.type}: {e}")
                 return False
 
         return True
