@@ -90,23 +90,42 @@ class TestExecutor:
         self,
         kafka_client: KafkaClientWrapper,
         custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None,
-        test_suite_dir: str = "/testSuite"
+        test_suite_dir: str = "/testSuite",
+        message_cache = None,
+        listener_engine = None
     ):
         """Initialize test executor."""
         self.kafka_client = kafka_client
         self.custom_placeholder_registry = custom_placeholder_registry or CustomPlaceholderRegistry()
         self.matcher_factory = MatcherFactory()
         self.test_suite_dir = test_suite_dir
+        self.message_cache = message_cache  # Optional cache for test message queries
+        self.listener_engine = listener_engine  # Optional listener engine for ensuring topics are ready
 
-    async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None) -> TestResult:
+    async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None, verbose: bool = False) -> TestResult:
         """Execute a single test."""
         start_time = time.time()
         result = TestResult(test_id=test.name, status="PENDING")
 
+        # Log test information
+        logger.info(f"Running test: {test.name}")
+        logger.info(f"  Test object file_path attribute: {test.file_path}")
+        logger.info(f"  test_file_path parameter: {test_file_path}")
+        logger.info(f"  Verbose mode: {verbose}")
+
         # Initialize test logger if file path provided
         test_logger = None
         if test_file_path:
-            test_logger = TestLogger(test_file_path, verbose=False)
+            test_file_path = Path(test_file_path).resolve()  # Convert to absolute path
+            logger.info(f"Test {test.name} will log to: {test_file_path}")
+            test_logger = TestLogger(test_file_path, verbose=verbose)
+        elif test.file_path:
+            # Fallback: use file_path from test definition if not provided as parameter
+            logger.info(f"Using file_path from test definition: {test.file_path}")
+            test_file_path = Path(test.file_path).resolve()
+            test_logger = TestLogger(test_file_path, verbose=verbose)
+        else:
+            logger.warning(f"Test {test.name} has no file path - logging disabled")
 
         try:
             if test.skip:
@@ -127,7 +146,7 @@ class TestExecutor:
                 return result
 
             # Phase 2: Execute "then"
-            then_result = await self._execute_then(test, result.when_result, test_logger)
+            then_result = await self._execute_then(test, result.when_result, test_logger, test_start_time=start_time)
             result.then_result = then_result
 
             if then_result.script_error:
@@ -269,7 +288,7 @@ class TestExecutor:
 
         return result
 
-    async def _execute_then(self, test: TestDefinition, when_result: WhenResult, test_logger: Optional[TestLogger] = None) -> ThenResult:
+    async def _execute_then(self, test: TestDefinition, when_result: WhenResult, test_logger: Optional[TestLogger] = None, test_start_time: float = None) -> ThenResult:
         """Execute 'then' phase: expectations and scripts, sequential."""
         result = ThenResult()
         context = {}
@@ -284,7 +303,7 @@ class TestExecutor:
                 if isinstance(item, TestExpectation):
                     # Collect expectation messages
                     exp_result = await self._collect_expectation_messages(
-                        item, len(collected_results), when_result, injections_dict, context, test_logger
+                        item, len(collected_results), when_result, injections_dict, context, test_logger, test_start_time=test_start_time
                     )
                     result.expectations.append(exp_result)
                     collected_results.append(exp_result)
@@ -319,7 +338,8 @@ class TestExecutor:
         when_result: WhenResult,
         injections_dict: Dict[str, Any],
         context: Dict[str, Any],
-        test_logger: Optional[TestLogger] = None
+        test_logger: Optional[TestLogger] = None,
+        test_start_time: float = None
     ) -> ExpectationResult:
         """Collect messages for a single expectation with correlation."""
         exp_result = ExpectationResult(
@@ -359,21 +379,65 @@ class TestExecutor:
                     exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
                     return exp_result
 
-            # Poll messages
+            # Ensure listener is ready for this topic (wait up to 5 seconds)
+            if self.listener_engine:
+                logger.info(f"Ensuring listener is ready for topic: {expectation.topic}")
+                if not self.listener_engine.ensure_listening_to_topic(expectation.topic, timeout_seconds=5):
+                    exp_result.error = f"Listener failed to connect to topic: {expectation.topic}"
+                    exp_result.status = "NO_MATCH"
+                    exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                    return exp_result
+
+            # Poll messages (use cache if available, otherwise poll Kafka directly)
             received_messages = []
+            all_received_messages = []  # Track ALL messages for logging/closest match
+            seen_message_keys = set()  # Track seen messages to avoid duplicates from cache
             end_time = time.time() + (expectation.wait_ms / 1000.0)
+            last_cache_check_time = time.time()
 
             while time.time() < end_time:
-                messages = self.kafka_client.consume_latest(
-                    topic=expectation.topic,
-                    max_messages=100,
-                    timeout_ms=500,
-                    poll_interval_ms=100
-                )
+                # Use cache if available, otherwise fall back to Kafka polling
+                if self.message_cache:
+                    # Get messages from cache received since we started waiting
+                    cached_msgs = self.message_cache.get_messages(expectation.topic, since=start_time)
+                    messages = [
+                        {
+                            "value": m.value,
+                            "timestamp": m.timestamp,
+                            "partition": m.partition,
+                            "offset": m.offset,
+                            "headers": m.headers
+                        }
+                        for m in cached_msgs
+                    ]
+                    logger.debug(f"Got {len(messages)} messages from cache for topic {expectation.topic}")
+                else:
+                    # Fall back to polling Kafka directly
+                    messages = self.kafka_client.consume_latest(
+                        topic=expectation.topic,
+                        max_messages=100,
+                        timeout_ms=500,
+                        poll_interval_ms=100
+                    )
 
                 for msg in messages:
                     if "error" in msg:
                         continue
+
+                    # Create unique key for deduplication (partition + offset uniquely identifies a message)
+                    msg_key = (msg.get("partition", 0), msg.get("offset", 0))
+                    if msg_key in seen_message_keys:
+                        logger.debug(f"Skipping duplicate message: partition={msg_key[0]}, offset={msg_key[1]}")
+                        continue
+                    seen_message_keys.add(msg_key)
+
+                    # Filter messages to only those received after test start
+                    # Message timestamp is in milliseconds, test_start_time is in seconds
+                    if test_start_time is not None:
+                        msg_timestamp_seconds = msg.get("timestamp", 0) / 1000.0
+                        if msg_timestamp_seconds < test_start_time:
+                            logger.debug(f"Skipping message received before test start: {msg_timestamp_seconds} < {test_start_time}")
+                            continue
 
                     try:
                         msg_value = msg.get("value")
@@ -386,7 +450,19 @@ class TestExecutor:
                         logger.debug(f"Failed to parse message value: {e}")
                         continue
 
+                    # Track this message for logging and closest match analysis
+                    msg_for_logging = ReceivedMessage(
+                        value=msg_value,
+                        timestamp=msg.get("timestamp", 0),
+                        partition=msg.get("partition", 0),
+                        offset=msg.get("offset", 0),
+                        headers=msg.get("headers")
+                    )
+
                     # Check correlation and conditions
+                    correlation_matched = False
+                    conditions_matched = 0
+
                     if expectation.message_id and expectation.source_id and expectation.target_id:
                         # Extract target value
                         try:
@@ -397,24 +473,70 @@ class TestExecutor:
                             target_value = None
 
                         if target_value != correlation_value:
+                            # Log this non-matching message for debugging
+                            if test_logger:
+                                test_logger.log_received_message(
+                                    topic=expectation.topic,
+                                    payload=msg_value,
+                                    message_id=expectation.message_id,
+                                    source_id=expectation.source_id,
+                                    target_id=expectation.target_id,
+                                    correlation_matched=False,
+                                    conditions_matched=0,
+                                    total_conditions=len(expectation.match) if expectation.match else 0,
+                                    headers=msg.get("headers")
+                                )
+                            all_received_messages.append(msg_for_logging)
                             continue
+                        correlation_matched = True
 
                     # Check conditions
                     if expectation.match:
-                        if not self._match_conditions(msg_value, expectation.match):
+                        conditions_matched = 0
+                        for condition in expectation.match:
+                            try:
+                                matcher = self.matcher_factory.create(condition.type)
+
+                                # Build matcher-specific condition dict (same as _match_conditions)
+                                if condition.type == 'jsonpath':
+                                    # JSONPathMatcher expects {'path', 'value', 'regex'}
+                                    matcher_condition = {
+                                        'path': condition.expression,
+                                        'value': condition.value,
+                                        'regex': condition.regex
+                                    }
+                                else:
+                                    # Other matchers work with the condition object directly
+                                    matcher_condition = condition
+
+                                if matcher and matcher.match(msg_value, matcher_condition).matched:
+                                    conditions_matched += 1
+                            except Exception as e:
+                                logger.debug(f"Error matching condition: {e}")
+                                pass
+
+                        if conditions_matched < len(expectation.match):
+                            # Log this non-matching message for debugging
+                            if test_logger:
+                                test_logger.log_received_message(
+                                    topic=expectation.topic,
+                                    payload=msg_value,
+                                    message_id=expectation.message_id,
+                                    source_id=expectation.source_id,
+                                    target_id=expectation.target_id,
+                                    correlation_matched=correlation_matched,
+                                    conditions_matched=conditions_matched,
+                                    total_conditions=len(expectation.match),
+                                    headers=msg.get("headers")
+                                )
+                            all_received_messages.append(msg_for_logging)
                             continue
 
-                    # Message matches!
-                    received_msg = ReceivedMessage(
-                        value=msg_value,
-                        timestamp=msg.get("timestamp", 0),
-                        partition=msg.get("partition", 0),
-                        offset=msg.get("offset", 0),
-                        headers=msg.get("headers")
-                    )
-                    received_messages.append(received_msg)
+                    # Message matches all conditions!
+                    received_messages.append(msg_for_logging)
+                    all_received_messages.append(msg_for_logging)
 
-                    # Log received message
+                    # Always log matching message
                     if test_logger:
                         test_logger.log_received_message(
                             topic=expectation.topic,
@@ -422,9 +544,9 @@ class TestExecutor:
                             message_id=expectation.message_id,
                             source_id=expectation.source_id,
                             target_id=expectation.target_id,
-                            correlation_matched=True,
-                            conditions_matched=len(expectation.match),
-                            total_conditions=len(expectation.match),
+                            correlation_matched=correlation_matched,
+                            conditions_matched=conditions_matched,
+                            total_conditions=len(expectation.match) if expectation.match else 0,
                             headers=msg.get("headers")
                         )
 
@@ -486,19 +608,29 @@ class TestSuiteRunner:
         self,
         kafka_client: KafkaClientWrapper,
         custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None,
-        test_suite_dir: str = "/testSuite"
+        test_suite_dir: str = "/testSuite",
+        message_cache = None,
+        listener_engine = None
     ):
         """Initialize test suite runner."""
         self.kafka_client = kafka_client
         self.custom_placeholder_registry = custom_placeholder_registry
         self.test_suite_dir = test_suite_dir
-        self.executor = TestExecutor(kafka_client, custom_placeholder_registry, test_suite_dir)
+        self.executor = TestExecutor(
+            kafka_client,
+            custom_placeholder_registry,
+            test_suite_dir,
+            message_cache=message_cache,
+            listener_engine=listener_engine
+        )
 
-    async def run_tests_sequential(self, tests: List[TestDefinition]) -> List[TestResult]:
+    async def run_tests_sequential(self, tests: List[TestDefinition], verbose: bool = False) -> List[TestResult]:
         """Run tests sequentially."""
         results = []
         for test in tests:
-            result = await self.executor.run_test(test)
+            # Use file_path from test definition
+            test_file_path = Path(test.file_path) if test.file_path else None
+            result = await self.executor.run_test(test, test_file_path, verbose=verbose)
             results.append(result)
             logger.info(f"Test {test.name}: {result.status}")
         return results
@@ -506,14 +638,20 @@ class TestSuiteRunner:
     async def run_tests_parallel(
         self,
         tests: List[TestDefinition],
-        threads: int = 4
+        threads: int = 4,
+        verbose: bool = False
     ) -> List[TestResult]:
         """Run tests in parallel using thread pool."""
         results = []
         with ThreadPoolExecutor(max_workers=threads) as executor:
             loop = asyncio.get_event_loop()
             futures = [
-                loop.run_in_executor(executor, lambda t=test: asyncio.run(self.executor.run_test(t)))
+                loop.run_in_executor(
+                    executor,
+                    lambda t=test: asyncio.run(
+                        self.executor.run_test(t, Path(t.file_path) if t.file_path else None, verbose=verbose)
+                    )
+                )
                 for test in tests
             ]
             for future in as_completed(futures):

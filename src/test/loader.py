@@ -27,6 +27,7 @@ class TestInjection:
 class TestScript:
     """A script to execute (can be in when or then phase)."""
     script: str  # Python code
+    script_file: Optional[str] = None  # Path to external script file (relative to test file)
 
 
 @dataclass
@@ -63,6 +64,7 @@ class TestDefinition:
     tags: List[str] = field(default_factory=list)  # Optional; for filtering
     skip: bool = False  # Optional; default false
     timeout_ms: int = 5000  # Optional; overall test timeout
+    file_path: Optional[str] = None  # Path to the test YAML file (for logging)
 
 
 class TestYamlParser:
@@ -136,6 +138,8 @@ class TestValidator:
             then_dict = test_dict.get("then", {})
             then = TestValidator._parse_then(then_dict)
 
+            logger.debug(f"Creating TestDefinition for {name} with file_path={file_path}")
+
             return TestDefinition(
                 name=name,
                 when=when,
@@ -143,7 +147,8 @@ class TestValidator:
                 priority=priority,
                 tags=tags,
                 skip=skip,
-                timeout_ms=timeout_ms
+                timeout_ms=timeout_ms,
+                file_path=file_path
             )
 
         except (KeyError, ValueError, TypeError) as e:
@@ -164,10 +169,13 @@ class TestValidator:
             if not isinstance(item_dict, dict):
                 raise ValueError(f"When item at index {idx} must be a dictionary")
 
-            # Check if it's a script or injection
+            # Check if it's a script (inline or file-based)
             if "script" in item_dict and len(item_dict) == 1:
-                # It's a script
+                # It's an inline script
                 items.append(TestScript(script=str(item_dict["script"])))
+            elif "script_file" in item_dict and len(item_dict) == 1:
+                # It's a script file reference
+                items.append(TestScript(script="", script_file=str(item_dict["script_file"])))
             else:
                 # It's an injection
                 if "message_id" not in item_dict:
@@ -204,10 +212,13 @@ class TestValidator:
             if not isinstance(item_dict, dict):
                 raise ValueError(f"Then item at index {idx} must be a dictionary")
 
-            # Check if it's a script or expectation
+            # Check if it's a script (inline or file-based)
             if "script" in item_dict and len(item_dict) == 1:
-                # It's a script
+                # It's an inline script
                 items.append(TestScript(script=str(item_dict["script"])))
+            elif "script_file" in item_dict and len(item_dict) == 1:
+                # It's a script file reference
+                items.append(TestScript(script="", script_file=str(item_dict["script_file"])))
             else:
                 # It's an expectation
                 if "topic" not in item_dict:
@@ -279,7 +290,8 @@ class TestLoader:
             try:
                 test = self.load_test_file(yaml_file)
                 tests.append(test)
-                logger.debug(f"Loaded test: {yaml_file.name} -> {test.name}")
+                logger.info(f"Loaded test: {test.name} from {yaml_file}")
+                logger.debug(f"  Test file_path: {test.file_path}")
             except Exception as e:
                 logger.error(f"Failed to load test {yaml_file.name}: {e}")
 
@@ -308,10 +320,11 @@ class TestLoader:
             test_dict = TestYamlParser.parse_test_yaml(yaml_content, str(file_path))
             test = TestValidator.validate_test_definition(test_dict, str(file_path))
             
-            # Resolve payload files relative to test file directory
+            # Resolve payload files and script files relative to test file directory
             test_dir = Path(file_path).parent
             self._resolve_payload_files(test, test_dir)
-            
+            self._resolve_script_files(test, test_dir)
+
             return test
         except Exception as e:
             raise ValueError(f"Failed to load test from {file_path}: {e}")
@@ -363,6 +376,42 @@ class TestLoader:
                         logger.debug(f"Loaded match conditions from {item.match_file}")
                     except Exception as e:
                         logger.error(f"Failed to load match file {item.match_file}: {e}")
+
+    def _resolve_script_files(self, test: TestDefinition, test_dir: Path):
+        """
+        Resolve external script files in test definition.
+
+        Args:
+            test: Test definition to resolve
+            test_dir: Directory where test file is located
+        """
+        # Resolve scripts in when phase
+        for item in test.when.items:
+            if isinstance(item, TestScript) and item.script_file:
+                script_path = test_dir / item.script_file
+                if not script_path.exists():
+                    logger.warning(f"Script file not found: {script_path}")
+                else:
+                    try:
+                        with open(script_path, "r") as f:
+                            item.script = f.read()
+                        logger.debug(f"Loaded script from {item.script_file}")
+                    except Exception as e:
+                        logger.error(f"Failed to load script file {item.script_file}: {e}")
+
+        # Resolve scripts in then phase
+        for item in test.then.items:
+            if isinstance(item, TestScript) and item.script_file:
+                script_path = test_dir / item.script_file
+                if not script_path.exists():
+                    logger.warning(f"Script file not found: {script_path}")
+                else:
+                    try:
+                        with open(script_path, "r") as f:
+                            item.script = f.read()
+                        logger.debug(f"Loaded script from {item.script_file}")
+                    except Exception as e:
+                        logger.error(f"Failed to load script file {item.script_file}: {e}")
 
     def discover_then_topics(self, tests: List[TestDefinition]) -> Set[str]:
         """

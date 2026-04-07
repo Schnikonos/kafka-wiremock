@@ -39,8 +39,19 @@ class TestLogger:
             test_file_path: Path to the test YAML file
             verbose: If True, log skipped messages and details
         """
-        self.test_file_path = Path(test_file_path)
-        self.log_file_path = self.test_file_path.with_suffix('.test.log')
+        self.test_file_path = Path(test_file_path).resolve()  # Convert to absolute path
+        # Replace .test.yaml or .test.yml with .test.log
+        if str(self.test_file_path).endswith('.test.yaml'):
+            self.log_file_path = Path(str(self.test_file_path).replace('.test.yaml', '.test.log'))
+        elif str(self.test_file_path).endswith('.test.yml'):
+            self.log_file_path = Path(str(self.test_file_path).replace('.test.yml', '.test.log'))
+        else:
+            # Fallback: just append .log
+            self.log_file_path = self.test_file_path.with_suffix('.log')
+
+        logger.info(f"TestLogger initialized for {self.test_file_path}")
+        logger.info(f"  Log file will be written to: {self.log_file_path}")
+        logger.info(f"  Log file absolute path: {self.log_file_path.absolute()}")
         self.verbose = verbose
         self.sent_messages: List[LogMessage] = []
         self.received_messages: List[LogMessage] = []
@@ -118,7 +129,7 @@ class TestLogger:
 
     def find_closest_match(self) -> Optional[Dict[str, Any]]:
         """
-        Find the closest non-matching message.
+        Find the closest non-matching message when test fails.
 
         Returns closest by priority:
         1. Messages with correct correlation (message_id + source_id match)
@@ -159,6 +170,37 @@ class TestLogger:
             "total_conditions": best_msg.total_conditions
         }
 
+    def find_perfect_match(self) -> Optional[Dict[str, Any]]:
+        """
+        Find a perfectly matching message (all conditions + correlation matched).
+
+        Returns:
+            Dict with the perfect matching message, or None
+        """
+        if not self.received_messages:
+            return None
+
+        # Find messages that matched all conditions and correlation
+        for msg in self.received_messages:
+            # Perfect match: correlation matched and all conditions matched
+            if msg.correlation_matched and msg.conditions_matched == msg.total_conditions:
+                return {
+                    "message": asdict(msg),
+                    "tier": "perfect_match",
+                    "conditions_matched": msg.conditions_matched,
+                    "total_conditions": msg.total_conditions
+                }
+            # Alternative: all conditions matched even without explicit correlation check
+            elif msg.conditions_matched == msg.total_conditions and msg.total_conditions > 0:
+                return {
+                    "message": asdict(msg),
+                    "tier": "perfect_match",
+                    "conditions_matched": msg.conditions_matched,
+                    "total_conditions": msg.total_conditions
+                }
+
+        return None
+
     def write_log_file(self, test_name: str, status: str, elapsed_ms: int, errors: List[str]):
         """
         Write test execution log to file.
@@ -170,6 +212,11 @@ class TestLogger:
             errors: List of error messages
         """
         try:
+            logger.info(f"Writing test log to: {self.log_file_path}")
+
+            # Ensure parent directory exists
+            self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
             # Build log content
             log_content = {
                 "test_name": test_name,
@@ -178,15 +225,22 @@ class TestLogger:
                 "elapsed_ms": elapsed_ms,
                 "errors": errors,
                 "sent_messages": [self._msg_to_dict(m) for m in self.sent_messages],
-                "received_messages": [self._msg_to_dict(m) for m in self.received_messages],
             }
+
+            # Add received_messages only in verbose mode
+            if self.verbose:
+                log_content["received_messages"] = [self._msg_to_dict(m) for m in self.received_messages]
 
             # Add verbose info if enabled
             if self.verbose and self.skipped_messages:
                 log_content["skipped_messages"] = [self._msg_to_dict(m) for m in self.skipped_messages]
 
-            # Add closest match if test failed
-            if status == "FAILED":
+            # Add match summary based on test status (always, regardless of verbose mode)
+            if status == "PASSED":
+                perfect = self.find_perfect_match()
+                if perfect:
+                    log_content["perfect_match"] = perfect
+            elif status == "FAILED":
                 closest = self.find_closest_match()
                 if closest:
                     log_content["closest_match"] = closest
@@ -199,10 +253,10 @@ class TestLogger:
             with open(self.log_file_path, "w") as f:
                 f.write(self._to_yaml_string(log_content))
 
-            logger.info(f"Test log written to {self.log_file_path}")
+            logger.info(f"Test log successfully written to {self.log_file_path}")
 
         except Exception as e:
-            logger.error(f"Failed to write test log file: {e}")
+            logger.error(f"Failed to write test log file to {self.log_file_path}: {e}", exc_info=True)
 
     @staticmethod
     def _msg_to_dict(msg: LogMessage) -> Dict[str, Any]:

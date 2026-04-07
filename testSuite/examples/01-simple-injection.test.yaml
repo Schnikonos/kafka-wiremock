@@ -7,39 +7,35 @@ timeout_ms: 5000
 when:
   inject:
     - message_id: "order1"
-      topic: "orders.input"
+      topic: "users.commands"
       payload: |
         {
           "orderId": "{{testId}}-{{uuid}}",
+          "sourceId": "{{uuid}}",
+          "username": "ABC",
+          "action": "REGISTER",
+          "source": "SomeSource",
+          "email": "aaa@ing.com",
           "customerId": "CUST-123",
           "amount": 99.99,
           "status": "NEW"
         }
 
-    - script: |
-        # Scripts have access to current_injections (all injections so far)
-        order = current_injections[0].get("payload", {})
-        assert "orderId" in order, "Order must have orderId"
-        print(f"✓ Order validated: {order.get('orderId')}")
-
 then:
   expectations:
-    - topic: "orders.processed"
+    - topic: "users.events"
       message_id: "order1"
-      source_id: "$.orderId"
-      target_id: "$.orderId"
+      source_id: "$.sourceId"
+      target_id: "$.targetId"
       wait_ms: 2000
       match:
         - type: jsonpath
+          expression: "$.source"
+          value: "SomeSource"
+        - type: jsonpath
           expression: "$.status"
-          regex: "PROCESSED|ACCEPTED"
+          regex: "P2ROCESSED|ACCEPTED"
 
-    - script: |
-        # Scripts have access to current_expectations (all expectations so far)
-        received_msg = current_expectations[0].received_messages[0] if current_expectations[0].received_messages else {}
-        value = received_msg.get("value", {})
-        assert value.get("status") in ["PROCESSED", "ACCEPTED"], f"Invalid status: {value.get('status')}"
-        print(f"✓ Order processed successfully")
 
 
 

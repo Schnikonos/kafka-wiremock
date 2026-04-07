@@ -59,6 +59,31 @@ services:
     networks:
       - wiremock-network
 
+  kafka-topics-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command: |
+      -c '
+      echo "Creating Kafka topics..."
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic users.commands \
+        --partitions 2 \
+        --replication-factor 1 \
+        --config retention.ms=43200000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic users.events \
+        --partitions 2 \
+        --replication-factor 1 \
+        --config retention.ms=43200000
+      echo "Topics created successfully"
+      kafka-topics --bootstrap-server kafka:29092 --list
+      '
+    networks:
+      - wiremock-network
+
   kafka-wiremock:
     build:
       context: .
@@ -66,6 +91,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-topics-init:
+        condition: service_completed_successfully
     ports:
       - "8001:8000"
     environment:

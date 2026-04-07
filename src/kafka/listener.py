@@ -31,7 +31,8 @@ class KafkaListenerEngine:
 
     def __init__(self, config_loader: ConfigLoader, kafka_client: KafkaClientWrapper,
                  bootstrap_servers: str = "localhost:9092",
-                 custom_placeholder_registry: CustomPlaceholderRegistry = None):
+                 custom_placeholder_registry: CustomPlaceholderRegistry = None,
+                 message_cache = None):
         """
         Initialize the listener engine.
 
@@ -40,11 +41,13 @@ class KafkaListenerEngine:
             kafka_client: Kafka client wrapper
             bootstrap_servers: Kafka bootstrap servers
             custom_placeholder_registry: Optional custom placeholder registry
+            message_cache: Optional MessageCache instance for test queries
         """
         self.config_loader = config_loader
         self.kafka_client = kafka_client
         self.bootstrap_servers = bootstrap_servers
         self.custom_placeholder_registry = custom_placeholder_registry
+        self.message_cache = message_cache
         self.consumers: Dict[str, KafkaConsumer] = {}
         self.threads: Dict[str, threading.Thread] = {}
         self._running = False
@@ -69,6 +72,74 @@ class KafkaListenerEngine:
                 consumer.close()
 
         logger.info("Kafka listener engine stopped")
+
+    def is_listening_to_topic(self, topic: str) -> bool:
+        """
+        Check if the listener is actively listening to a topic (has a consumer).
+
+        Args:
+            topic: Topic name to check
+
+        Returns:
+            True if listener has a consumer for the topic, False otherwise
+        """
+        with self._lock:
+            return topic in self.consumers and self.consumers[topic] is not None
+
+    def ensure_listening_to_topic(self, topic: str, timeout_seconds: int = 5) -> bool:
+        """
+        Ensure the listener is listening to a specific topic.
+        Will start a listener thread if one isn't already running.
+        Waits up to timeout_seconds for the listener to connect.
+
+        Args:
+            topic: Topic name to listen to
+            timeout_seconds: Maximum time to wait for listener to connect (default 5)
+
+        Returns:
+            True if listener connected successfully, False if timeout
+        """
+        start_time = time.time()
+
+        # Start listener thread for this topic if not already running
+        with self._lock:
+            if topic not in self.threads:
+                thread = threading.Thread(
+                    target=self._listen_topic,
+                    args=(topic,),
+                    daemon=True,
+                    name=f"listener-{topic}"
+                )
+                thread.start()
+                self.threads[topic] = thread
+                logger.info(f"Started on-demand listener thread for topic: {topic}")
+
+        # Wait for listener to connect to Kafka
+        while time.time() - start_time < timeout_seconds:
+            if self.is_listening_to_topic(topic):
+                logger.info(f"Listener ready for topic: {topic}")
+                return True
+            time.sleep(0.1)
+
+        logger.warning(f"Timeout waiting for listener to connect to topic: {topic} (waited {timeout_seconds}s)")
+        return False
+
+    def ensure_listening_to_topics(self, topics: List[str], timeout_seconds: int = 5) -> bool:
+        """
+        Ensure the listener is listening to multiple topics.
+
+        Args:
+            topics: List of topic names to listen to
+            timeout_seconds: Maximum time to wait per topic
+
+        Returns:
+            True if all listeners connected successfully, False if any timeout
+        """
+        all_success = True
+        for topic in topics:
+            if not self.ensure_listening_to_topic(topic, timeout_seconds):
+                all_success = False
+        return all_success
 
     def _start_listeners(self) -> None:
         """Start listeners for all configured input topics."""
@@ -212,6 +283,20 @@ class KafkaListenerEngine:
                         message_data = message.value
             else:
                 message_data = None
+
+            # Add message to cache for test queries (if cache available)
+            if self.message_cache:
+                try:
+                    self.message_cache.add_message(
+                        topic=topic,
+                        value=message_data,
+                        timestamp=message.timestamp,
+                        partition=message.partition,
+                        offset=message.offset,
+                        headers=dict(message.headers) if message.headers else None
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to add message to cache: {e}")
 
             # Get rules for this topic
             rules = self.config_loader.get_rules_for_topic(topic)

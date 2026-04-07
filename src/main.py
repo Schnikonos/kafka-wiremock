@@ -20,6 +20,8 @@ from .rules.templater import set_custom_placeholder_registry
 from .test.loader import TestLoader, TestInjection, TestExpectation, TestScript
 from .test.suite import TestSuiteRunner, TestResultAggregator
 from .test.jobs import TestJobManager
+from .test.cache import MessageCache
+from .test.listener_manager import TestListenerManager
 from .dependencies.manager import DependencyManager
 # Configure logging
 logging.basicConfig(
@@ -57,11 +59,15 @@ test_loader: Optional[TestLoader] = None
 test_suite_runner: Optional[TestSuiteRunner] = None
 test_job_manager: Optional[TestJobManager] = None
 dependency_manager: Optional[DependencyManager] = None
+message_cache: Optional[MessageCache] = None
+test_listener_manager: Optional[TestListenerManager] = None
+message_cache: Optional[MessageCache] = None
+test_listener_manager: Optional[TestListenerManager] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown."""
-    global config_loader, kafka_client, listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager
+    global config_loader, kafka_client, listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager, message_cache, test_listener_manager
     # Startup
     logger.info("Starting Kafka Wiremock...")
     try:
@@ -87,19 +93,41 @@ async def lifespan(app: FastAPI):
         # Initialize components
         config_loader = ConfigLoader(config_dir=config_dir, reload_interval=30)
         kafka_client = KafkaClientWrapper(bootstrap_servers=bootstrap_servers)
+
+        # Initialize message cache for tests FIRST (before listener engine)
+        message_cache = MessageCache(ttl_seconds=120, cleanup_interval_seconds=30)
+        message_cache.start_cleanup()
+
         listener_engine = KafkaListenerEngine(
             config_loader,
             kafka_client,
             bootstrap_servers,
-            custom_placeholder_registry=custom_placeholder_registry
+            custom_placeholder_registry=custom_placeholder_registry,
+            message_cache=message_cache
         )
         # Start listener engine
         listener_engine.start()
 
         # Initialize test suite components
         test_loader = TestLoader(test_suite_dir=test_suite_dir)
-        test_suite_runner = TestSuiteRunner(kafka_client, custom_placeholder_registry, test_suite_dir)
+
+        # Pass listener_engine and message_cache to test suite runner
+        test_suite_runner = TestSuiteRunner(
+            kafka_client,
+            custom_placeholder_registry,
+            test_suite_dir,
+            message_cache=message_cache,
+            listener_engine=listener_engine
+        )
         test_job_manager = TestJobManager()
+
+        # Initialize test listener manager (scans test files and pre-starts listeners)
+        test_listener_manager = TestListenerManager(
+            listener_engine=listener_engine,
+            test_loader=test_loader,
+            scan_interval=30
+        )
+        test_listener_manager.start()
 
         logger.info("Kafka Wiremock started successfully")
     except Exception as e:
@@ -109,6 +137,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down Kafka Wiremock...")
     try:
+        if test_listener_manager:
+            test_listener_manager.stop()
+        if message_cache:
+            message_cache.stop_cleanup()
         if dependency_manager:
             dependency_manager.stop()
         if listener_engine:
@@ -458,7 +490,8 @@ async def get_test_definition(test_id: str) -> Dict[str, Any]:
 @app.post("/tests/{test_id}")
 async def run_single_test(
     test_id: str,
-    async_mode: bool = Query(False, description="If true, run asynchronously and return job_id")
+    async_mode: bool = Query(False, description="If true, run asynchronously and return job_id"),
+    verbose: bool = Query(False, description="If true, include received_messages and skipped_messages in logs")
 ) -> Dict[str, Any]:
     """
     Run a single test by ID.
@@ -466,6 +499,7 @@ async def run_single_test(
     Args:
         test_id: Test identifier
         async_mode: If true, returns immediately with job_id (202 Accepted)
+        verbose: If true, include detailed message logs in test output
 
     Returns:
         If async_mode: {job_id, status, created_at}
@@ -488,7 +522,7 @@ async def run_single_test(
             # Run test in background
             import asyncio
             asyncio.create_task(
-                _run_test_async(job_id, test, test_job_manager, test_suite_runner, test_loader, test_job_manager.list_jobs)
+                _run_test_async(job_id, test, test_job_manager, test_suite_runner, test_loader, test_job_manager.list_jobs, verbose)
             )
 
             # Return 202 Accepted with job info
@@ -500,15 +534,10 @@ async def run_single_test(
             }
         else:
             # Synchronous execution (current behavior)
-            # Find test file path for logging
-            test_file_path = None
-            test_suite_dir = Path(os.getenv("TEST_SUITE_DIR", "/testSuite"))
-            for yaml_file in test_suite_dir.rglob("*.test.yaml"):
-                if yaml_file.name.startswith(test.name) or test.name in yaml_file.read_text():
-                    test_file_path = yaml_file
-                    break
+            # Use file_path stored in test definition
+            test_file_path = Path(test.file_path) if test.file_path else None
 
-            result = await test_suite_runner.executor.run_test(test, test_file_path)
+            result = await test_suite_runner.executor.run_test(test, test_file_path, verbose=verbose)
 
             # Convert result to JSON-serializable dict
             return {
@@ -549,19 +578,15 @@ async def _run_test_async(
     job_manager,
     suite_runner,
     loader,
-    list_jobs_fn
+    list_jobs_fn,
+    verbose: bool = False
 ):
     """Helper to run test asynchronously and update job status."""
     try:
-        # Find test file path
-        test_file_path = None
-        test_suite_dir = Path(os.getenv("TEST_SUITE_DIR", "/testSuite"))
-        for yaml_file in test_suite_dir.rglob("*.test.yaml"):
-            if test.name in yaml_file.read_text():
-                test_file_path = yaml_file
-                break
+        # Use file_path stored in test definition
+        test_file_path = Path(test.file_path) if test.file_path else None
 
-        result = await suite_runner.executor.run_test(test, test_file_path)
+        result = await suite_runner.executor.run_test(test, test_file_path, verbose=verbose)
 
         # Convert to dict
         result_dict = {
@@ -601,7 +626,8 @@ async def run_tests_bulk(
     mode: str = Query("parallel", description="sequential or parallel"),
     threads: int = Query(4, ge=1, le=32, description="Number of concurrent threads (for parallel mode)"),
     iterations: int = Query(1, ge=1, le=1000, description="Number of iterations per test"),
-    filter_tags: Optional[List[str]] = Query(None, description="Optional tags to filter tests")
+    filter_tags: Optional[List[str]] = Query(None, description="Optional tags to filter tests"),
+    verbose: bool = Query(False, description="If true, include received_messages and skipped_messages in logs")
 ) -> Dict[str, Any]:
     """
     Run all discovered tests in bulk.
@@ -610,6 +636,7 @@ async def run_tests_bulk(
         threads: Number of concurrent threads
         iterations: Number of iterations per test
         filter_tags: Optional tags to filter tests
+        verbose: If true, include detailed message logs in test output
     Returns:
         Aggregated test results
     """
@@ -633,13 +660,13 @@ async def run_tests_bulk(
         # Replicate tests for iterations
         tests_to_run = all_tests * iterations
 
-        logger.info(f"Running {len(tests_to_run)} test instances ({len(all_tests)} tests × {iterations} iterations) in {mode} mode")
+        logger.info(f"Running {len(tests_to_run)} test instances ({len(all_tests)} tests × {iterations} iterations) in {mode} mode (verbose={verbose})")
 
         # Run tests
         if mode == "sequential":
-            results = await test_suite_runner.run_tests_sequential(tests_to_run)
+            results = await test_suite_runner.run_tests_sequential(tests_to_run, verbose=verbose)
         else:  # parallel
-            results = await test_suite_runner.run_tests_parallel(tests_to_run, threads=threads)
+            results = await test_suite_runner.run_tests_parallel(tests_to_run, threads=threads, verbose=verbose)
 
         # Aggregate results
         aggregated = TestResultAggregator.aggregate_results(results, mode=mode)
@@ -683,6 +710,103 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
         raise
     except Exception as e:
         logger.error(f"Error getting job status {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/logs")
+async def list_test_logs() -> Dict[str, Any]:
+    """
+    List all test log files.
+
+    Returns:
+        Dictionary with log files and their content
+    """
+    try:
+        test_suite_dir = Path(os.getenv("TEST_SUITE_DIR", "/testSuite"))
+
+        # Find all .test.log files recursively
+        log_files = sorted(test_suite_dir.rglob("*.test.log"))
+
+        if not log_files:
+            return {
+                "total": 0,
+                "logs": [],
+                "test_suite_dir": str(test_suite_dir),
+                "test_suite_exists": test_suite_dir.exists()
+            }
+
+        logs = []
+        for log_file in log_files:
+            try:
+                with open(log_file, 'r') as f:
+                    content = f.read()
+                logs.append({
+                    "path": str(log_file),
+                    "relative_path": str(log_file.relative_to(test_suite_dir)),
+                    "size_bytes": log_file.stat().st_size,
+                    "modified": log_file.stat().st_mtime,
+                    "content_preview": content[:500] + ("..." if len(content) > 500 else "")
+                })
+            except Exception as e:
+                logger.error(f"Failed to read log file {log_file}: {e}")
+                logs.append({
+                    "path": str(log_file),
+                    "error": str(e)
+                })
+
+        return {
+            "total": len(logs),
+            "logs": logs,
+            "test_suite_dir": str(test_suite_dir)
+        }
+    except Exception as e:
+        logger.error(f"Error listing test logs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tests/logs/{test_id}")
+async def get_test_log(test_id: str) -> Dict[str, Any]:
+    """
+    Get the log file content for a specific test.
+
+    Args:
+        test_id: Test identifier (uses the test name to find the log)
+
+    Returns:
+        Full log file content
+    """
+    try:
+        test_suite_dir = Path(os.getenv("TEST_SUITE_DIR", "/testSuite"))
+
+        # Search for log file matching the test ID
+        log_files = list(test_suite_dir.rglob("*.test.log"))
+
+        matching_logs = [
+            lf for lf in log_files
+            if test_id in lf.name or test_id in lf.read_text()
+        ]
+
+        if not matching_logs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No log file found for test '{test_id}'"
+            )
+
+        log_file = matching_logs[0]
+
+        with open(log_file, 'r') as f:
+            content = f.read()
+
+        return {
+            "test_id": test_id,
+            "log_path": str(log_file),
+            "log_size_bytes": log_file.stat().st_size,
+            "content": content
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving log for test {test_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
