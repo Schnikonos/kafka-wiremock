@@ -21,8 +21,6 @@ class LogMessage:
     payload: Any
     headers: Optional[Dict[str, str]] = None
     message_id: Optional[str] = None
-    source_id: Optional[str] = None
-    target_id: Optional[str] = None
     correlation_matched: bool = False
     conditions_matched: int = 0
     total_conditions: int = 0
@@ -81,8 +79,6 @@ class TestLogger:
         topic: str,
         payload: Any,
         message_id: Optional[str] = None,
-        source_id: Optional[str] = None,
-        target_id: Optional[str] = None,
         correlation_matched: bool = False,
         conditions_matched: int = 0,
         total_conditions: int = 0,
@@ -96,8 +92,6 @@ class TestLogger:
             payload=payload,
             headers=headers,
             message_id=message_id,
-            source_id=source_id,
-            target_id=target_id,
             correlation_matched=correlation_matched,
             conditions_matched=conditions_matched,
             total_conditions=total_conditions

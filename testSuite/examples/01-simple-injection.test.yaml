@@ -24,17 +24,18 @@ when:
 then:
   expectations:
     - topic: "users.events"
-      message_id: "order1"
-      source_id: "$.sourceId"
-      target_id: "$.targetId"
       wait_ms: 2000
+      correlate:
+        message_id: "order1"
       match:
         - type: jsonpath
           expression: "$.source"
           value: "SomeSource"
         - type: jsonpath
           expression: "$.status"
-          regex: "P2ROCESSED|ACCEPTED"
+          regex: "PROCESSED|ACCEPTED"
+
+
 
 
 

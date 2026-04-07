@@ -92,16 +92,33 @@ async def lifespan(app: FastAPI):
         config_loader = ConfigLoader(config_dir=config_dir, reload_interval=30)
         kafka_client = KafkaClientWrapper(bootstrap_servers=bootstrap_servers)
 
-        # Initialize message cache for tests FIRST (before listener engine)
+        # Initialize message cache for tests and rules
         message_cache = MessageCache(ttl_seconds=120, cleanup_interval_seconds=30)
         message_cache.start_cleanup()
+
+        # Initialize topic metadata manager
+        from .kafka.topic_metadata import TopicMetadataManager
+        topic_metadata_manager = TopicMetadataManager(
+            config_dir=config_dir,
+            test_suite_dir=test_suite_dir,
+            kafka_client=kafka_client,
+            scan_interval=30,
+            topic_check_interval=10
+        )
+
+        # Initialize schema registry
+        schema_registry_url = os.getenv("SCHEMA_REGISTRY_URL", None)
+        from .kafka.schema_registry import SchemaRegistry
+        schema_registry = SchemaRegistry(registry_url=schema_registry_url, cache_ttl_seconds=3600)
 
         listener_engine = KafkaListenerEngine(
             config_loader,
             kafka_client,
             bootstrap_servers,
             custom_placeholder_registry=custom_placeholder_registry,
-            message_cache=message_cache
+            message_cache=message_cache,
+            topic_metadata_manager=topic_metadata_manager,
+            schema_registry=schema_registry
         )
         # Start listener engine
         listener_engine.start()
@@ -988,4 +1005,278 @@ async def render_template(
             "error": str(e),
             "template": template
         }
+
+
+@app.post("/debug/decode")
+async def debug_decode(
+    topic: str = Body(..., description="Kafka topic name"),
+    payload: Union[str, bytes] = Body(..., description="Message payload (base64 encoded bytes or JSON/string)")
+) -> Dict[str, Any]:
+    """
+    Debug endpoint: Decode a message and show format detection.
+    
+    Args:
+        topic: Topic name (used to determine expected format from metadata)
+        payload: Raw message bytes (base64 encoded) or string/JSON
+    
+    Returns:
+        Decoded message, detected format, and deserialization details
+    """
+    try:
+        if not listener_engine:
+            raise HTTPException(status_code=503, detail="Listener engine not initialized")
+        
+        import base64
+        
+        # Handle payload encoding
+        raw_bytes = None
+        if isinstance(payload, str):
+            try:
+                # Try to decode as base64 first
+                raw_bytes = base64.b64decode(payload, validate=True)
+            except Exception:
+                # Fall back to UTF-8 encoding
+                raw_bytes = payload.encode('utf-8')
+        else:
+            raw_bytes = payload
+        
+        # Get topic metadata
+        topic_type = "json"
+        if listener_engine.topic_metadata_manager:
+            topic_type = listener_engine.topic_metadata_manager.get_topic_type(topic)
+        
+        # Deserialize
+        decoded, fmt = listener_engine._deserialize_message(
+            type('MockMessage', (), {'value': raw_bytes})(),
+            topic_type
+        )
+        
+        # Get schema registry info if available
+        schema_registry_status = None
+        if listener_engine.schema_registry:
+            schema_registry_status = listener_engine.schema_registry.get_cache_stats()
+        
+        return {
+            "success": True,
+            "topic": topic,
+            "expected_format": topic_type,
+            "detected_format": fmt,
+            "decoded_value": decoded,
+            "payload_size_bytes": len(raw_bytes),
+            "schema_registry": schema_registry_status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in debug decode: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "topic": topic,
+            "payload_size_bytes": len(raw_bytes) if 'raw_bytes' in locals() else 0
+        }
+
+
+@app.post("/debug/match")
+async def debug_match(
+    topic: str = Body(..., description="Kafka topic name"),
+    payload: Union[str, dict] = Body(..., description="Message payload (JSON)"),
+    rule_name: Optional[str] = Body(None, description="Specific rule name to test (optional, tests all if omitted)")
+) -> Dict[str, Any]:
+    """
+    Debug endpoint: Test message matching against rules and show detailed analysis.
+    
+    Args:
+        topic: Topic name
+        payload: Message content (as JSON dict or string)
+        rule_name: Optional specific rule to test
+    
+    Returns:
+        Detailed matching analysis including which conditions matched/failed
+    """
+    try:
+        if not config_loader:
+            raise HTTPException(status_code=503, detail="Config loader not initialized")
+        
+        # Parse payload if string
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        
+        # Get rules for this topic
+        rules = config_loader.get_rules_for_topic(topic)
+        
+        if not rules:
+            return {
+                "success": True,
+                "topic": topic,
+                "message_preview": str(payload)[:200],
+                "result": "NO_RULES",
+                "message": "No rules configured for this topic",
+                "rules_evaluated": 0
+            }
+        
+        # Filter by rule name if specified
+        if rule_name:
+            rules = [r for r in rules if r.rule_name == rule_name]
+            if not rules:
+                return {
+                    "success": False,
+                    "error": f"Rule '{rule_name}' not found",
+                    "topic": topic
+                }
+        
+        # Evaluate each rule
+        rule_results = []
+        first_match = None
+        
+        for rule in rules:
+            # Test each condition
+            condition_details = []
+            rule_matches = True
+            
+            if not rule.conditions:
+                # Wildcard rule
+                rule_matches = True
+            else:
+                for cond_idx, condition in enumerate(rule.conditions):
+                    try:
+                        from .rules.matcher import MatcherFactory
+                        matcher = MatcherFactory.create(condition.type)
+                        
+                        if condition.type == 'jsonpath':
+                            match_condition = {
+                                'path': condition.expression,
+                                'value': condition.value,
+                                'regex': condition.regex
+                            }
+                        else:
+                            match_condition = condition.regex if condition.regex else condition.value
+                        
+                        result = matcher.match(payload, match_condition)
+                        
+                        condition_details.append({
+                            "index": cond_idx,
+                            "type": condition.type,
+                            "expression": condition.expression,
+                            "value": condition.value,
+                            "regex": condition.regex,
+                            "matched": result.matched,
+                            "context": result.context
+                        })
+                        
+                        if not result.matched:
+                            rule_matches = False
+                    
+                    except Exception as e:
+                        logger.error(f"Error evaluating condition {cond_idx}: {e}")
+                        condition_details.append({
+                            "index": cond_idx,
+                            "error": str(e),
+                            "matched": False
+                        })
+                        rule_matches = False
+            
+            rule_result = {
+                "rule_name": rule.rule_name,
+                "priority": rule.priority,
+                "matched": rule_matches,
+                "conditions": condition_details,
+                "conditions_count": len(rule.conditions),
+                "outputs_count": len(rule.outputs),
+                "output_topics": [o.topic for o in rule.outputs]
+            }
+            rule_results.append(rule_result)
+            
+            if rule_matches and first_match is None:
+                first_match = rule_result
+        
+        return {
+            "success": True,
+            "topic": topic,
+            "message_preview": str(payload)[:300],
+            "total_rules": len(rules),
+            "first_match": first_match,
+            "all_rules": rule_results
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in debug match: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "topic": topic
+        }
+
+
+@app.get("/debug/topics")
+async def debug_topics() -> Dict[str, Any]:
+    """
+    Debug endpoint: Show all discovered topics and their metadata.
+    
+    Returns:
+        List of all topics with their types, existence status, and other metadata
+    """
+    try:
+        if not listener_engine or not listener_engine.topic_metadata_manager:
+            return {
+                "success": False,
+                "message": "Topic metadata manager not available"
+            }
+        
+        summary = listener_engine.topic_metadata_manager.get_metadata_summary()
+        
+        # Get consumer subscription status
+        consumer_subscription = []
+        if listener_engine.consumer:
+            try:
+                consumer_subscription = list(listener_engine.consumer.subscription() or [])
+            except Exception as e:
+                logger.debug(f"Error getting consumer subscription: {e}")
+        
+        return {
+            "success": True,
+            "total_topics": summary["total_topics"],
+            "consumer_subscribed": sorted(consumer_subscription),
+            "topics": summary["topics"],
+            "cache_stats": message_cache.get_cache_stats() if message_cache else None
+        }
+    
+    except Exception as e:
+        logger.error(f"Error in debug topics: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get("/debug/cache")
+async def debug_cache() -> Dict[str, Any]:
+    """
+    Debug endpoint: Show message cache statistics and contents.
+    
+    Returns:
+        Cache statistics including message counts, consumption status, and formats
+    """
+    try:
+        if not message_cache:
+            raise HTTPException(status_code=503, detail="Message cache not initialized")
+        
+        return {
+            "success": True,
+            "cache_stats": message_cache.get_cache_stats(),
+            "ttl_seconds": message_cache.ttl_seconds
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in debug cache: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 

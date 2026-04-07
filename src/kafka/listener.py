@@ -1,12 +1,13 @@
 """
 Kafka listener engine that processes messages and applies rules.
+Uses a single consumer with dynamic subscription to monitor all topics.
 """
 import json
 import logging
 import threading
 import time
 import io
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
 
@@ -21,18 +22,25 @@ from ..rules.templater import TemplateRenderer
 from ..config.loader import ConfigLoader
 from ..config.models import Rule
 from .client import KafkaClientWrapper
+from .topic_metadata import TopicMetadataManager
+from .schema_registry import SchemaRegistry
 from ..custom.placeholders import CustomPlaceholderRegistry
 
 logger = logging.getLogger(__name__)
 
 
 class KafkaListenerEngine:
-    """Background listener engine that processes Kafka messages and applies rules."""
+    """
+    Background listener engine that processes Kafka messages and applies rules.
+    Uses a single consumer with dynamic subscription to all configured topics.
+    """
 
     def __init__(self, config_loader: ConfigLoader, kafka_client: KafkaClientWrapper,
                  bootstrap_servers: str = "localhost:9092",
                  custom_placeholder_registry: CustomPlaceholderRegistry = None,
-                 message_cache = None):
+                 message_cache = None,
+                 topic_metadata_manager: TopicMetadataManager = None,
+                 schema_registry: SchemaRegistry = None):
         """
         Initialize the listener engine.
 
@@ -41,99 +49,124 @@ class KafkaListenerEngine:
             kafka_client: Kafka client wrapper
             bootstrap_servers: Kafka bootstrap servers
             custom_placeholder_registry: Optional custom placeholder registry
-            message_cache: Optional MessageCache instance for test queries
+            message_cache: Optional MessageCache instance
+            topic_metadata_manager: Optional TopicMetadataManager for dynamic topics
+            schema_registry: Optional SchemaRegistry for AVRO decoding
         """
         self.config_loader = config_loader
         self.kafka_client = kafka_client
         self.bootstrap_servers = bootstrap_servers
         self.custom_placeholder_registry = custom_placeholder_registry
         self.message_cache = message_cache
-        self.consumers: Dict[str, KafkaConsumer] = {}
-        self.threads: Dict[str, threading.Thread] = {}
+        self.topic_metadata_manager = topic_metadata_manager
+        self.schema_registry = schema_registry
+
+        self.consumer: Optional[KafkaConsumer] = None
+        self.listener_thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
+        self._last_subscription_update = 0
         self._matcher_cache = {}
+        self.matcher_factory = MatcherFactory()
 
     def start(self) -> None:
-        """Start the listener engine."""
+        """Start the listener engine with unified consumer."""
+        if self._running:
+            logger.warning("Listener engine already running")
+            return
+
         self._running = True
-        self._start_listeners()
-        logger.info("Kafka listener engine started")
+
+        # Start topic metadata manager if available
+        if self.topic_metadata_manager:
+            self.topic_metadata_manager.start()
+
+        # Start unified listener thread
+        with self._lock:
+            self.listener_thread = threading.Thread(
+                target=self._unified_listen_loop,
+                daemon=True,
+                name="kafka-unified-listener"
+            )
+            self.listener_thread.start()
+
+        logger.info("Kafka listener engine started (unified consumer)")
 
     def stop(self) -> None:
         """Stop the listener engine."""
         self._running = False
 
-        with self._lock:
-            for thread in self.threads.values():
-                thread.join(timeout=5)
+        # Stop topic metadata manager
+        if self.topic_metadata_manager:
+            self.topic_metadata_manager.stop()
 
-            for consumer in self.consumers.values():
-                consumer.close()
+        # Stop listener thread
+        if self.listener_thread:
+            self.listener_thread.join(timeout=5)
+
+        # Close consumer
+        with self._lock:
+            if self.consumer:
+                try:
+                    self.consumer.close()
+                except Exception as e:
+                    logger.debug(f"Error closing consumer: {e}")
+                self.consumer = None
 
         logger.info("Kafka listener engine stopped")
 
     def is_listening_to_topic(self, topic: str) -> bool:
         """
-        Check if the listener is actively listening to a topic (has a consumer).
+        Check if topic is in the unified consumer's subscription.
 
         Args:
             topic: Topic name to check
 
         Returns:
-            True if listener has a consumer for the topic, False otherwise
+            True if consumer is subscribed to topic, False otherwise
         """
         with self._lock:
-            return topic in self.consumers and self.consumers[topic] is not None
+            if not self.consumer:
+                return False
+            try:
+                subscribed = self.consumer.subscription() or set()
+                return topic in subscribed
+            except Exception:
+                return False
 
     def ensure_listening_to_topic(self, topic: str, timeout_seconds: int = 5) -> bool:
         """
-        Ensure the listener is listening to a specific topic.
-        Will start a listener thread if one isn't already running.
-        Waits up to timeout_seconds for the listener to connect.
+        Ensure the unified listener is monitoring a specific topic.
+        The topic will be added to subscription on next update cycle.
 
         Args:
             topic: Topic name to listen to
-            timeout_seconds: Maximum time to wait for listener to connect (default 5)
+            timeout_seconds: Maximum time to wait for subscription
 
         Returns:
-            True if listener connected successfully, False if timeout
+            True if subscription includes topic within timeout, False if timeout
         """
         start_time = time.time()
 
-        # Start listener thread for this topic if not already running
-        with self._lock:
-            if topic not in self.threads:
-                thread = threading.Thread(
-                    target=self._listen_topic,
-                    args=(topic,),
-                    daemon=True,
-                    name=f"listener-{topic}"
-                )
-                thread.start()
-                self.threads[topic] = thread
-                logger.info(f"Started on-demand listener thread for topic: {topic}")
-
-        # Wait for listener to connect to Kafka
         while time.time() - start_time < timeout_seconds:
             if self.is_listening_to_topic(topic):
-                logger.info(f"Listener ready for topic: {topic}")
+                logger.info(f"Listener subscribed to topic: {topic}")
                 return True
             time.sleep(0.1)
 
-        logger.warning(f"Timeout waiting for listener to connect to topic: {topic} (waited {timeout_seconds}s)")
+        logger.warning(f"Timeout waiting for listener subscription to topic: {topic}")
         return False
 
     def ensure_listening_to_topics(self, topics: List[str], timeout_seconds: int = 5) -> bool:
         """
-        Ensure the listener is listening to multiple topics.
+        Ensure the unified listener is monitoring multiple topics.
 
         Args:
             topics: List of topic names to listen to
             timeout_seconds: Maximum time to wait per topic
 
         Returns:
-            True if all listeners connected successfully, False if any timeout
+            True if all topics subscribed within timeout, False if any timeout
         """
         all_success = True
         for topic in topics:
@@ -141,155 +174,140 @@ class KafkaListenerEngine:
                 all_success = False
         return all_success
 
-    def _start_listeners(self) -> None:
-        """Start listeners for all configured input topics."""
-        topics = set()
-        for rule in self.config_loader.get_all_rules():
-            topics.add(rule.input_topic)
-
-        with self._lock:
-            for topic in topics:
-                if topic not in self.threads:
-                    thread = threading.Thread(
-                        target=self._listen_topic,
-                        args=(topic,),
-                        daemon=True,
-                        name=f"listener-{topic}"
-                    )
-                    thread.start()
-                    self.threads[topic] = thread
-                    logger.info(f"Started listener thread for topic: {topic}")
-
-    def _listen_topic(self, topic: str) -> None:
-        """Listen to a specific topic and process messages.
-
-        Will only create a consumer if the topic exists.
-        If the topic doesn't exist, will retry periodically.
+    def _unified_listen_loop(self) -> None:
         """
-        retry_interval = 10  # seconds between retries for non-existent topics
-        last_existence_check = 0
-        topic_existed = False
+        Unified polling loop for all topics.
+        Handles dynamic subscription updates and message processing.
+        """
+        retry_count = 0
+        max_retries = 5
 
         try:
             while self._running:
-                current_time = time.time()
-
-                # Check if topic exists (rate-limited every 10 seconds for non-existent topics)
-                if not topic_existed and (current_time - last_existence_check) < retry_interval:
-                    # Not yet time to re-check a non-existent topic
-                    time.sleep(1)
-                    continue
-
-                # Check if topic exists
-                if not self.kafka_client._verify_topic_exists(topic):
-                    last_existence_check = current_time
-                    if not topic_existed:
-                        logger.debug(f"Topic '{topic}' does not exist yet. Will retry in {retry_interval}s")
-                    time.sleep(1)
-                    continue
-
-                # Topic exists! Create consumer if we haven't already
-                topic_existed = True
-                if topic not in self.consumers:
-                    consumer = KafkaConsumer(
-                        topic,
-                        bootstrap_servers=self.bootstrap_servers,
-                        auto_offset_reset='latest',
-                        group_id=f"wiremock-listener-{topic}",
-                        consumer_timeout_ms=1000,
-                        value_deserializer=lambda x: x if x is None else x,
-                    )
-
-                    with self._lock:
-                        self.consumers[topic] = consumer
-
-                    logger.info(f"Topic '{topic}' now available. Started listening to topic.")
-
-                consumer = self.consumers[topic]
-
                 try:
-                    # Check for config changes every 30s
+                    # Create consumer on first iteration or after connection loss
+                    if self.consumer is None:
+                        if retry_count >= max_retries:
+                            logger.error(f"Failed to connect to Kafka after {max_retries} retries")
+                            time.sleep(5)
+                            retry_count = 0
+                            continue
+
+                        try:
+                            self.consumer = KafkaConsumer(
+                                bootstrap_servers=self.bootstrap_servers,
+                                auto_offset_reset='latest',
+                                group_id='wiremock-listener',
+                                enable_auto_commit=True,
+                                auto_commit_interval_ms=5000,
+                                fetch_max_wait_ms=500,
+                                max_poll_records=100
+                            )
+                            retry_count = 0
+                            logger.info("Connected to Kafka consumer")
+                            with self._lock:
+                                self.consumer = self.consumer
+                        except Exception as e:
+                            retry_count += 1
+                            logger.warning(f"Failed to create consumer (attempt {retry_count}/{max_retries}): {e}")
+                            time.sleep(2)
+                            continue
+
+                    # Update subscription every 30 seconds
+                    current_time = time.time()
+                    if current_time - self._last_subscription_update > 30:
+                        self._update_subscription()
+                        self._last_subscription_update = current_time
+
+                    # Check for config changes
                     if self.config_loader.check_and_reload():
-                        # Check if there are new topics to listen to
-                        self._handle_config_reload()
+                        logger.debug("Config reloaded, will update topic subscription on next cycle")
 
                     # Check for custom placeholder changes
                     if self.custom_placeholder_registry and self.custom_placeholder_registry.check_and_reload():
                         logger.info("Custom placeholders reloaded")
 
-                    # Poll for messages (timeout 5s)
-                    messages = consumer.poll(timeout_ms=5000)
+                    # Poll for messages
+                    messages = self.consumer.poll(timeout_ms=5000)
 
                     for topic_partition, records in messages.items():
+                        topic = topic_partition.topic
                         for message in records:
                             self._process_message(topic, message)
 
                 except Exception as e:
-                    logger.error(f"Error polling topic {topic}: {e}")
+                    logger.error(f"Error in unified listener loop: {e}")
+                    with self._lock:
+                        if self.consumer:
+                            try:
+                                self.consumer.close()
+                            except:
+                                pass
+                            self.consumer = None
+                    time.sleep(2)
 
         except Exception as e:
-            logger.error(f"Unexpected error in listener thread for {topic}: {e}")
+            logger.error(f"Unexpected error in listener thread: {e}")
         finally:
-            if topic in self.consumers:
+            with self._lock:
+                if self.consumer:
+                    try:
+                        self.consumer.close()
+                    except Exception as e:
+                        logger.debug(f"Error closing consumer in finally: {e}")
+                    self.consumer = None
+            logger.info("Unified listener thread stopped")
+
+    def _update_subscription(self) -> None:
+        """
+        Update consumer subscription based on config and topic existence.
+        Only subscribes to topics that exist and are properly configured.
+        """
+        if not self.consumer:
+            return
+
+        try:
+            # Get topics from config + metadata
+            if self.topic_metadata_manager:
+                configured_topics = self.topic_metadata_manager.get_all_topics()
+                existing_topics = self.topic_metadata_manager.get_existing_topics()
+            else:
+                # Fallback: use topics from rules
+                configured_topics = set()
+                for rule in self.config_loader.get_all_rules():
+                    configured_topics.add(rule.input_topic)
+                existing_topics = configured_topics
+
+            # Update subscription
+            if existing_topics:
                 try:
-                    self.consumers[topic].close()
+                    self.consumer.subscribe(list(existing_topics))
+                    logger.debug(f"Updated consumer subscription to {len(existing_topics)} topics: {sorted(existing_topics)}")
                 except Exception as e:
-                    logger.debug(f"Error closing consumer for {topic}: {e}")
-                del self.consumers[topic]
-            logger.info(f"Listener thread for topic '{topic}' stopped")
+                    logger.error(f"Error updating subscription: {e}")
+            else:
+                logger.debug("No topics to subscribe to")
 
-    def _handle_config_reload(self) -> None:
-        """Handle config reload by starting listeners for new topics."""
-        topics = set()
-        for rule in self.config_loader.get_all_rules():
-            topics.add(rule.input_topic)
-
-        with self._lock:
-            current_topics = set(self.threads.keys())
-            new_topics = topics - current_topics
-
-            for topic in new_topics:
-                logger.info(f"New topic detected in config: {topic}. Starting listener...")
-                thread = threading.Thread(
-                    target=self._listen_topic,
-                    args=(topic,),
-                    daemon=True,
-                    name=f"listener-{topic}"
-                )
-                thread.start()
-                self.threads[topic] = thread
+        except Exception as e:
+            logger.error(f"Error in subscription update: {e}")
 
     def _process_message(self, topic: str, message) -> None:
         """Process a single message and apply matching rules."""
         try:
-            # Deserialize message value
-            if message.value:
-                try:
-                    message_data = json.loads(message.value.decode('utf-8'))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    # Try AVRO deserialization
-                    if AVRO_AVAILABLE:
-                        try:
-                            if len(message.value) > 5 and message.value[0:1] == b'\x00':
-                                # Confluent magic byte - skip first 5 bytes
-                                bytes_reader = io.BytesIO(message.value[5:])
-                            else:
-                                bytes_reader = io.BytesIO(message.value)
-                            message_data = fastavro.reader(bytes_reader).__next__()
-                        except Exception as avro_err:
-                            logger.debug(f"AVRO deserialization failed: {avro_err}")
-                            message_data = message.value
-                    else:
-                        message_data = message.value
-            else:
-                message_data = None
+            # Deserialize message based on topic type
+            topic_type = "json"
+            if self.topic_metadata_manager:
+                topic_type = self.topic_metadata_manager.get_topic_type(topic)
 
-            # Add message to cache for test queries (if cache available)
+            message_data, message_format = self._deserialize_message(message, topic_type)
+
+            # Add message to cache with format information
             if self.message_cache:
                 try:
                     self.message_cache.add_message(
                         topic=topic,
                         value=message_data,
+                        message_format=message_format,
                         timestamp=message.timestamp,
                         partition=message.partition,
                         offset=message.offset,
@@ -310,11 +328,86 @@ class KafkaListenerEngine:
                 if self._evaluate_rule(rule, message_data):
                     logger.info(f"Rule matched: {rule.rule_name} for topic {topic}")
                     self._execute_rule(rule, message_data)
+
+                    # Mark message as consumed by rules
+                    if self.message_cache:
+                        try:
+                            self.message_cache.mark_consumed_by_rules(topic, message.offset)
+                        except Exception as e:
+                            logger.debug(f"Failed to mark message as consumed: {e}")
+
                     # Stop after first match
                     break
 
         except Exception as e:
             logger.error(f"Error processing message from {topic}: {e}")
+
+    def _deserialize_message(self, kafka_message, topic_type: str = "json") -> tuple:
+        """
+        Deserialize a Kafka message based on topic type.
+
+        Args:
+            kafka_message: Raw Kafka message
+            topic_type: Expected format (json, avro, or bytes)
+
+        Returns:
+            Tuple of (message_data, format_type)
+        """
+        try:
+            if not kafka_message.value:
+                return None, "null"
+
+            # Try to deserialize based on topic type
+            if topic_type == "avro":
+                # Try Schema Registry first if available
+                if self.schema_registry:
+                    message_data, fmt = self.schema_registry.decode(kafka_message.value)
+                    if message_data is not None:
+                        return message_data, fmt
+
+                # Fallback to raw AVRO deserialization
+                if AVRO_AVAILABLE:
+                    try:
+                        if len(kafka_message.value) > 5 and kafka_message.value[0:1] == b'\x00':
+                            bytes_reader = io.BytesIO(kafka_message.value[5:])
+                        else:
+                            bytes_reader = io.BytesIO(kafka_message.value)
+                        message_data = fastavro.reader(bytes_reader).__next__()
+                        return message_data, "avro"
+                    except Exception as e:
+                        logger.debug(f"AVRO fallback deserialization failed: {e}")
+
+                # Fall through to JSON attempt
+
+            elif topic_type == "bytes":
+                # Try JSON first, then return as bytes
+                try:
+                    return json.loads(kafka_message.value.decode('utf-8')), "json"
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return kafka_message.value, "bytes"
+
+            # Default: try JSON
+            try:
+                return json.loads(kafka_message.value.decode('utf-8')), "json"
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Try AVRO as fallback
+                if AVRO_AVAILABLE:
+                    try:
+                        if len(kafka_message.value) > 5 and kafka_message.value[0:1] == b'\x00':
+                            bytes_reader = io.BytesIO(kafka_message.value[5:])
+                        else:
+                            bytes_reader = io.BytesIO(kafka_message.value)
+                        message_data = fastavro.reader(bytes_reader).__next__()
+                        return message_data, "avro"
+                    except Exception:
+                        pass
+
+                # Last resort: return bytes as-is
+                return kafka_message.value, "bytes"
+
+        except Exception as e:
+            logger.error(f"Error deserializing message: {e}")
+            return None, "error"
 
     def _evaluate_rule(self, rule: Rule, message_data: any) -> bool:
         """Evaluate if a message matches a rule."""

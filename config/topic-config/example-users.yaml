@@ -1,0 +1,32 @@
+# Example: Topic configuration for users topic
+topic: users.commands
+
+message:
+  format: json
+
+correlation:
+  extract:
+    - from: jsonpath
+      expression: $.sourceId
+      priority: 1
+    - from: header
+      name: X-Source-Id
+      priority: 2
+
+  propagate:
+    to_headers:
+      X-Correlation-Id: "{{correlationId}}"
+
+---
+# Example: Topic configuration for users events topic
+topic: users.events
+
+message:
+  format: json
+
+correlation:
+  extract:
+    - from: jsonpath
+      expression: $.targetId
+      priority: 1
+

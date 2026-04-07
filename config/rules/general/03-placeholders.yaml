@@ -13,7 +13,6 @@ then:
     payload: |
       {
         "userId": "{{uuid}}",
-        "targetId": "{{$.sourceId}}",
         "username": "{{$.username}}",
         "email": "{{$.email}}",
         "status": "PROCESSED",

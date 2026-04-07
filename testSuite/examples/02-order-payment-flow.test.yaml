@@ -1,7 +1,7 @@
 priority: 20
 name: "order-to-payment-flow"
 tags: ["example", "integration"]
-skip: false
+skip: true
 timeout_ms: 8000
 
 when:

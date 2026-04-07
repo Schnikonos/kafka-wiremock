@@ -353,31 +353,44 @@ class TestExecutor:
         start_time = time.time()
 
         try:
-            # Resolve correlation if message_id specified
+            # Resolve correlation if specified
             correlation_value = None
-            if expectation.message_id and expectation.source_id:
-                # Extract field from injected message using JSONPath
-                injected_data = injections_dict.get(expectation.message_id)
-                if injected_data:
-                    try:
-                        # Extract the source value from the injected message payload
-                        payload = injected_data.get("payload")
-                        if payload:
-                            source_expr = jsonpath_parse(expectation.source_id)
-                            matches = source_expr.find(payload)
-                            correlation_value = matches[0].value if matches else None
-                            if correlation_value is None:
-                                logger.warning(f"Could not extract {expectation.source_id} from payload")
-                        else:
-                            logger.warning(f"No payload in injected message {expectation.message_id}")
-                    except Exception as e:
-                        logger.warning(f"Failed to extract correlation value: {e}")
-                        correlation_value = None
-                else:
-                    exp_result.error = f"Message not found: {expectation.message_id}"
-                    exp_result.status = "NO_MATCH"
-                    exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
-                    return exp_result
+            if expectation.correlate:
+                corr = expectation.correlate
+                if corr.message_id and corr.source:
+                    # Extract field from injected message
+                    injected_data = injections_dict.get(corr.message_id)
+                    if injected_data:
+                        try:
+                            payload = injected_data.get("payload")
+                            if payload:
+                                # Determine source type and extract value
+                                if "jsonpath" in corr.source:
+                                    expr_str = corr.source["jsonpath"]
+                                    source_expr = jsonpath_parse(expr_str)
+                                    matches = source_expr.find(payload)
+                                    correlation_value = matches[0].value if matches else None
+                                elif "header" in corr.source:
+                                    # Headers are in injected_data
+                                    header_name = corr.source["header"]
+                                    headers = injected_data.get("headers", {})
+                                    correlation_value = headers.get(header_name)
+                                
+                                if correlation_value is None:
+                                    logger.warning(f"Could not extract correlation from source {corr.source}")
+                            else:
+                                logger.warning(f"No payload in injected message {corr.message_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to extract correlation value: {e}")
+                            correlation_value = None
+                    else:
+                        exp_result.error = f"Message not found: {corr.message_id}"
+                        exp_result.status = "NO_MATCH"
+                        exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                        return exp_result
+                elif corr.message_id:
+                    # message_id without source - will match any message from that injection
+                    logger.debug(f"Using message_id {corr.message_id} without source for correlation")
 
             # Ensure listener is ready for this topic (wait up to 5 seconds)
             if self.listener_engine:
@@ -463,24 +476,41 @@ class TestExecutor:
                     correlation_matched = False
                     conditions_matched = 0
 
-                    if expectation.message_id and expectation.source_id and expectation.target_id:
-                        # Extract target value
+                    # Check correlation target if specified
+                    if expectation.correlate and expectation.correlate.target and correlation_value is not None:
                         try:
-                            target_expr = jsonpath_parse(expectation.target_id)
-                            matches = target_expr.find(msg_value)
-                            target_value = matches[0].value if matches else None
-                        except Exception:
+                            target = expectation.correlate.target
                             target_value = None
-
-                        if target_value != correlation_value:
-                            # Log this non-matching message for debugging
+                            if "jsonpath" in target:
+                                expr_str = target["jsonpath"]
+                                target_expr = jsonpath_parse(expr_str)
+                                matches = target_expr.find(msg_value)
+                                target_value = matches[0].value if matches else None
+                            elif "header" in target:
+                                header_name = target["header"]
+                                headers = msg.get("headers", {})
+                                target_value = headers.get(header_name)
+                            
+                            if target_value != correlation_value:
+                                # Log this non-matching message for debugging
+                                if test_logger:
+                                    test_logger.log_received_message(
+                                        topic=expectation.topic,
+                                        payload=msg_value,
+                                        correlation_matched=False,
+                                        conditions_matched=0,
+                                        total_conditions=len(expectation.match) if expectation.match else 0,
+                                        headers=msg.get("headers")
+                                    )
+                                all_received_messages.append(msg_for_logging)
+                                continue
+                            correlation_matched = True
+                        except Exception as e:
+                            logger.warning(f"Failed to extract/match target correlation: {e}")
                             if test_logger:
                                 test_logger.log_received_message(
                                     topic=expectation.topic,
                                     payload=msg_value,
-                                    message_id=expectation.message_id,
-                                    source_id=expectation.source_id,
-                                    target_id=expectation.target_id,
                                     correlation_matched=False,
                                     conditions_matched=0,
                                     total_conditions=len(expectation.match) if expectation.match else 0,
@@ -488,6 +518,8 @@ class TestExecutor:
                                 )
                             all_received_messages.append(msg_for_logging)
                             continue
+                    elif not expectation.correlate or not expectation.correlate.target:
+                        # No correlation matching needed
                         correlation_matched = True
 
                     # Check conditions
@@ -521,9 +553,6 @@ class TestExecutor:
                                 test_logger.log_received_message(
                                     topic=expectation.topic,
                                     payload=msg_value,
-                                    message_id=expectation.message_id,
-                                    source_id=expectation.source_id,
-                                    target_id=expectation.target_id,
                                     correlation_matched=correlation_matched,
                                     conditions_matched=conditions_matched,
                                     total_conditions=len(expectation.match),
@@ -541,9 +570,6 @@ class TestExecutor:
                         test_logger.log_received_message(
                             topic=expectation.topic,
                             payload=msg_value,
-                            message_id=expectation.message_id,
-                            source_id=expectation.source_id,
-                            target_id=expectation.target_id,
                             correlation_matched=correlation_matched,
                             conditions_matched=conditions_matched,
                             total_conditions=len(expectation.match) if expectation.match else 0,

@@ -13,6 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class TestCorrelation:
+    """Correlation configuration for test expectation."""
+    message_id: Optional[str] = None  # Reference to injected message_id
+    source: Optional[Dict[str, str]] = None  # {"jsonpath": "..."} or {"header": "..."}
+    target: Optional[Dict[str, str]] = None  # {"jsonpath": "..."} or {"header": "..."}
+
+
+@dataclass
 class TestInjection:
     """A message to inject during test setup (when phase)."""
     message_id: str
@@ -21,6 +29,7 @@ class TestInjection:
     payload_file: Optional[str] = None  # Path to external payload file (relative to test file)
     headers: Optional[Dict[str, str]] = None
     delay_ms: int = 0
+    correlation_id: Optional[str] = None  # Optional override correlation ID
 
 
 @dataclass
@@ -34,12 +43,10 @@ class TestScript:
 class TestExpectation:
     """An expected message to receive during test validation (then phase)."""
     topic: str
-    message_id: Optional[str] = None  # Which injected message to correlate with
-    source_id: Optional[str] = None  # Field in that message (e.g. "$.orderId")
-    target_id: Optional[str] = None  # Field in received message to match against
     wait_ms: int = 2000  # Default 2s timeout
     match: List[Condition] = field(default_factory=list)  # Optional conditions
     match_file: Optional[str] = None  # Path to external match conditions file (YAML)
+    correlate: Optional[TestCorrelation] = None  # Correlation configuration
 
 
 @dataclass
@@ -191,7 +198,8 @@ class TestValidator:
                     payload=str(item_dict["payload"]) if "payload" in item_dict else None,
                     payload_file=item_dict.get("payload_file"),
                     headers=item_dict.get("headers"),
-                    delay_ms=int(item_dict.get("delay_ms", 0))
+                    delay_ms=int(item_dict.get("delay_ms", 0)),
+                    correlation_id=item_dict.get("correlation_id")
                 )
                 items.append(injection)
 
@@ -244,14 +252,22 @@ class TestValidator:
                         )
                         conditions.append(condition)
 
+                # Parse correlation configuration
+                correlate = None
+                if "correlate" in item_dict:
+                    corr_dict = item_dict["correlate"]
+                    correlate = TestCorrelation(
+                        message_id=corr_dict.get("message_id"),
+                        source=corr_dict.get("source"),
+                        target=corr_dict.get("target")
+                    )
+
                 expectation = TestExpectation(
                     topic=str(item_dict["topic"]),
-                    message_id=item_dict.get("message_id"),
-                    source_id=item_dict.get("source_id"),
-                    target_id=item_dict.get("target_id"),
                     wait_ms=int(item_dict.get("wait_ms", 2000)),
                     match=conditions,
-                    match_file=item_dict.get("match_file")
+                    match_file=item_dict.get("match_file"),
+                    correlate=correlate
                 )
                 items.append(expectation)
 

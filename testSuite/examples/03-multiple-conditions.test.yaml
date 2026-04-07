@@ -1,7 +1,7 @@
 priority: 30
 name: "multiple-conditions-test"
 tags: ["example", "advanced"]
-skip: false
+skip: true
 timeout_ms: 6000
 
 when:

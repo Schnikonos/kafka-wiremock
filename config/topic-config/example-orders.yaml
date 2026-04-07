@@ -1,0 +1,30 @@
+# Topic configuration for orders.input
+# Demonstrates JSON messages with correlation tracking via headers and JSON fields
+
+topic: orders.input
+
+# Message format settings
+message:
+  format: json
+
+# Correlation ID extraction and propagation
+correlation:
+  # How to extract correlation ID from incoming messages (priority order)
+  extract:
+    # First, try to find in message header
+    - from: header
+      name: X-Correlation-Id
+      priority: 1
+
+    # Fall back to JSON field
+    - from: jsonpath
+      expression: $.correlationId
+      priority: 2
+
+  # Where to write correlation ID when producing to this topic
+  propagate:
+    to_headers:
+      X-Correlation-Id: "{{correlationId}}"
+
+
+

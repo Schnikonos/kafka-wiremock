@@ -1,6 +1,6 @@
 """
-Message cache for test suite - stores messages received from Kafka topics
-with TTL so tests can query them instead of polling Kafka directly.
+Unified message cache for Kafka messages consumed by Wiremock.
+Stores messages with TTL, tracks consumption status (rules/tests), and manages expiration.
 """
 import logging
 import time
@@ -8,36 +8,36 @@ import threading
 from typing import Dict, List, Optional, Any
 from threading import Lock
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class CachedMessage:
-    """A message stored in the cache with timestamp."""
+    """A message stored in the cache with tracking."""
     value: Any
+    message_format: str  # json, avro, bytes
     timestamp: int
     partition: int
     offset: int
     headers: Optional[Dict[str, str]]
     cached_at: float  # When it was added to cache
+    consumed_by_rules: bool = False
+    consumed_by_tests: bool = False
 
 
 class MessageCache:
     """
-    In-memory cache for Kafka messages consumed by TEST listeners only.
-    Tests query this cache instead of polling Kafka directly.
+    Unified in-memory cache for Kafka messages consumed by Wiremock.
 
     Features:
     - Automatic TTL expiration (default 2 minutes)
     - Per-topic message queues
     - Thread-safe
-    - Efficient lookup for test assertions
+    - Tracks consumption status (rules vs tests - no duplicate evaluation)
     - Background cleanup thread to prevent memory leaks
-
-    Note: This cache is ONLY for test listeners, NOT for rule listeners.
-    Rule listeners still apply rules directly without caching.
+    - Format-aware message storage (json/avro/bytes)
     """
 
     def __init__(self, ttl_seconds: int = 120, cleanup_interval_seconds: int = 30):
@@ -89,6 +89,7 @@ class MessageCache:
         self,
         topic: str,
         value: Any,
+        message_format: str = "json",
         timestamp: int = 0,
         partition: int = 0,
         offset: int = 0,
@@ -100,6 +101,7 @@ class MessageCache:
         Args:
             topic: Kafka topic
             value: Message value
+            message_format: Format (json, avro, bytes)
             timestamp: Message timestamp
             partition: Kafka partition
             offset: Kafka offset
@@ -108,18 +110,21 @@ class MessageCache:
         with self._lock:
             msg = CachedMessage(
                 value=value,
+                message_format=message_format,
                 timestamp=timestamp,
                 partition=partition,
                 offset=offset,
                 headers=headers,
-                cached_at=time.time()
+                cached_at=time.time(),
+                consumed_by_rules=False,
+                consumed_by_tests=False
             )
             self.messages[topic].append(msg)
             self._cleanup_expired(topic)
 
     def get_messages(self, topic: str, since: Optional[float] = None) -> List[CachedMessage]:
         """
-        Get all non-expired messages from a topic.
+        Get all non-expired messages from a topic (for backwards compatibility).
 
         Args:
             topic: Kafka topic
@@ -136,6 +141,66 @@ class MessageCache:
                 messages = [m for m in messages if m.cached_at >= since]
 
             return messages
+
+    def get_unconsumed_by_rules(self, topic: str, since: Optional[float] = None) -> List[CachedMessage]:
+        """
+        Get messages not yet consumed by rules engine.
+
+        Args:
+            topic: Kafka topic
+            since: Only return messages cached after this timestamp (optional)
+
+        Returns:
+            List of unconsumed cached messages
+        """
+        with self._lock:
+            self._cleanup_expired(topic)
+            messages = self.messages.get(topic, [])
+            messages = [m for m in messages if not m.consumed_by_rules]
+
+            if since is not None:
+                messages = [m for m in messages if m.cached_at >= since]
+
+            return messages
+
+    def get_unconsumed_by_tests(self, topic: str, since: Optional[float] = None) -> List[CachedMessage]:
+        """
+        Get messages not yet consumed by test suite.
+
+        Args:
+            topic: Kafka topic
+            since: Only return messages cached after this timestamp (optional)
+
+        Returns:
+            List of unconsumed cached messages
+        """
+        with self._lock:
+            self._cleanup_expired(topic)
+            messages = self.messages.get(topic, [])
+            messages = [m for m in messages if not m.consumed_by_tests]
+
+            if since is not None:
+                messages = [m for m in messages if m.cached_at >= since]
+
+            return messages
+
+    def mark_consumed_by_rules(self, topic: str, offset: int) -> None:
+        """Mark a message as consumed by rules engine."""
+        with self._lock:
+            for msg in self.messages.get(topic, []):
+                if msg.offset == offset:
+                    msg.consumed_by_rules = True
+                    logger.debug(f"Marked message {topic}:{offset} as consumed by rules")
+                    return
+
+    def mark_consumed_by_tests(self, topic: str, offset: int) -> None:
+        """Mark a message as consumed by test suite."""
+        with self._lock:
+            for msg in self.messages.get(topic, []):
+                if msg.offset == offset:
+                    msg.consumed_by_tests = True
+                    logger.debug(f"Marked message {topic}:{offset} as consumed by tests")
+                    return
 
     def clear_topic(self, topic: str) -> None:
         """Clear all messages for a topic."""
@@ -154,11 +219,17 @@ class MessageCache:
             stats = {
                 "topics": len(self.messages),
                 "total_messages": sum(len(msgs) for msgs in self.messages.values()),
-                "by_topic": {
-                    topic: len(msgs)
-                    for topic, msgs in self.messages.items()
-                }
+                "by_topic": {}
             }
+
+            for topic, msgs in self.messages.items():
+                stats["by_topic"][topic] = {
+                    "total": len(msgs),
+                    "consumed_by_rules": sum(1 for m in msgs if m.consumed_by_rules),
+                    "consumed_by_tests": sum(1 for m in msgs if m.consumed_by_tests),
+                    "unconsumed": sum(1 for m in msgs if not m.consumed_by_rules and not m.consumed_by_tests)
+                }
+
             return stats
 
     def _cleanup_expired(self, topic: str) -> None:

@@ -133,6 +133,12 @@
           "minimum": 0,
           "default": 0,
           "examples": [0, 100, 500]
+        },
+        "correlation_id": {
+          "type": "string",
+          "description": "Optional override correlation ID for this message (auto-generated if not specified).",
+          "minLength": 1,
+          "examples": ["my-correlation-123"]
         }
       },
       "oneOf": [
@@ -149,31 +155,14 @@
     "expectation": {
       "type": "object",
       "description": "An expected message to be produced and validated.",
+      "required": ["topic"],
       "additionalProperties": false,
       "properties": {
-        "source_id": {
-          "type": "string",
-          "description": "Links this expectation to an injected message via message_id. Used for message correlation.",
-          "minLength": 1,
-          "examples": ["order1", "order", "notification"]
-        },
-        "message_id": {
-          "type": "string",
-          "description": "Deprecated: Use source_id instead. Legacy field for referencing injected message identifiers.",
-          "minLength": 1,
-          "examples": ["order1", "order", "notification"]
-        },
         "topic": {
           "type": "string",
           "description": "Kafka topic to consume messages from.",
           "minLength": 1,
           "examples": ["payments.input", "orders.processed", "notifications.output"]
-        },
-        "target_id": {
-          "type": "string",
-          "description": "JSONPath expression to extract a value from the received message. Matched against the source message's message_id or source_id value.",
-          "minLength": 1,
-          "examples": ["$.orderId", "$.customerId", "$.id"]
         },
         "wait_ms": {
           "type": "integer",
@@ -182,6 +171,61 @@
           "maximum": 60000,
           "default": 2000,
           "examples": [1000, 2000, 3000, 5000]
+        },
+        "correlate": {
+          "type": "object",
+          "description": "Message correlation configuration for linking injected and received messages.",
+          "additionalProperties": false,
+          "properties": {
+            "message_id": {
+              "type": "string",
+              "description": "Reference to injected message via message_id for automatic correlation.",
+              "minLength": 1,
+              "examples": ["order1", "order", "notification"]
+            },
+            "source": {
+              "type": "object",
+              "description": "Where to extract correlation ID from the injected message.",
+              "additionalProperties": false,
+              "properties": {
+                "jsonpath": {
+                  "type": "string",
+                  "description": "JSONPath expression to extract from injected message",
+                  "examples": ["$.orderId", "$.sourceId", "$.customerId"]
+                },
+                "header": {
+                  "type": "string",
+                  "description": "Header name to extract from injected message",
+                  "examples": ["X-Correlation-Id", "X-Message-ID"]
+                }
+              },
+              "oneOf": [
+                {"required": ["jsonpath"]},
+                {"required": ["header"]}
+              ]
+            },
+            "target": {
+              "type": "object",
+              "description": "Where to find the correlation ID in the received message for matching.",
+              "additionalProperties": false,
+              "properties": {
+                "jsonpath": {
+                  "type": "string",
+                  "description": "JSONPath expression to extract from received message",
+                  "examples": ["$.orderId", "$.targetId", "$.customerId"]
+                },
+                "header": {
+                  "type": "string",
+                  "description": "Header name to extract from received message",
+                  "examples": ["X-Correlation-Id", "X-Message-ID"]
+                }
+              },
+              "oneOf": [
+                {"required": ["jsonpath"]},
+                {"required": ["header"]}
+              ]
+            }
+          }
         },
         "match": {
           "type": "array",

@@ -1,0 +1,32 @@
+# Topic configuration for payments
+topic: payments.input
+
+message:
+  format: json
+
+correlation:
+  extract:
+    - from: header
+      name: X-Correlation-Id
+      priority: 1
+    - from: jsonpath
+      expression: $.orderId
+      priority: 2
+
+  propagate:
+    to_headers:
+      X-Correlation-Id: "{{correlationId}}"
+
+---
+# Topic configuration for notifications
+topic: notifications.events
+
+message:
+  format: json
+
+correlation:
+  extract:
+    - from: jsonpath
+      expression: $.orderId
+      priority: 1
+

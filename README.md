@@ -53,6 +53,7 @@ For detailed configuration and usage, see:
 
 | Topic | Documentation |
 |-------|---|
+| **Topic Configuration** | [📘 TOPIC_CONFIG.md](docs/TOPIC_CONFIG.md) - Message format, schema registry, correlation rules |
 | **Rules Configuration** | [📘 RULES.md](docs/RULES.md) - Matching strategies, outputs, templates, AVRO support |
 | **Custom Placeholders** | [📘 CUSTOM_PLACEHOLDERS.md](docs/CUSTOM_PLACEHOLDERS.md) - Creating custom functions, pipeline execution, examples |
 | **Test Suite** | [📘 TEST_SUITE.md](docs/TEST_SUITE.md) - Integration tests, message correlation, validation |
@@ -62,7 +63,11 @@ For detailed configuration and usage, see:
 
 ```
 config/
-├── rules/                          # YAML rule files
+├── topic-config/                   # Topic configuration (message format, correlation)
+│   ├── orders/
+│   │   └── 01-orders.yaml
+│   └── ...
+├── rules/                          # Rule matching and output generation
 │   ├── order-processing/
 │   │   ├── 01-order-created.yaml
 │   │   └── 02-order-shipped.yaml
@@ -72,7 +77,7 @@ config/
     │   └── 10-discounts.py
     └── ...
 
-testSuite/                          # Integration tests
+testSuite/                          # Integration tests (message injection and validation)
 ├── examples/
 │   └── *.test.yaml
 └── ...
@@ -82,12 +87,13 @@ testSuite/                          # Integration tests
 
 ## Schema Validation
 
-JSON Schema validators are provided for both rules and tests:
+JSON Schema validators are provided for topic config, rules, and tests:
 
-| Schema | File | Description | Documentation |
-|--------|------|-------------|---|
-| **Rules** | `rule-schema.json` | Validates rule YAML configuration (matching, outputs, templates, AVRO) | [RULES.md](docs/RULES.md#schema-validation) |
-| **Tests** | `test-suite-schema.json` | Validates test suite YAML configuration (injection, expectations, correlation) | [TEST_SUITE.md](docs/TEST_SUITE.md#schema-validation) |
+| Schema | File | Description |
+|--------|------|-------------|
+| **Topic Config** | `topic-config-schema.json` | Validates topic configuration (format, correlation) | 
+| **Rules** | `rule-schema.json` | Validates rule YAML configuration (matching, outputs, correlation) |
+| **Tests** | `test-suite-schema.json` | Validates test suite YAML (injection, expectations, correlation) |
 
 Use these for IDE integration, command-line validation, and CI/CD validation to catch configuration errors early.
 
@@ -123,11 +129,13 @@ curl http://localhost:8000/rules | jq
 
 ## Environment Variables
 
-- `KAFKA_BOOTSTRAP_SERVERS` (default: `localhost:9092`)
-- `CONFIG_DIR` (default: `/config`)
-- `HOST` (default: `0.0.0.0`)
-- `PORT` (default: `8000`)
-- `WORKERS` (default: `1`)
+- `KAFKA_BOOTSTRAP_SERVERS` (default: `localhost:9092`) - Kafka broker address
+- `CONFIG_DIR` (default: `/config`) - Configuration directory for rules
+- `TEST_SUITE_DIR` (default: `/testSuite`) - Test suite directory
+- `SCHEMA_REGISTRY_URL` (optional) - Confluent Schema Registry URL for AVRO schema lookup (e.g., `http://localhost:8081`)
+- `CUSTOM_PLACEHOLDERS_DIR` (default: `/config/custom_placeholders`) - Custom placeholder functions directory
+- `PORT` (default: `8000`) - API port
+- `WORKERS` (default: `1`) - Number of workers
 
 ## Local Development
 

@@ -36,6 +36,37 @@
           "items": {
             "$ref": "#/definitions/matchCondition"
           }
+        },
+        "correlation": {
+          "type": "object",
+          "description": "Optional override of topic-config correlation extraction rules for this rule.",
+          "properties": {
+            "extract": {
+              "type": "array",
+              "description": "Rules for extracting correlation ID (overrides topic-config)",
+              "items": {
+                "type": "object",
+                "required": ["from"],
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "enum": ["header", "jsonpath"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Header name (required if from=header)"
+                  },
+                  "expression": {
+                    "type": "string",
+                    "description": "JSONPath expression (required if from=jsonpath)"
+                  },
+                  "priority": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -208,6 +239,19 @@
           "description": "Confluent Schema Registry schema ID. When set, the payload is serialized as AVRO using this schema.",
           "minimum": 1,
           "examples": [123, 456]
+        },
+        "correlation": {
+          "type": "object",
+          "description": "Optional override of topic-config correlation propagation rules for this output.",
+          "properties": {
+            "to_headers": {
+              "type": "object",
+              "description": "Headers to add/update with correlation ID",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
         }
       },
       "oneOf": [

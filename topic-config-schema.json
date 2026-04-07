@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Topic Configuration Schema",
+  "description": "Schema for topic-config YAML files that define message format, correlation rules, and schema registry settings. Multiple topic configurations can be defined in a single file by separating them with '---' (YAML document separator).",
+  "type": "object",
+  "required": ["topic"],
+  "properties": {
+    "topic": {
+      "type": "string",
+      "description": "Kafka topic name",
+      "minLength": 1
+    },
+    "message": {
+      "type": "object",
+      "description": "Message format and schema settings",
+      "properties": {
+        "format": {
+          "type": "string",
+          "description": "Message format",
+          "enum": ["json", "avro", "text", "bytes"],
+          "default": "json"
+        },
+        "schema_registry_url": {
+          "type": "string",
+          "description": "Confluent Schema Registry URL (overrides global)",
+          "format": "uri"
+        },
+        "writer_schema_id": {
+          "type": "integer",
+          "description": "AVRO schema ID for producing messages"
+        }
+      },
+      "additionalProperties": false
+    },
+    "correlation": {
+      "type": "object",
+      "description": "Correlation ID extraction and propagation rules",
+      "properties": {
+        "extract": {
+          "type": "array",
+          "description": "Rules for extracting correlation ID from incoming messages (priority order)",
+          "items": {
+            "type": "object",
+            "required": ["from"],
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "Where to extract from",
+                "enum": ["header", "jsonpath"]
+              },
+              "name": {
+                "type": "string",
+                "description": "Header name (required if from=header)"
+              },
+              "expression": {
+                "type": "string",
+                "description": "JSONPath expression (required if from=jsonpath)"
+              },
+              "priority": {
+                "type": "integer",
+                "description": "Priority order (lower = checked first)",
+                "default": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "propagate": {
+          "type": "object",
+          "description": "Rules for writing correlation ID to output messages",
+          "properties": {
+            "to_headers": {
+              "type": "object",
+              "description": "Headers to add/update with correlation ID",
+              "additionalProperties": {
+                "type": "string",
+                "description": "Template for header value (can use {{correlationId}})"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+

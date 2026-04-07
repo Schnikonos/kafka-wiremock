@@ -7,7 +7,8 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import threading
 
-from .models import Condition, Output, Rule
+from .models import Condition, Output, Rule, CorrelationInput, CorrelationOutput
+from .topic_config import TopicConfigLoader
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,8 @@ logger = logging.getLogger(__name__)
 class ConfigLoader:
     """Loads and hot-reloads configuration from YAML files."""
 
-    def __init__(self, config_dir: str = "/config", reload_interval: int = 30):
+    def __init__(self, config_dir: str = "/config", reload_interval: int = 30,
+                 schema_registry_url: Optional[str] = None):
         """Initialize the config loader."""
         self.config_dir = Path(config_dir)
         self.reload_interval = reload_interval
@@ -27,6 +29,15 @@ class ConfigLoader:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         # Track validation errors per file
         self.validation_errors: Dict[str, List[str]] = {}
+
+        # Initialize topic config loader
+        self.topic_config_loader = TopicConfigLoader(
+            config_dir=config_dir,
+            scan_interval=reload_interval,
+            global_schema_registry_url=schema_registry_url
+        )
+        self.topic_config_loader.start()
+
         self.reload()
 
     def get_rules_for_topic(self, input_topic: str) -> List[Rule]:
@@ -232,15 +243,32 @@ class ConfigLoader:
                 raise ValueError("Topic is required in output")
             if "payload" not in then_item and "payload_file" not in then_item:
                 raise ValueError("Payload or payload_file is required in output")
+
+            # Parse optional correlation for output
+            correlation = None
+            if "correlation" in then_item:
+                corr_data = then_item["correlation"]
+                correlation = CorrelationOutput(
+                    to_headers=corr_data.get("to_headers")
+                )
+
             output = Output(
                 topic=output_topic,
                 payload=then_item.get('payload'),
                 payload_file=then_item.get('payload_file'),
                 delay_ms=then_item.get('delay_ms', 0),
                 headers=then_item.get('headers'),
-                schema_id=then_item.get('schema_id')
+                schema_id=then_item.get('schema_id'),
+                correlation=correlation
             )
             outputs.append(output)
+
+        # Parse optional correlation for input (when block)
+        input_correlation = None
+        if "correlation" in when_block:
+            corr_data = when_block["correlation"]
+            extract_rules = corr_data.get("extract", [])
+            input_correlation = CorrelationInput(extract=extract_rules)
 
         return Rule(
             priority=priority,
@@ -248,6 +276,7 @@ class ConfigLoader:
             conditions=conditions,
             outputs=outputs,
             rule_name=rule_name,
+            correlation=input_correlation
         )
 
     def _parse_rule_old_format(self, rule_data: Dict[str, Any], filename: str, index: int) -> Rule:

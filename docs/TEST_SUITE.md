@@ -175,10 +175,14 @@ Wait for and validate messages:
 ```yaml
 then:
   expectations:
-    - source_id: "order"        # Correlate to injection message_id
-      target_id: "$.orderId"    # Field in received message
-      topic: "payments"         # Topic to consume from
+    - topic: "payments"         # Required; topic to consume from
       wait_ms: 5000            # Timeout (default: 2000)
+      correlate:               # Optional; correlation configuration
+        message_id: "order"    # Reference injected message_id
+        source:
+          jsonpath: "$.orderId"  # Extract from injected message
+        target:
+          jsonpath: "$.orderId"  # Match in received message
       match:                    # Optional; additional conditions
         - type: jsonpath
           expression: "$.amount"
@@ -186,15 +190,14 @@ then:
 ```
 
 **Fields**:
-- `source_id` (optional): Link to injection via `message_id`
-- `target_id` (optional): JSONPath field to extract and match
 - `topic` (required): Topic to consume from
 - `wait_ms` (optional): Timeout in milliseconds (default: 2000, max: 60000)
+- `correlate` (optional): Message correlation configuration (see below)
 - `match` (optional): Validation conditions (same as rule matching)
 
 ### Message Correlation
 
-Use `source_id` and `target_id` to verify message flow:
+Use `correlate` block to verify message flow with correlation IDs:
 
 ```yaml
 when:
@@ -209,20 +212,48 @@ when:
 
 then:
   expectations:
-    - source_id: "order"        # Reference injected message
-      target_id: "$.orderId"    # Field to extract from injection
-      topic: "payments"         # Wait for message on this topic
-      # Wiremock extracts orderId from injected message
-      # and matches it against $.orderId in received messages
+    - topic: "payments"
+      correlate:
+        message_id: "order"       # Reference injected message
+        source:
+          jsonpath: "$.orderId"   # Extract from injected message
+        target:
+          jsonpath: "$.orderId"   # Match in received message
 ```
 
 **How it works**:
 1. Injection creates: `{"orderId": "ORD-abc123", "amount": 100.0}`
-2. Extract source value: `orderId = "ORD-abc123"`
-3. Consume messages from topic: `payments`
-4. Find first message where `$.orderId == "ORD-abc123"`
+2. Extract source value using jsonpath: `orderId = "ORD-abc123"`
+3. Consume messages from `payments` topic
+4. Find first message where target jsonpath matches: `$.orderId == "ORD-abc123"`
 
-If no `source_id`/`target_id`, **any message matching conditions is accepted**.
+**Source/Target Types**:
+- `jsonpath` - Extract from JSON message body
+- `header` - Extract from Kafka message header
+
+**Without Correlation**:
+
+If no `correlate` block, any message matching conditions is accepted:
+
+```yaml
+expectations:
+  - topic: "payments"
+    match:
+      - type: jsonpath
+        expression: "$.status"
+        value: "CONFIRMED"
+```
+
+**Manual Correlation ID Override**:
+
+```yaml
+when:
+  inject:
+    - message_id: "order1"
+      topic: "orders"
+      correlation_id: "my-custom-id"  # Override auto-generated
+      payload: '{"orderId": "ORD-123"}'
+```
 
 ### Validation Matching
 
