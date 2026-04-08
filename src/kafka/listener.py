@@ -8,8 +8,7 @@ import threading
 import time
 import io
 from typing import Dict, List, Set, Optional
-from kafka import KafkaConsumer
-from kafka.errors import KafkaError
+from confluent_kafka import Consumer, KafkaError, TopicPartition
 
 try:
     import fastavro
@@ -57,12 +56,13 @@ class KafkaListenerEngine:
         self.config_loader = config_loader
         self.kafka_client = kafka_client
         self.bootstrap_servers = bootstrap_servers
+        self.base_config = kafka_client.base_config if hasattr(kafka_client, 'base_config') else {}
         self.custom_placeholder_registry = custom_placeholder_registry
         self.message_cache = message_cache
         self.topic_metadata_manager = topic_metadata_manager
         self.schema_registry = schema_registry
 
-        self.consumer: Optional[KafkaConsumer] = None
+        self.consumer: Optional[Consumer] = None
         self.listener_thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
@@ -195,15 +195,15 @@ class KafkaListenerEngine:
                             continue
 
                         try:
-                            self.consumer = KafkaConsumer(
-                                bootstrap_servers=self.bootstrap_servers,
-                                auto_offset_reset='latest',
-                                group_id='wiremock-listener',
-                                enable_auto_commit=True,
-                                auto_commit_interval_ms=5000,
-                                fetch_max_wait_ms=500,
-                                max_poll_records=100
-                            )
+                            consumer_config = self.base_config.copy()
+                            consumer_config.update({
+                                'group.id': 'wiremock-listener',
+                                'auto.offset.reset': 'latest',
+                                'enable.auto.commit': True,
+                                'auto.commit.interval.ms': 5000,
+                                'fetch.wait.max.ms': 500,
+                            })
+                            self.consumer = Consumer(consumer_config)
                             retry_count = 0
                             logger.info("Connected to Kafka consumer")
                             with self._lock:
@@ -229,12 +229,21 @@ class KafkaListenerEngine:
                         logger.info("Custom placeholders reloaded")
 
                     # Poll for messages
-                    messages = self.consumer.poll(timeout_ms=5000)
+                    msg = self.consumer.poll(timeout=5.0)
 
-                    for topic_partition, records in messages.items():
-                        topic = topic_partition.topic
-                        for message in records:
-                            self._process_message(topic, message)
+                    if msg is None:
+                        # Timeout
+                        continue
+
+                    if msg.error():
+                        if msg.error().code() == KafkaError._PARTITION_EOF:
+                            logger.debug(f"End of partition reached")
+                        else:
+                            logger.error(f"Consumer error: {msg.error()}")
+                        continue
+
+                    topic = msg.topic()
+                    self._process_message(topic, msg)
 
                 except Exception as e:
                     logger.error(f"Error in unified listener loop: {e}")
@@ -302,6 +311,16 @@ class KafkaListenerEngine:
 
             message_data, message_format = self._deserialize_message(message, topic_type)
 
+            # Process headers
+            message_headers = None
+            if message.headers():
+                message_headers = {}
+                for key, val in message.headers():
+                    if isinstance(val, bytes):
+                        message_headers[key] = val.decode('utf-8')
+                    else:
+                        message_headers[key] = val
+
             # Add message to cache with format information
             if self.message_cache:
                 try:
@@ -309,10 +328,10 @@ class KafkaListenerEngine:
                         topic=topic,
                         value=message_data,
                         message_format=message_format,
-                        timestamp=message.timestamp,
-                        partition=message.partition,
-                        offset=message.offset,
-                        headers=dict(message.headers) if message.headers else None
+                        timestamp=message.timestamp()[1] if message.timestamp() else 0,
+                        partition=message.partition(),
+                        offset=message.offset(),
+                        headers=message_headers
                     )
                 except Exception as e:
                     logger.debug(f"Failed to add message to cache: {e}")
@@ -333,7 +352,7 @@ class KafkaListenerEngine:
                     # Mark message as consumed by rules
                     if self.message_cache:
                         try:
-                            self.message_cache.mark_consumed_by_rules(topic, message.offset)
+                            self.message_cache.mark_consumed_by_rules(topic, message.offset())
                         except Exception as e:
                             logger.debug(f"Failed to mark message as consumed: {e}")
 
@@ -355,24 +374,24 @@ class KafkaListenerEngine:
             Tuple of (message_data, format_type)
         """
         try:
-            if not kafka_message.value:
+            if not kafka_message.value():
                 return None, "null"
 
             # Try to deserialize based on topic type
             if topic_type == "avro":
                 # Try Schema Registry first if available
                 if self.schema_registry:
-                    message_data, fmt = self.schema_registry.decode(kafka_message.value)
+                    message_data, fmt = self.schema_registry.decode(kafka_message.value())
                     if message_data is not None:
                         return message_data, fmt
 
                 # Fallback to raw AVRO deserialization
                 if AVRO_AVAILABLE:
                     try:
-                        if len(kafka_message.value) > 5 and kafka_message.value[0:1] == b'\x00':
-                            bytes_reader = io.BytesIO(kafka_message.value[5:])
+                        if len(kafka_message.value()) > 5 and kafka_message.value()[0:1] == b'\x00':
+                            bytes_reader = io.BytesIO(kafka_message.value()[5:])
                         else:
-                            bytes_reader = io.BytesIO(kafka_message.value)
+                            bytes_reader = io.BytesIO(kafka_message.value())
                         message_data = fastavro.reader(bytes_reader).__next__()
                         return message_data, "avro"
                     except Exception as e:
@@ -383,28 +402,28 @@ class KafkaListenerEngine:
             elif topic_type == "bytes":
                 # Try JSON first, then return as bytes
                 try:
-                    return json.loads(kafka_message.value.decode('utf-8')), "json"
+                    return json.loads(kafka_message.value().decode('utf-8')), "json"
                 except (json.JSONDecodeError, UnicodeDecodeError):
-                    return kafka_message.value, "bytes"
+                    return kafka_message.value(), "bytes"
 
             # Default: try JSON
             try:
-                return json.loads(kafka_message.value.decode('utf-8')), "json"
+                return json.loads(kafka_message.value().decode('utf-8')), "json"
             except (json.JSONDecodeError, UnicodeDecodeError):
                 # Try AVRO as fallback
                 if AVRO_AVAILABLE:
                     try:
-                        if len(kafka_message.value) > 5 and kafka_message.value[0:1] == b'\x00':
-                            bytes_reader = io.BytesIO(kafka_message.value[5:])
+                        if len(kafka_message.value()) > 5 and kafka_message.value()[0:1] == b'\x00':
+                            bytes_reader = io.BytesIO(kafka_message.value()[5:])
                         else:
-                            bytes_reader = io.BytesIO(kafka_message.value)
+                            bytes_reader = io.BytesIO(kafka_message.value())
                         message_data = fastavro.reader(bytes_reader).__next__()
                         return message_data, "avro"
                     except Exception:
                         pass
 
                 # Last resort: return bytes as-is
-                return kafka_message.value, "bytes"
+                return kafka_message.value(), "bytes"
 
         except Exception as e:
             logger.error(f"Error deserializing message: {e}")

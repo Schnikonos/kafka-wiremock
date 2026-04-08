@@ -66,7 +66,14 @@ class ConfigLoader:
 
     def _check_files_changed(self) -> bool:
         """Check if any YAML files have been modified by comparing hashes."""
-        yaml_files = list(self.config_dir.rglob("*.yaml")) + list(self.config_dir.rglob("*.yml"))
+        # Get all YAML files, but exclude topic-config and custom-placeholders directories
+        yaml_files = []
+        for yaml_file in list(self.config_dir.rglob("*.yaml")) + list(self.config_dir.rglob("*.yml")):
+            # Skip topic-config and custom-placeholders directories (handled by specialized loaders)
+            if "topic-config" in yaml_file.parts or "custom_placeholders" in yaml_file.parts:
+                continue
+            yaml_files.append(yaml_file)
+        
         current_files = set(yaml_files)
         tracked_files = set(self._file_hashes.keys())
 
@@ -110,9 +117,20 @@ class ConfigLoader:
         logger.info(f"Loading configuration from {self.config_dir}")
         new_rules = []
         new_file_hashes = {}
-        yaml_files = sorted(self.config_dir.rglob("*.yaml")) + sorted(self.config_dir.rglob("*.yml"))
+
+        # Get all YAML files, but exclude topic-config and custom-placeholders directories
+        # (they are handled by their own loaders)
+        yaml_files = []
+        for yaml_file in sorted(self.config_dir.rglob("*.yaml")) + sorted(self.config_dir.rglob("*.yml")):
+            # Skip topic-config and custom-placeholders directories
+            if "topic-config" in yaml_file.parts or "custom_placeholders" in yaml_file.parts:
+                logger.debug(f"Skipping {yaml_file.name} (handled by specialized loader)")
+                continue
+            yaml_files.append(yaml_file)
+
         if not yaml_files:
-            logger.warning(f"No YAML configuration files found in {self.config_dir}")
+            logger.warning(f"No YAML rule files found in {self.config_dir}")
+
         for yaml_file in yaml_files:
             try:
                 rules = self._load_yaml_file(yaml_file)

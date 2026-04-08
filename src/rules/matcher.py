@@ -154,7 +154,7 @@ class JSONPathMatcher(Matcher):
                 # If regex pattern is provided, use regex matching
                 if regex_pattern:
                     try:
-                        if re.match(regex_pattern, str(match.value)):
+                        if re.search(regex_pattern, str(match.value)):
                             # Return context with the matched value
                             context = {"message": message_obj, "matched_value": match.value}
                             context.update(flatten_dict(message_obj))

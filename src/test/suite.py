@@ -437,15 +437,11 @@ class TestExecutor:
                     # message_id without source - will match any message from that injection
                     logger.debug(f"Using message_id {corr.message_id} without source for correlation")
 
-            # Ensure listener is ready for this topic (wait up to 5 seconds)
-            if self.listener_engine:
-                logger.info(f"Ensuring listener is ready for topic: {expectation.topic}")
-                if not self.listener_engine.ensure_listening_to_topic(expectation.topic, timeout_seconds=5):
-                    exp_result.error = f"Listener failed to connect to topic: {expectation.topic}"
-                    exp_result.status = "NO_MATCH"
-                    exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
-                    return exp_result
-
+            # Note: We don't check if listener is subscribed to this topic
+            # because the listener only listens to INPUT topics (from rules),
+            # not OUTPUT topics. The test will consume directly from Kafka via consume_latest()
+            # which works regardless of listener subscription.
+            
             # Poll messages (use cache if available, otherwise poll Kafka directly)
             received_messages = []
             all_received_messages = []  # Track ALL messages for logging/closest match
