@@ -245,8 +245,22 @@ class ConfigLoader:
                         value=None,
                         expression=None
                     )
+                elif condition_type == 'header':
+                    condition = Condition(
+                        type='header',
+                        expression=match_item.get('expression'),
+                        value=match_item.get('value'),
+                        regex=match_item.get('regex')
+                    )
+                elif condition_type == 'key':
+                    condition = Condition(
+                        type='key',
+                        value=match_item.get('value'),
+                        regex=match_item.get('regex'),
+                        expression=None
+                    )
                 else:
-                    raise ValueError(f"Unknown match type: {condition_type}. Supported: jsonpath, exact, partial, regex")
+                    raise ValueError(f"Unknown match type: {condition_type}. Supported: jsonpath, exact, partial, regex, header, key")
                 conditions.append(condition)
 
         then_block = rule_data.get('then', [])
@@ -290,6 +304,7 @@ class ConfigLoader:
                 payload_file=then_item.get('payload_file'),
                 delay_ms=then_item.get('delay_ms', 0),
                 headers=then_item.get('headers'),
+                key=then_item.get('key'),
                 schema_id=then_item.get('schema_id'),
                 correlation=correlation,
                 fault=fault

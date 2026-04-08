@@ -44,6 +44,7 @@ class ReceivedMessage:
     partition: int = 0
     offset: int = 0
     headers: Optional[Dict[str, str]] = None
+    key: Optional[str] = None  # Message key from Kafka
 
 
 @dataclass
@@ -224,6 +225,11 @@ class TestExecutor:
                                 for k, v in item.headers.items()
                             }
 
+                        # Render key if present
+                        rendered_key = None
+                        if item.key:
+                            rendered_key = TemplateRenderer.render(item.key, template_context)
+
                         try:
                             payload_obj = json.loads(rendered_payload)
                         except json.JSONDecodeError:
@@ -247,10 +253,16 @@ class TestExecutor:
                                 logger.debug(f"Applying random latency {random_latency_ms}ms to test injection")
                                 await asyncio.sleep(random_latency_ms / 1000.0)
 
+                        # Apply messageKey poison pill if configured
+                        if item.fault and item.fault.poison_pill > 0 and 'messageKey' in item.fault.poison_pill_type:
+                            if FaultInjector._should_fault(item.fault.poison_pill):
+                                rendered_key = FaultInjector.apply_messagekey_poison_pill(rendered_key)
+
                         self.kafka_client.produce(
                             topic=item.topic,
                             message=payload_obj,
-                            headers=rendered_headers
+                            headers=rendered_headers,
+                            key=rendered_key
                         )
 
                         # Handle message duplication if configured
@@ -259,7 +271,8 @@ class TestExecutor:
                             self.kafka_client.produce(
                                 topic=item.topic,
                                 message=payload_obj,
-                                headers=rendered_headers
+                                headers=rendered_headers,
+                                key=rendered_key
                             )
 
                         injected_msg = InjectedMessage(
@@ -284,7 +297,8 @@ class TestExecutor:
                                 topic=item.topic,
                                 payload=payload_obj,
                                 message_id=item.message_id,
-                                headers=rendered_headers
+                                headers=rendered_headers,
+                                key=rendered_key
                             )
 
                         if item.delay_ms > 0:
@@ -460,7 +474,8 @@ class TestExecutor:
                             "timestamp": m.timestamp,
                             "partition": m.partition,
                             "offset": m.offset,
-                            "headers": m.headers
+                            "headers": m.headers,
+                            "key": m.key
                         }
                         for m in cached_msgs
                     ]
@@ -510,7 +525,8 @@ class TestExecutor:
                         timestamp=msg.get("timestamp", 0),
                         partition=msg.get("partition", 0),
                         offset=msg.get("offset", 0),
-                        headers=msg.get("headers")
+                        headers=msg.get("headers"),
+                        key=msg.get("key")
                     )
 
                     # Check correlation and conditions
@@ -541,7 +557,8 @@ class TestExecutor:
                                         correlation_matched=False,
                                         conditions_matched=0,
                                         total_conditions=len(expectation.match) if expectation.match else 0,
-                                        headers=msg.get("headers")
+                                        headers=msg.get("headers"),
+                                        key=msg.get("key")
                                     )
                                 all_received_messages.append(msg_for_logging)
                                 continue
@@ -555,7 +572,8 @@ class TestExecutor:
                                     correlation_matched=False,
                                     conditions_matched=0,
                                     total_conditions=len(expectation.match) if expectation.match else 0,
-                                    headers=msg.get("headers")
+                                    headers=msg.get("headers"),
+                                    key=msg.get("key")
                                 )
                             all_received_messages.append(msg_for_logging)
                             continue
@@ -566,9 +584,13 @@ class TestExecutor:
                     # Check conditions
                     if expectation.match:
                         conditions_matched = 0
-                        for condition in expectation.match:
+                        failed_conditions_details = []
+                        condition_results = []  # Track all condition results for logging
+
+                        for idx, condition in enumerate(expectation.match):
                             try:
                                 matcher = self.matcher_factory.create(condition.type)
+                                condition_matched = False
 
                                 # Build matcher-specific condition dict (same as _match_conditions)
                                 if condition.type == 'jsonpath':
@@ -578,15 +600,57 @@ class TestExecutor:
                                         'value': condition.value,
                                         'regex': condition.regex
                                     }
+                                    if matcher and matcher.match(msg_value, matcher_condition).matched:
+                                        conditions_matched += 1
+                                        condition_matched = True
+                                elif condition.type == 'header':
+                                    # For header matching, pass headers dict
+                                    headers_dict = msg.get('headers', {})
+                                    if matcher and matcher.match(headers_dict, condition).matched:
+                                        conditions_matched += 1
+                                        condition_matched = True
+                                elif condition.type == 'key':
+                                    # For key matching, pass message key
+                                    msg_key = msg.get('key')
+                                    if matcher and matcher.match(msg_key, condition).matched:
+                                        conditions_matched += 1
+                                        condition_matched = True
                                 else:
                                     # Other matchers work with the condition object directly
                                     matcher_condition = condition
+                                    if matcher and matcher.match(msg_value, matcher_condition).matched:
+                                        conditions_matched += 1
+                                        condition_matched = True
 
-                                if matcher and matcher.match(msg_value, matcher_condition).matched:
-                                    conditions_matched += 1
+                                # Record condition result
+                                condition_results.append({
+                                    'index': idx,
+                                    'type': condition.type,
+                                    'matched': condition_matched,
+                                    'expression': getattr(condition, 'expression', None),
+                                    'value': getattr(condition, 'value', None),
+                                    'regex': getattr(condition, 'regex', None)
+                                })
+
+                                # Track failed conditions
+                                if not condition_matched:
+                                    failed_conditions_details.append({
+                                        'position': idx,
+                                        'type': condition.type,
+                                        'expression': getattr(condition, 'expression', None),
+                                        'expected': {
+                                            'value': getattr(condition, 'value', None),
+                                            'regex': getattr(condition, 'regex', None)
+                                        },
+                                        'received': msg_value if condition.type == 'jsonpath' else msg.get(condition.type)
+                                    })
                             except Exception as e:
                                 logger.debug(f"Error matching condition: {e}")
-                                pass
+                                failed_conditions_details.append({
+                                    'position': idx,
+                                    'type': getattr(condition, 'type', 'unknown'),
+                                    'error': str(e)
+                                })
 
                         if conditions_matched < len(expectation.match):
                             # Log this non-matching message for debugging
@@ -597,7 +661,9 @@ class TestExecutor:
                                     correlation_matched=correlation_matched,
                                     conditions_matched=conditions_matched,
                                     total_conditions=len(expectation.match),
-                                    headers=msg.get("headers")
+                                    headers=msg.get("headers"),
+                                    key=msg.get("key"),
+                                    failed_conditions=failed_conditions_details
                                 )
                             all_received_messages.append(msg_for_logging)
                             continue
@@ -614,7 +680,8 @@ class TestExecutor:
                             correlation_matched=correlation_matched,
                             conditions_matched=conditions_matched,
                             total_conditions=len(expectation.match) if expectation.match else 0,
-                            headers=msg.get("headers")
+                            headers=msg.get("headers"),
+                            key=msg.get("key")
                         )
 
                 if received_messages:

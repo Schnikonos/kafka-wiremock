@@ -47,7 +47,15 @@ class TemplateRenderer:
             key = match.group(1).strip()
             value = TemplateRenderer._resolve_placeholder(context, key)
 
-            if value is None:
+            # Check if key actually exists in context (even if value is None)
+            key_exists = (key in context or
+                         key.startswith('header.') or
+                         key == 'uuid' or key == 'now' or
+                         key.startswith('now') or
+                         key.startswith('randomInt(') or
+                         (hasattr(context, 'get') and context.get(key) is not None))
+
+            if value is None and not key_exists:
                 logger.warning(f"Template placeholder '{{{{ {key} }}}}' not found in context. Available keys: {list(context.keys())}")
                 # Return the original placeholder if not found
                 return match.group(0)
@@ -57,7 +65,7 @@ class TemplateRenderer:
                 import json
                 return json.dumps(value)
 
-            return str(value)
+            return str(value) if value is not None else ""
 
         return TemplateRenderer.PLACEHOLDER_PATTERN.sub(replace_placeholder, template_str)
 
@@ -165,6 +173,7 @@ class TemplateRenderer:
             return 0
 
     @staticmethod
+    @staticmethod
     def _get_context_value(context: Dict[str, Any], key: str) -> Optional[Any]:
         """
         Get a value from context using dot notation (e.g., '$.user.name' or 'items[0]').
@@ -175,7 +184,7 @@ class TemplateRenderer:
             key: The key to retrieve (supports dot notation and $ prefix)
 
         Returns:
-            The value or None if not found
+            The value or None if not found. Note: Returns None for both "not found" and "value is None"
         """
         # Strip leading $ if present (for JSONPath style access like $.orderId)
         if key.startswith('$.'):
@@ -183,7 +192,7 @@ class TemplateRenderer:
         elif key.startswith('$'):
             key = key[1:]
 
-        # Handle simple keys
+        # Handle simple keys - return whatever value is stored (including None)
         if key in context:
             return context[key]
 

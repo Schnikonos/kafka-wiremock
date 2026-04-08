@@ -28,6 +28,7 @@ class TestInjection:
     payload: Optional[str] = None  # String (will be templated)
     payload_file: Optional[str] = None  # Path to external payload file (relative to test file)
     headers: Optional[Dict[str, str]] = None
+    key: Optional[str] = None  # Message key (supports templating)
     delay_ms: int = 0
     correlation_id: Optional[str] = None  # Optional override correlation ID
     fault: Optional[Fault] = None  # Optional fault injection configuration
@@ -213,6 +214,7 @@ class TestValidator:
                     payload=str(item_dict["payload"]) if "payload" in item_dict else None,
                     payload_file=item_dict.get("payload_file"),
                     headers=item_dict.get("headers"),
+                    key=item_dict.get("key"),
                     delay_ms=int(item_dict.get("delay_ms", 0)),
                     correlation_id=item_dict.get("correlation_id"),
                     fault=TestYamlParser._parse_fault(item_dict.get("fault"))

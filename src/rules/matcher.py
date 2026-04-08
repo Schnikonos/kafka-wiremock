@@ -179,6 +179,110 @@ class JSONPathMatcher(Matcher):
             return MatchResult(False)
 
 
+class HeaderMatcher(Matcher):
+    """Header value matching strategy."""
+
+    def match(self, headers: Any, condition: Any) -> MatchResult:
+        """
+        Match against message headers.
+
+        Args:
+            headers: Dictionary of headers from the message
+            condition: Condition object with 'expression' (header name), 'value' or 'regex'
+
+        Returns:
+            MatchResult with match status
+        """
+        try:
+            if not isinstance(headers, dict):
+                logger.debug(f"HeaderMatcher: headers is not a dict, got {type(headers)}")
+                return MatchResult(False)
+
+            # Get header name from condition.expression
+            header_name = condition.expression if hasattr(condition, 'expression') else None
+            if not header_name:
+                logger.warning("HeaderMatcher requires condition.expression (header name)")
+                return MatchResult(False)
+
+            # Get the header value
+            header_value = headers.get(header_name)
+            if header_value is None:
+                logger.debug(f"Header '{header_name}' not found in message headers. Available: {list(headers.keys())}")
+                return MatchResult(False)
+
+            # Check value match if specified
+            if hasattr(condition, 'value') and condition.value:
+                matched = str(header_value) == str(condition.value)
+                logger.debug(f"HeaderMatcher: Comparing '{header_name}': '{header_value}' == '{condition.value}' -> {matched}")
+                return MatchResult(matched, {f"header.{header_name}": header_value})
+
+            # Check regex match if specified
+            if hasattr(condition, 'regex') and condition.regex:
+                try:
+                    pattern = re.compile(condition.regex)
+                    matched = pattern.search(str(header_value)) is not None
+                    logger.debug(f"HeaderMatcher: Regex '{condition.regex}' against '{header_value}' -> {matched}")
+                    return MatchResult(matched, {f"header.{header_name}": header_value})
+                except Exception as e:
+                    logger.warning(f"HeaderMatcher regex error: {e}")
+                    return MatchResult(False)
+
+            # No value or regex specified, just check header exists
+            logger.debug(f"HeaderMatcher: Header '{header_name}' exists with value '{header_value}'")
+            return MatchResult(True, {f"header.{header_name}": header_value})
+
+        except Exception as e:
+            logger.warning(f"HeaderMatcher error: {e}")
+            return MatchResult(False)
+
+
+class KeyMatcher(Matcher):
+    """Message key matching strategy."""
+
+    def match(self, key: Any, condition: Any) -> MatchResult:
+        """
+        Match against message key.
+
+        Args:
+            key: Message key from the Kafka message
+            condition: Condition object with 'value' or 'regex'
+
+        Returns:
+            MatchResult with match status
+        """
+        try:
+            if key is None:
+                logger.debug("KeyMatcher: Message key is None")
+                return MatchResult(False)
+
+            key_str = str(key)
+
+            # Check value match if specified
+            if hasattr(condition, 'value') and condition.value:
+                matched = key_str == str(condition.value)
+                logger.debug(f"KeyMatcher: Comparing key '{key_str}' == '{condition.value}' -> {matched}")
+                return MatchResult(matched, {"messageKey": key_str})
+
+            # Check regex match if specified
+            if hasattr(condition, 'regex') and condition.regex:
+                try:
+                    pattern = re.compile(condition.regex)
+                    matched = pattern.search(key_str) is not None
+                    logger.debug(f"KeyMatcher: Regex '{condition.regex}' against '{key_str}' -> {matched}")
+                    return MatchResult(matched, {"messageKey": key_str})
+                except Exception as e:
+                    logger.warning(f"KeyMatcher regex error: {e}")
+                    return MatchResult(False)
+
+            # No value or regex specified, just check key exists
+            logger.debug(f"KeyMatcher: Message key exists with value '{key_str}'")
+            return MatchResult(True, {"messageKey": key_str})
+
+        except Exception as e:
+            logger.warning(f"KeyMatcher error: {e}")
+            return MatchResult(False)
+
+
 def flatten_dict(d: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
     """Flatten a nested dictionary for template context."""
     items = []
@@ -207,6 +311,8 @@ class MatcherFactory:
         'partial': PartialMatcher,
         'regex': RegexMatcher,
         'jsonpath': JSONPathMatcher,
+        'header': HeaderMatcher,
+        'key': KeyMatcher,
     }
 
     @staticmethod

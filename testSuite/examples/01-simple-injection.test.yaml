@@ -8,6 +8,9 @@ when:
   inject:
     - message_id: "order1"
       topic: "users.commands"
+      headers:
+        my-test-header: "HeaderValue123"
+      key: "myMessageKey"
       payload: |
         {
           "orderId": "{{testId}}-{{uuid}}",
@@ -28,6 +31,11 @@ then:
       correlate:
         message_id: "order1"
       match:
+        - type: key
+          value: "myMessageKey"
+        - type: header
+          expression: "my-header"
+          value: "MyCustomHeader"
         - type: jsonpath
           expression: "$.source"
           value: "SomeSource"

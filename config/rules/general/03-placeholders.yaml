@@ -4,12 +4,21 @@ priority: 5
 when:
   topic: users.commands
   match:
+    - type: key
+      value: "myMessageKey"
+    - type: header
+      expression: "my-test-header"
+      value: "HeaderValue123"
     - type: jsonpath
       expression: "$.action"
       value: "REGISTER"
 
 then:
   - topic: users.events
+    headers:
+      my-header: "MyCustomHeader"
+      my-other-header: "{{header.my-test-header}}"
+    key: "{{inputKey}}"
     payload: |
       {
         "userId": "{{uuid}}",

@@ -102,7 +102,7 @@ class FaultInjector:
 
         Args:
             message: Message to corrupt
-            types: List of corruption types: 'truncate', 'invalid-json', 'corrupt-headers'
+            types: List of corruption types: 'truncate', 'invalid-json', 'corrupt-headers', 'messageKey'
             is_json: Whether message is JSON
 
         Returns:
@@ -123,6 +123,11 @@ class FaultInjector:
             # For this implementation, we corrupt the message itself
             # (Header corruption is typically handled at Kafka producer level)
             return FaultInjector._corrupt_message(message)
+        elif chosen_type == 'messageKey':
+            # messageKey poison pill is handled at producer level, not here
+            # Message itself is not modified for this type
+            logger.debug("messageKey poison pill will be applied by producer")
+            return message
         else:
             logger.warning(f"Unknown poison-pill type: {chosen_type}")
             return message
@@ -166,3 +171,18 @@ class FaultInjector:
             logger.debug(f"Injected garbage bytes at position {inject_pos}")
             return corrupted
 
+    @staticmethod
+    def apply_messagekey_poison_pill(key: Optional[str]) -> str:
+        """
+        Apply messageKey poison pill by generating a corrupted key.
+
+        Args:
+            key: Original message key (or None)
+
+        Returns:
+            Corrupted random key string
+        """
+        # Generate random corrupted key
+        corrupted_key = ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_', k=16))
+        logger.debug(f"Corrupted messageKey from '{key}' to '{corrupted_key}'")
+        return corrupted_key

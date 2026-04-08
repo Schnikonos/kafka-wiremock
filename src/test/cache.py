@@ -22,7 +22,8 @@ class CachedMessage:
     partition: int
     offset: int
     headers: Optional[Dict[str, str]]
-    cached_at: float  # When it was added to cache
+    key: Optional[str] = None  # Message key from Kafka
+    cached_at: float = field(default_factory=time.time)  # When it was added to cache
     consumed_by_rules: bool = False
     consumed_by_tests: bool = False
 
@@ -93,7 +94,8 @@ class MessageCache:
         timestamp: int = 0,
         partition: int = 0,
         offset: int = 0,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        key: Optional[str] = None
     ) -> None:
         """
         Add a message to the cache.
@@ -106,6 +108,7 @@ class MessageCache:
             partition: Kafka partition
             offset: Kafka offset
             headers: Message headers
+            key: Message key
         """
         with self._lock:
             msg = CachedMessage(
@@ -115,6 +118,7 @@ class MessageCache:
                 partition=partition,
                 offset=offset,
                 headers=headers,
+                key=key,
                 cached_at=time.time(),
                 consumed_by_rules=False,
                 consumed_by_tests=False

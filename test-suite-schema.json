@@ -127,6 +127,11 @@
             }
           ]
         },
+        "key": {
+          "type": "string",
+          "description": "Optional message key for the injected message. Supports the same template placeholders as payload. Enables partitioning and compacted topic support.",
+          "examples": ["{{$.orderId}}", "{{testId}}-{{uuid}}"]
+        },
         "delay_ms": {
           "type": "integer",
           "description": "Optional delay in milliseconds before injecting this message.",
@@ -271,14 +276,46 @@
         "type": {
           "type": "string",
           "description": "Matching strategy to apply.",
-          "enum": ["jsonpath", "exact", "partial", "regex"]
+          "enum": ["jsonpath", "exact", "partial", "regex", "header", "key"]
         }
       },
-      "oneOf": [
-        { "$ref": "#/definitions/jsonpathCondition" },
-        { "$ref": "#/definitions/exactCondition" },
-        { "$ref": "#/definitions/partialCondition" },
-        { "$ref": "#/definitions/regexCondition" }
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "jsonpath" } }
+          },
+          "then": { "$ref": "#/definitions/jsonpathCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "exact" } }
+          },
+          "then": { "$ref": "#/definitions/exactCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "partial" } }
+          },
+          "then": { "$ref": "#/definitions/partialCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "regex" } }
+          },
+          "then": { "$ref": "#/definitions/regexCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "header" } }
+          },
+          "then": { "$ref": "#/definitions/headerCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "key" } }
+          },
+          "then": { "$ref": "#/definitions/keyCondition" }
+        }
       ]
     },
     "jsonpathCondition": {
@@ -372,6 +409,80 @@
         }
       }
     },
+    "headerCondition": {
+      "type": "object",
+      "description": "Matches message headers by name, exact value, or regex pattern.",
+      "required": ["type", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "header"
+        },
+        "expression": {
+          "type": "string",
+          "description": "Header name to match against (e.g., 'X-Correlation-ID', 'my-test-header').",
+          "minLength": 1,
+          "examples": ["X-Correlation-ID", "my-test-header", "my-header"]
+        },
+        "value": {
+          "description": "Expected exact value of the header. Mutually exclusive with 'regex'.",
+          "examples": ["abc-123-def", "HeaderValue123", "MyCustomHeader"]
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to validate the header value. Mutually exclusive with 'value'.",
+          "examples": ["^[a-f0-9-]+$", "Header.*", "^(PENDING|APPROVED)$"]
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["value"],
+          "not": { "required": ["regex"] }
+        },
+        {
+          "required": ["regex"],
+          "not": { "required": ["value"] }
+        },
+        {
+          "not": { "anyOf": [{ "required": ["value"] }, { "required": ["regex"] }] }
+        }
+      ]
+    },
+    "keyCondition": {
+      "type": "object",
+      "description": "Matches message key by exact value or regex pattern.",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "key"
+        },
+        "value": {
+          "description": "Expected exact value of the message key. Mutually exclusive with 'regex'.",
+          "examples": ["myMessageKey", "CUST-123", "ORDER-456"]
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to validate the message key. Mutually exclusive with 'value'.",
+          "examples": ["^[A-Z]+-[0-9]+$", "^CUST-.*", "^[a-f0-9-]+$"]
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["value"],
+          "not": { "required": ["regex"] }
+        },
+        {
+          "required": ["regex"],
+          "not": { "required": ["value"] }
+        },
+        {
+          "not": { "anyOf": [{ "required": ["value"] }, { "required": ["regex"] }] }
+        }
+      ]
+    },
     "faultInjection": {
       "type": "object",
       "description": "Optional fault injection configuration to simulate message failures during test injection. When a fault is injected and check_result=false, correlated expectations are skipped.",
@@ -409,13 +520,13 @@
         },
         "poison_pill_type": {
           "type": "array",
-          "description": "Corruption strategies to randomly apply: 'truncate' (remove tail), 'invalid-json' (incomplete JSON), 'corrupt-headers' (add garbage). Omit to default to ['truncate'].",
+          "description": "Corruption strategies to randomly apply: 'truncate' (remove tail), 'invalid-json' (incomplete JSON), 'corrupt-headers' (add garbage to message), 'messageKey' (replace message key with random string). Omit to default to ['truncate'].",
           "items": {
             "type": "string",
-            "enum": ["truncate", "invalid-json", "corrupt-headers"]
+            "enum": ["truncate", "invalid-json", "corrupt-headers", "messageKey"]
           },
           "default": ["truncate"],
-          "examples": [["truncate"], ["truncate", "invalid-json"], ["invalid-json", "corrupt-headers"]]
+          "examples": [["truncate"], ["truncate", "messageKey"], ["messageKey"], ["invalid-json", "corrupt-headers"]]
         },
         "check_result": {
           "type": "boolean",

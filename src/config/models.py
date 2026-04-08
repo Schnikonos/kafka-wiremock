@@ -25,7 +25,7 @@ class Fault:
     duplicate: float = 0.0  # Probability (0.0-1.0) to duplicate the message
     random_latency: Optional[str] = None  # Range as "min-max" (e.g., "0-100" ms)
     poison_pill: float = 0.0  # Probability (0.0-1.0) to corrupt the message
-    poison_pill_type: List[str] = field(default_factory=lambda: ["truncate"])  # Implementation strategies: truncate, invalid-json, corrupt-headers
+    poison_pill_type: List[str] = field(default_factory=lambda: ["truncate"])  # Implementation strategies: truncate, invalid-json, corrupt-headers, messageKey
     check_result: bool = False  # If True, test expectations will validate faulted messages; if False, expectations are skipped
 
 
@@ -37,6 +37,7 @@ class Output:
     payload_file: Optional[str] = None  # External payload file path (relative to rule file)
     delay_ms: int = 0
     headers: Optional[Dict[str, str]] = None
+    key: Optional[str] = None  # Message key template (supports placeholders like payload/headers)
     schema_id: Optional[int] = None  # AVRO schema ID
     correlation: Optional[CorrelationOutput] = None  # Override topic-config correlation
     fault: Optional[Fault] = None  # Optional fault injection configuration

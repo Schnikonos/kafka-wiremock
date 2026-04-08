@@ -321,6 +321,11 @@ class KafkaListenerEngine:
                     else:
                         message_headers[key] = val
 
+            # Extract message key
+            message_key = None
+            if message.key():
+                message_key = message.key().decode('utf-8') if isinstance(message.key(), bytes) else str(message.key())
+
             # Add message to cache with format information
             if self.message_cache:
                 try:
@@ -331,7 +336,8 @@ class KafkaListenerEngine:
                         timestamp=message.timestamp()[1] if message.timestamp() else 0,
                         partition=message.partition(),
                         offset=message.offset(),
-                        headers=message_headers
+                        headers=message_headers,
+                        key=message_key
                     )
                 except Exception as e:
                     logger.debug(f"Failed to add message to cache: {e}")
@@ -345,9 +351,9 @@ class KafkaListenerEngine:
 
             # Evaluate rules in priority order
             for rule in rules:
-                if self._evaluate_rule(rule, message_data):
+                if self._evaluate_rule(rule, message_data, message_headers=message_headers, message_key=message_key):
                     logger.info(f"Rule matched: {rule.rule_name} for topic {topic}")
-                    self._execute_rule(rule, message_data)
+                    self._execute_rule(rule, message_data, message_headers=message_headers, message_key=message_key)
 
                     # Mark message as consumed by rules
                     if self.message_cache:
@@ -429,7 +435,7 @@ class KafkaListenerEngine:
             logger.error(f"Error deserializing message: {e}")
             return None, "error"
 
-    def _evaluate_rule(self, rule: Rule, message_data: any) -> bool:
+    def _evaluate_rule(self, rule: Rule, message_data: any, message_headers: dict = None, message_key: str = None) -> bool:
         """Evaluate if a message matches a rule."""
         try:
             # If no conditions, rule matches everything (wildcard)
@@ -447,11 +453,18 @@ class KafkaListenerEngine:
                         'value': condition.value,
                         'regex': condition.regex
                     }
+                    result = matcher.match(message_data, match_condition)
+                elif condition.type == 'header':
+                    # For header matching, pass headers dict
+                    result = matcher.match(message_headers or {}, condition)
+                elif condition.type == 'key':
+                    # For key matching, pass message key
+                    result = matcher.match(message_key, condition)
                 else:
                     # For other matchers, use the value or regex
                     match_condition = condition.regex if condition.regex else condition.value
+                    result = matcher.match(message_data, match_condition)
 
-                result = matcher.match(message_data, match_condition)
                 if not result.matched:
                     return False
 
@@ -461,7 +474,7 @@ class KafkaListenerEngine:
             logger.warning(f"Error evaluating rule {rule.rule_name}: {e}")
             return False
 
-    def _execute_rule(self, rule: Rule, message_data: any) -> None:
+    def _execute_rule(self, rule: Rule, message_data: any, message_headers: dict = None, message_key: str = None) -> None:
         """Execute a rule by producing output messages."""
         try:
             # Check if rule is skipped
@@ -481,10 +494,17 @@ class KafkaListenerEngine:
                         'value': condition.value,
                         'regex': condition.regex
                     }
+                    match_result = matcher.match(message_data, match_condition)
+                elif condition.type == 'header':
+                    # For header matching, pass headers dict
+                    match_result = matcher.match(message_headers or {}, condition)
+                elif condition.type == 'key':
+                    # For key matching, pass message key
+                    match_result = matcher.match(message_key, condition)
                 else:
                     match_condition = condition.regex if condition.regex else condition.value
+                    match_result = matcher.match(message_data, match_condition)
 
-                match_result = matcher.match(message_data, match_condition)
                 matcher_contexts.update(match_result.context)
 
             # Build initial context from message data - add all accessors
@@ -504,6 +524,17 @@ class KafkaListenerEngine:
                         for nested_key, nested_value in value.items():
                             matcher_contexts[f'{key}.{nested_key}'] = nested_value
                             matcher_contexts[f'$.{key}.{nested_key}'] = nested_value
+
+            # Add input message key to context (only if not None)
+            if message_key:
+                matcher_contexts['inputKey'] = message_key
+
+            # Add input headers to context
+            if message_headers:
+                matcher_contexts['headerMap'] = message_headers
+                # Also add individual header accessors with header. prefix
+                for header_name, header_value in message_headers.items():
+                    matcher_contexts[f'header.{header_name}'] = header_value
 
             logger.debug(f"Context before custom placeholders: {list(matcher_contexts.keys())}")
             logger.debug(f"Context values: {matcher_contexts}")
@@ -564,11 +595,27 @@ class KafkaListenerEngine:
                             rendered_header = TemplateRenderer.render(header_value, matcher_contexts)
                             headers_to_send[header_key] = rendered_header
 
-                    # Produce to output topic with headers and schema_id
+                    # Render key if present
+                    key_to_send = None
+                    if output.key:
+                        key_to_send = TemplateRenderer.render(output.key, matcher_contexts)
+                        logger.debug(f"Rendered key template '{output.key}' to: '{key_to_send}'")
+                        # If rendering resulted in the original template string (placeholder not found), set to None
+                        if key_to_send.startswith("{{") and key_to_send.endswith("}}"):
+                            logger.debug(f"Message key template could not be resolved: {key_to_send}, setting to None")
+                            key_to_send = None
+
+                    # Apply messageKey poison pill if configured
+                    if output.fault and output.fault.poison_pill > 0 and 'messageKey' in output.fault.poison_pill_type:
+                        if FaultInjector._should_fault(output.fault.poison_pill):
+                            key_to_send = FaultInjector.apply_messagekey_poison_pill(key_to_send)
+
+                    # Produce to output topic with headers, key, and schema_id
                     self.kafka_client.produce(
                         output.topic,
                         message_to_send,
                         headers=headers_to_send,
+                        key=key_to_send,
                         schema_id=output.schema_id
                     )
                     logger.info(f"Produced message to {output.topic} (rule: {rule.rule_name})")
@@ -580,6 +627,7 @@ class KafkaListenerEngine:
                             output.topic,
                             message_to_send,
                             headers=headers_to_send,
+                            key=key_to_send,
                             schema_id=output.schema_id
                         )
 

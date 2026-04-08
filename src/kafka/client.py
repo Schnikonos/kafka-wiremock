@@ -38,6 +38,8 @@ def get_kafka_config(bootstrap_servers: str = "localhost:9092") -> Dict[str, Any
     - KAFKA_SSL_CERTIFICATE_LOCATION: Path to client certificate file
     - KAFKA_SSL_KEY_LOCATION: Path to client key file
     - KAFKA_SSL_KEY_PASSWORD: Password for client key
+    - KAFKA_CONSUMER_GROUP_PREFIX: Consumer group ID prefix (default: 'wiremock-consumer-')
+    - KAFKA_CONSUME_FROM_LATEST: If set to 'true', new consumers start at latest offset instead of earliest (default: false)
 
     Returns:
         Dictionary of Kafka client configuration
@@ -111,6 +113,11 @@ class KafkaClientWrapper:
         self._topics_lock = threading.Lock()
         self._topic_check_interval = 5  # seconds
         self._last_topic_check = {}  # topic -> last check time
+        
+        # Consumer configuration
+        self.consumer_group_prefix = os.getenv("KAFKA_CONSUMER_GROUP_PREFIX", "wiremock-consumer-")
+        self.consume_from_latest = os.getenv("KAFKA_CONSUME_FROM_LATEST", "false").lower() == "true"
+        
         self._connect_producer()
 
     def _connect_producer(self) -> None:
@@ -191,7 +198,7 @@ class KafkaClientWrapper:
 
     def produce(self, topic: str, message: Union[str, dict, bytes],
                 message_format: str = "auto", schema_id: Optional[int] = None,
-                headers: Optional[Dict[str, str]] = None) -> Optional[str]:
+                headers: Optional[Dict[str, str]] = None, key: Optional[str] = None) -> Optional[str]:
         """
         Produce a message to a Kafka topic.
 
@@ -201,6 +208,7 @@ class KafkaClientWrapper:
             message_format: Format - "json", "avro", or "auto"
             schema_id: Schema ID for AVRO (optional)
             headers: Optional headers dict to send with message
+            key: Optional message key (string or templated value)
 
         Returns:
             Message ID or None if failed
@@ -228,13 +236,24 @@ class KafkaClientWrapper:
             kafka_headers = None
             if headers:
                 kafka_headers = []
-                for key, value in headers.items():
-                    if isinstance(value, str):
-                        kafka_headers.append((key, value.encode('utf-8')))
-                    elif isinstance(value, bytes):
-                        kafka_headers.append((key, value))
+                for header_key, header_value in headers.items():
+                    if isinstance(header_value, str):
+                        kafka_headers.append((header_key, header_value.encode('utf-8')))
+                    elif isinstance(header_value, bytes):
+                        kafka_headers.append((header_key, header_value))
                     else:
-                        kafka_headers.append((key, str(value).encode('utf-8')))
+                        kafka_headers.append((header_key, str(header_value).encode('utf-8')))
+
+            # Convert key to bytes if provided
+            kafka_key = None
+            if key:
+                if isinstance(key, str):
+                    kafka_key = key.encode('utf-8')
+                elif isinstance(key, bytes):
+                    kafka_key = key
+                else:
+                    kafka_key = str(key).encode('utf-8')
+                logger.debug(f"Producing message to {topic} with key: {key} (encoded: {kafka_key})")
 
             # Delivery callback for producer
             delivery_event = threading.Event()
@@ -253,6 +272,7 @@ class KafkaClientWrapper:
             self.producer.produce(
                 topic,
                 value=serialized,
+                key=kafka_key,
                 headers=kafka_headers,
                 callback=delivery_callback
             )
@@ -290,8 +310,8 @@ class KafkaClientWrapper:
             if topic not in self.consumers:
                 consumer_config = self.base_config.copy()
                 consumer_config.update({
-                    'group.id': f"wiremock-consumer-{topic}",
-                    'auto.offset.reset': 'earliest',
+                    'group.id': f"{self.consumer_group_prefix}{topic}",
+                    'auto.offset.reset': 'latest' if self.consume_from_latest else 'earliest',
                     'enable.auto.commit': True,
                 })
                 self.consumers[topic] = Consumer(consumer_config)
@@ -355,8 +375,9 @@ class KafkaClientWrapper:
 
             # Create temporary consumer
             consumer_config = self.base_config.copy()
+            # Use configurable group prefix for consistency
             consumer_config.update({
-                'group.id': f"wiremock-latest-{int(time.time()*1000)}-{id(self)}",
+                'group.id': f"{self.consumer_group_prefix}latest-{int(time.time()*1000)}-{id(self)}",
                 'enable.auto.commit': False,
                 'session.timeout.ms': 6000,
                 'fetch.min.bytes': 1,
@@ -466,6 +487,27 @@ class KafkaClientWrapper:
             Dictionary with message metadata and value
         """
         try:
+            # Extract and decode key FIRST before processing value
+            # This ensures we capture the key from the Kafka message object
+            message_key = None
+            try:
+                raw_key = kafka_message.key()
+                logger.debug(f"kafka_message.key() returned: {raw_key!r} (type: {type(raw_key).__name__})")
+                
+                if raw_key is not None:
+                    if isinstance(raw_key, bytes):
+                        message_key = raw_key.decode('utf-8')
+                        logger.debug(f"Decoded bytes key to: {message_key}")
+                    else:
+                        message_key = str(raw_key)
+                        logger.debug(f"Converted non-bytes key to string: {message_key}")
+                else:
+                    logger.debug("kafka_message.key() returned None")
+            except Exception as e:
+                logger.warning(f"Exception extracting key: {e}", exc_info=True)
+                message_key = None
+            
+            # ...existing code...
             # Try to deserialize as JSON first
             if kafka_message.value():
                 try:
@@ -512,13 +554,13 @@ class KafkaClientWrapper:
                 "timestamp": kafka_message.timestamp()[1] if kafka_message.timestamp() else None,
                 "partition": kafka_message.partition(),
                 "offset": kafka_message.offset(),
-                "key": kafka_message.key().decode('utf-8') if kafka_message.key() else None,
+                "key": message_key,
                 "value": value,
                 "format": value_format,
                 "headers": message_headers,
             }
         except Exception as e:
-            logger.error(f"Error deserializing message: {e}")
+            logger.error(f"Error deserializing message: {e}", exc_info=True)
             return {
                 "error": str(e),
                 "value": None,
@@ -536,72 +578,6 @@ class KafkaClientWrapper:
         logger.info("Kafka connections closed")
 
 
-        """Deserialize a Kafka message to a dict."""
-        try:
-            # Try to deserialize as JSON first
-            if kafka_message.value():
-                try:
-                    value = json.loads(kafka_message.value().decode('utf-8'))
-                    value_format = "json"
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    # Try AVRO deserialization
-                    if AVRO_AVAILABLE:
-                        try:
-                            # Check if message has Confluent magic byte (0x0) for schema registry
-                            if len(kafka_message.value()) > 5 and kafka_message.value()[0:1] == b'\x00':
-                                # Has Confluent schema registry magic byte
-                                bytes_reader = io.BytesIO(kafka_message.value()[5:])
-                                value = fastavro.reader(bytes_reader).__next__()
-                                value_format = "avro"
-                            else:
-                                # Try raw AVRO without magic byte
-                                bytes_reader = io.BytesIO(kafka_message.value())
-                                value = fastavro.reader(bytes_reader).__next__()
-                                value_format = "avro"
-                        except Exception as avro_err:
-                            # Fallback to base64
-                            logger.debug(f"AVRO deserialization failed: {avro_err}, using base64")
-                            value = base64.b64encode(kafka_message.value()).decode('utf-8')
-                            value_format = "binary"
-                    else:
-                        # AVRO not available, use base64
-                        value = base64.b64encode(kafka_message.value()).decode('utf-8')
-                        value_format = "binary"
-            else:
-                value = None
-                value_format = "null"
 
-            # Process headers
-            message_headers = {}
-            if kafka_message.headers():
-                for key, val in kafka_message.headers():
-                    if isinstance(val, bytes):
-                        message_headers[key] = val.decode('utf-8')
-                    else:
-                        message_headers[key] = val
 
-            return {
-                "timestamp": kafka_message.timestamp()[1] if kafka_message.timestamp() else None,
-                "partition": kafka_message.partition(),
-                "offset": kafka_message.offset(),
-                "key": kafka_message.key().decode('utf-8') if kafka_message.key() else None,
-                "value": value,
-                "format": value_format,
-                "headers": message_headers,
-            }
-        except Exception as e:
-            logger.error(f"Error deserializing message: {e}")
-            return {
-                "error": str(e),
-                "value": None,
-                "format": "error",
-            }
-
-    def close(self) -> None:
-        """Close all Kafka connections."""
-        if self.producer:
-            self.producer.close()
-        for consumer in self.consumers.values():
-            consumer.close()
-        logger.info("Kafka connections closed")
 

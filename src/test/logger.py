@@ -20,10 +20,12 @@ class LogMessage:
     topic: str
     payload: Any
     headers: Optional[Dict[str, str]] = None
+    key: Optional[str] = None  # Message key
     message_id: Optional[str] = None
     correlation_matched: bool = False
     conditions_matched: int = 0
     total_conditions: int = 0
+    failed_conditions: Optional[List[Dict[str, Any]]] = None  # Details of failed conditions
 
 
 class TestLogger:
@@ -61,7 +63,8 @@ class TestLogger:
         topic: str,
         payload: Any,
         message_id: Optional[str] = None,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        key: Optional[str] = None
     ):
         """Log a message sent during test setup (when phase)."""
         msg = LogMessage(
@@ -70,6 +73,7 @@ class TestLogger:
             topic=topic,
             payload=payload,
             headers=headers,
+            key=key,
             message_id=message_id
         )
         self.sent_messages.append(msg)
@@ -82,7 +86,9 @@ class TestLogger:
         correlation_matched: bool = False,
         conditions_matched: int = 0,
         total_conditions: int = 0,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        key: Optional[str] = None,
+        failed_conditions: Optional[List[Dict[str, Any]]] = None
     ):
         """Log a message received during test validation (then phase)."""
         msg = LogMessage(
@@ -91,10 +97,35 @@ class TestLogger:
             topic=topic,
             payload=payload,
             headers=headers,
+            key=key,
             message_id=message_id,
             correlation_matched=correlation_matched,
             conditions_matched=conditions_matched,
-            total_conditions=total_conditions
+            total_conditions=total_conditions,
+            failed_conditions=failed_conditions
+        )
+        self.received_messages.append(msg)
+
+    def record_received_message_with_failures(
+        self,
+        topic: str,
+        payload: Any,
+        headers: Optional[Dict[str, str]] = None,
+        key: Optional[str] = None,
+        failed_conditions: Optional[List[Dict[str, Any]]] = None
+    ):
+        """Record a received message that failed condition matching (for closest match analysis)."""
+        msg = LogMessage(
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
+            direction="RECEIVED",
+            topic=topic,
+            payload=payload,
+            headers=headers,
+            key=key,
+            correlation_matched=False,
+            conditions_matched=0,
+            total_conditions=len(failed_conditions) if failed_conditions else 0,
+            failed_conditions=failed_conditions
         )
         self.received_messages.append(msg)
 
@@ -103,7 +134,8 @@ class TestLogger:
         topic: str,
         payload: Any,
         reason: str,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        key: Optional[str] = None
     ):
         """Log a message that was skipped (verbose mode only)."""
         if not self.verbose:
@@ -113,7 +145,8 @@ class TestLogger:
             direction="SKIPPED",
             topic=topic,
             payload=payload,
-            headers=headers
+            headers=headers,
+            key=key
         )
         self.skipped_messages.append(msg)
 
@@ -273,7 +306,11 @@ class TestLogger:
                 elif isinstance(value[0], dict):
                     result.append(f"{prefix}{key}:")
                     for item in value:
-                        result.append(f"{prefix}  - {TestLogger._to_yaml_string(item, indent + 2).strip()}")
+                        # Format list items as proper YAML
+                        item_lines = TestLogger._to_yaml_string(item, indent + 2).strip().split('\n')
+                        result.append(f"{prefix}  - {item_lines[0]}")
+                        for line in item_lines[1:]:
+                            result.append(line)
                 else:
                     result.append(f"{prefix}{key}:")
                     for item in value:
@@ -282,6 +319,8 @@ class TestLogger:
                 # Format value
                 if isinstance(value, bool):
                     val_str = "true" if value else "false"
+                elif value is None:
+                    val_str = "null"
                 elif isinstance(value, str):
                     val_str = f'"{value}"'
                 elif isinstance(value, (dict, list)):
