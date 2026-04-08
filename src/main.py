@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
         dependency_manager.start()
 
         # Initialize components
-        config_loader = ConfigLoader(config_dir=config_dir, reload_interval=30)
+        config_loader = ConfigLoader(config_dir=config_dir, reload_interval=5)
         kafka_client = KafkaClientWrapper(bootstrap_servers=bootstrap_servers)
 
         # Initialize message cache for tests and rules
@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
             config_dir=config_dir,
             test_suite_dir=test_suite_dir,
             kafka_client=kafka_client,
-            scan_interval=30,
+            scan_interval=5,
             topic_check_interval=10
         )
 
@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI):
         test_listener_manager = TestListenerManager(
             listener_engine=listener_engine,
             test_loader=test_loader,
-            scan_interval=30
+            scan_interval=5
         )
         test_listener_manager.start()
 

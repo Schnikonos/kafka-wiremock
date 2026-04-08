@@ -306,20 +306,34 @@ class TestLoader:
         self.test_suite_dir.mkdir(parents=True, exist_ok=True)
         # Track validation errors per file
         self.validation_errors: Dict[str, List[str]] = {}
+        # Cache for test discovery
+        self._cached_tests: Optional[List[TestDefinition]] = None
+        self._cached_test_files: Optional[Set[str]] = None
 
     def discover_tests(self) -> List[TestDefinition]:
         """
         Discover and load all test files from /testSuite/ directory.
+        Uses caching to avoid repeated logging when test files haven't changed.
 
         Returns:
             List of TestDefinition objects, sorted by priority
         """
-        tests = []
+        # Get current test files
         yaml_files = sorted(self.test_suite_dir.rglob("*.test.yaml")) + \
                      sorted(self.test_suite_dir.rglob("*.test.yml"))
+        current_files = {str(f) for f in yaml_files}
+
+        # Check if test files have changed
+        if self._cached_tests is not None and self._cached_test_files == current_files:
+            return self._cached_tests
+
+        # Tests have changed, reload them
+        tests = []
 
         if not yaml_files:
             logger.debug(f"No test files found in {self.test_suite_dir}")
+            self._cached_tests = tests
+            self._cached_test_files = current_files
             return tests
 
         for yaml_file in yaml_files:
@@ -334,6 +348,10 @@ class TestLoader:
         # Sort by priority (lower = first) then by name
         tests.sort(key=lambda t: (t.priority, t.name))
         logger.info(f"Discovered {len(tests)} tests")
+
+        # Cache the results
+        self._cached_tests = tests
+        self._cached_test_files = current_files
         return tests
 
     def load_test_file(self, file_path: Path) -> TestDefinition:
