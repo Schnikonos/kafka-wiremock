@@ -146,14 +146,26 @@ See [API.md](docs/API.md) for complete documentation of all HTTP endpoints:
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Health check |
-| `POST /inject/<topic>` | Inject test message |
-| `GET /messages/<topic>` | Get produced messages |
-| `GET /rules` | List all rules |
-| `GET /rules/<topic>` | List rules for topic |
-| `GET /custom-placeholders` | List custom placeholders |
-| `GET /tests` | List all tests |
-| `POST /tests/{test_id}` | Run single test |
-| `POST /tests:bulk` | Run all tests (bulk) |
+| `POST /inject/<topic>` | Inject a message into a Kafka topic |
+| `GET /messages/<topic>` | Consume messages from a Kafka topic |
+| `GET /rules` | List all configured rules |
+| `GET /rules/<topic>` | List rules for a specific topic |
+| `POST /rules:match` | Dry-run: show which rule would match a message |
+| `GET /custom-placeholders` | List custom placeholder functions |
+| `GET /dependencies` | Python dependency manager status |
+| `GET /tests` | List all test definitions |
+| `GET /tests/{test_id}` | Get a specific test definition |
+| `POST /tests/{test_id}` | Run a single test |
+| `POST /tests:bulk` | Run all tests (bulk, parallel or sequential) |
+| `GET /tests/jobs` | List async test jobs |
+| `GET /tests/jobs/{job_id}` | Get async test job status |
+| `GET /tests/logs` | List test log files |
+| `GET /tests/logs/{test_id}` | Get log for a specific test |
+| `POST /debug/decode` | Decode a raw message and detect its format |
+| `POST /debug/match` | Detailed rule-matching analysis for a message |
+| `GET /debug/topics` | Show discovered topics and metadata |
+| `GET /debug/cache` | Show message cache statistics |
+| `POST /debug/template/render` | Render a template with a given context |
 
 Quick example:
 ```bash
@@ -167,17 +179,49 @@ curl http://localhost:8000/messages/payments?limit=10 | jq
 
 # List rules
 curl http://localhost:8000/rules | jq
+
+# Dry-run: check which rule would match
+curl -X POST "http://localhost:8000/rules:match?topic=orders" \
+  -H "Content-Type: application/json" \
+  -d '{"eventType": "ORDER_CREATED", "orderId": "ORD-1"}'
 ```
 
 ## Environment Variables
 
-- `KAFKA_BOOTSTRAP_SERVERS` (default: `localhost:9092`) - Kafka broker address
-- `CONFIG_DIR` (default: `/config`) - Configuration directory for rules
-- `TEST_SUITE_DIR` (default: `/testSuite`) - Test suite directory
-- `SCHEMA_REGISTRY_URL` (optional) - Confluent Schema Registry URL for AVRO schema lookup (e.g., `http://localhost:8081`)
-- `CUSTOM_PLACEHOLDERS_DIR` (default: `/config/custom_placeholders`) - Custom placeholder functions directory
-- `PORT` (default: `8000`) - API port
-- `WORKERS` (default: `1`) - Number of workers
+### General
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `0.0.0.0` | Bind address for the HTTP server |
+| `PORT` | `8000` | HTTP API port |
+| `WORKERS` | `1` | Number of Uvicorn worker processes |
+| `CONFIG_DIR` | `/config` | Root directory for rules and topic-config files |
+| `CUSTOM_PLACEHOLDERS_DIR` | `/config/custom_placeholders` | Directory for custom Python placeholder functions |
+| `PYTHON_REQUIREMENTS_DIR` | `/config/python-requirements` | Directory scanned for `requirements.txt` to auto-install |
+| `PYTHON_REQUIREMENTS_SCAN_INTERVAL` | `30` | Seconds between `requirements.txt` change checks |
+| `TEST_SUITE_DIR` | `/testSuite` | Directory for `*.test.yaml` integration test files |
+| `SCHEMA_REGISTRY_URL` | _(none)_ | Confluent Schema Registry URL for AVRO (e.g. `http://localhost:8081`) |
+
+### Kafka Connection
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker address(es) |
+| `KAFKA_CONSUMER_GROUP_PREFIX` | `wiremock-consumer-` | Prefix for consumer group IDs |
+| `KAFKA_CONSUME_FROM_LATEST` | `false` | When `true`, new consumers start from the latest offset instead of earliest |
+
+### Kafka Security (SASL / SSL)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KAFKA_SECURITY_PROTOCOL` | `plaintext` | One of `plaintext`, `ssl`, `sasl_plaintext`, `sasl_ssl` |
+| `KAFKA_SASL_MECHANISM` | `PLAIN` | SASL mechanism: `PLAIN`, `SCRAM-SHA-256`, or `SCRAM-SHA-512` (only when protocol includes SASL) |
+| `KAFKA_SASL_USERNAME` | _(none)_ | SASL username |
+| `KAFKA_SASL_PASSWORD` | _(none)_ | SASL password |
+| `KAFKA_SSL_CA_LOCATION` | _(none)_ | Path to CA certificate file (PEM) |
+| `KAFKA_SSL_CERTIFICATE_LOCATION` | _(none)_ | Path to client certificate file (PEM) |
+| `KAFKA_SSL_KEY_LOCATION` | _(none)_ | Path to client private key file (PEM) |
+| `KAFKA_SSL_KEY_PASSWORD` | _(none)_ | Password for the client private key |
 
 ## Local Development
 
