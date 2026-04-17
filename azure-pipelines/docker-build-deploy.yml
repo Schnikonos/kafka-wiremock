@@ -4,6 +4,7 @@ trigger:
     include:
       - main
       - master
+      - develop
   paths:
     include:
       - src/**
@@ -15,10 +16,11 @@ pr:
     include:
       - main
       - master
+      - develop
 variables:
-  dockerRegistryServiceConnection: 'YourDockerRegistry' # Set this to your Docker registry connection
+  dockerRegistryServiceConnection: 'P38130-DevAcr-ACR-write' # Set this to your Docker registry connection  P38130-DevAcr-ACR-write / P38130-Federated-NonProd
   imageRepository: 'kafka-wiremock'
-  containerRegistry: 'yourcontainer.azurecr.io' # Set this to your container registry
+  containerRegistry: 'p38130devacr.azurecr.io' # Set this to your container registry
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
   latestTag: 'latest'
