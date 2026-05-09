@@ -1,0 +1,22 @@
+priority: 10
+name: "simple-order-send"
+tags: ["example", "basic", "order"]
+skip: false
+timeout_ms: 5000
+
+inject:
+  - message_id: "order1"
+    topic: "orders.input"
+    headers:
+      X-Source: "SendExample"
+      X-Version: "1.0"
+    key: "order-{{uuid}}"
+    payload: |
+      {
+        "orderId": "{{uuid}}",
+        "customerId": "CUST-{{randomInt(1000, 9999)}}",
+        "amount": {{randomInt(10, 1000)}}.99,
+        "status": "NEW",
+        "createdAt": "{{now}}"
+      }
+

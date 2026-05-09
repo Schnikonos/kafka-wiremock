@@ -292,25 +292,141 @@ Run a single test synchronously (default) or asynchronously.
 
 ### `POST /tests:bulk`
 
-Run all discovered tests in bulk.
+Run multiple selected tests in bulk with repeat and parallel execution options.
 
-**Query params**
-| Param | Default | Description |
-|-------|---------|-------------|
-| `mode` | `parallel` | `sequential` or `parallel` |
-| `threads` | `4` | Concurrent threads (parallel mode, 1–32) |
-| `iterations` | `1` | Number of times each test is repeated (1–1000) |
-| `filter_tags` | _(none)_ | Only run tests with these tags (repeat param for multiple) |
-| `verbose` | `false` | Include detailed message logs |
-
-**Example**
-```bash
-# Run all tests in parallel with 8 threads
-curl -X POST "http://localhost:8000/tests:bulk?mode=parallel&threads=8"
-
-# Run only 'critical' tests 5 times each
-curl -X POST "http://localhost:8000/tests:bulk?filter_tags=critical&iterations=5"
+**Request body**
+```json
+{
+  "test_ids": ["test-1", "test-2"],
+  "mode": "parallel",
+  "repeat": 2,
+  "parallel_workers": 4
+}
 ```
+
+**Parameters**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `test_ids` | string[] | _(required)_ | Array of test IDs to execute |
+| `mode` | string | `parallel` | `sequential` or `parallel` |
+| `repeat` | number | `1` | Number of times to repeat each test (1–1000) |
+| `parallel_workers` | number | `4` | Concurrent workers for parallel mode (1–32) |
+
+**Response**
+```json
+{
+  "total": 4,
+  "passed": 3,
+  "failed": 1,
+  "skipped": 0,
+  "mode": "parallel",
+  "repeat": 2,
+  "elapsed_ms": 1523,
+  "results": [
+    { "test_id": "test-1", "status": "PASSED", "elapsed_ms": 312 },
+    { "test_id": "test-2", "status": "FAILED", "elapsed_ms": 425 },
+    { "test_id": "test-1", "status": "PASSED", "elapsed_ms": 298 },
+    { "test_id": "test-2", "status": "FAILED", "elapsed_ms": 488 }
+  ]
+}
+```
+
+**Examples**
+```bash
+# Run 2 tests in parallel with 4 workers, repeat once
+curl -X POST "http://localhost:8000/tests:bulk" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "test_ids": ["smoke-test", "integration-test"],
+    "mode": "parallel",
+    "repeat": 1,
+    "parallel_workers": 4
+  }'
+
+# Run same 3 tests sequentially 5 times each (15 total executions)
+curl -X POST "http://localhost:8000/tests:bulk" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "test_ids": ["test-1", "test-2", "test-3"],
+    "mode": "sequential",
+    "repeat": 5,
+    "parallel_workers": 1
+  }'
+```
+
+**Errors**
+- `400` Bad Request – Invalid mode or parameters
+- `404` Not Found – One or more test IDs don't exist
+- `503` Service Unavailable – Test suite not initialized
+
+---
+
+### `POST /send:bulk`
+
+Run multiple selected sends in bulk with repeat and parallel execution options.
+
+**Request body**
+```json
+{
+  "send_ids": ["send-order", "send-payment"],
+  "mode": "parallel",
+  "repeat": 1,
+  "parallel_workers": 2
+}
+```
+
+**Parameters**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `send_ids` | string[] | _(required)_ | Array of send IDs to execute |
+| `mode` | string | `sequential` | `sequential` or `parallel` |
+| `repeat` | number | `1` | Number of times to repeat each send (1–100) |
+| `parallel_workers` | number | `4` | Concurrent workers for parallel mode (1–16) |
+
+**Response**
+```json
+{
+  "total": 2,
+  "completed": 2,
+  "failed": 0,
+  "skipped": 0,
+  "mode": "parallel",
+  "repeat": 1,
+  "elapsed_ms": 234,
+  "results": [
+    { "send_id": "send-order", "status": "COMPLETED", "elapsed_ms": 115 },
+    { "send_id": "send-payment", "status": "COMPLETED", "elapsed_ms": 119 }
+  ]
+}
+```
+
+**Examples**
+```bash
+# Run 2 sends in parallel with 2 workers
+curl -X POST "http://localhost:8000/send:bulk" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "send_ids": ["send-order", "send-payment"],
+    "mode": "parallel",
+    "repeat": 1,
+    "parallel_workers": 2
+  }'
+
+# Run same send 10 times sequentially
+curl -X POST "http://localhost:8000/send:bulk" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "send_ids": ["daily-sync"],
+    "mode": "sequential",
+    "repeat": 10,
+    "parallel_workers": 1
+  }'
+```
+
+**Errors**
+- `400` Bad Request – Invalid mode or parameters
+- `404` Not Found – One or more send IDs don't exist
+- `503` Service Unavailable – Send executor not initialized
 
 ---
 

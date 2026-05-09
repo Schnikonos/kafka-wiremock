@@ -1,0 +1,28 @@
+priority: 20
+name: "multi-message-send"
+tags: ["example", "advanced", "order"]
+skip: false
+timeout_ms: 5000
+
+inject:
+  - message_id: "user-reg"
+    topic: "users.commands"
+    payload: |
+      {
+        "userId": "{{uuid}}",
+        "email": "user-{{randomInt(1, 999999)}}@example.com",
+        "action": "REGISTER",
+        "timestamp": "{{now}}"
+      }
+    delay_ms: 100
+  
+  - message_id: "order-cmd"
+    topic: "orders.commands"
+    payload: |
+      {
+        "orderId": "{{uuid}}",
+        "amount": 99.99,
+        "action": "CREATE",
+        "timestamp": "{{now}}"
+      }
+

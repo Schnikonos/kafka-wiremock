@@ -94,7 +94,7 @@ services:
       kafka-topics-init:
         condition: service_completed_successfully
     ports:
-      - "8001:8000"
+      - "8000:8000"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       CONFIG_DIR: /config
@@ -104,9 +104,10 @@ services:
     volumes:
       - ./config:/config
       - ./testSuite:/testSuite
+      - ./send:/send
       - ./logs:/var/log/wiremock
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s
       timeout: 10s
       retries: 10

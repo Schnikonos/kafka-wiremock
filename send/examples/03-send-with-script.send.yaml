@@ -1,0 +1,34 @@
+priority: 30
+name: "send-with-script"
+tags: ["example", "advanced"]
+skip: false
+timeout_ms: 5000
+
+inject:
+  - message_id: "msg1"
+    topic: "events.input"
+    payload: |
+      {
+        "eventId": "{{uuid}}",
+        "eventType": "USER_ACTION",
+        "timestamp": "{{now}}"
+      }
+    delay_ms: 50
+
+  - script: |
+      # Access injected messages
+      print(f"Injected {len(current_injections)} messages")
+      for msg in current_injections:
+        print(f"  - {msg['message_id']} to {msg['topic']}")
+      # Build context for next iteration
+      context['event_timestamp'] = current_injections[0]['payload'].get('timestamp') if current_injections else None
+
+  - message_id: "msg2"
+    topic: "events.processing"
+    payload: |
+      {
+        "eventId": "{{uuid}}",
+        "originalTimestamp": "{{now}}",
+        "status": "PROCESSING"
+      }
+

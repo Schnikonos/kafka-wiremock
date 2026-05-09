@@ -14,10 +14,188 @@ Event-driven Kafka mock container for testing, similar to Pact for APIs. Interce
 - ✅ **Skip Rules & Tests**: Disable rules/tests without removing them (set `skip: true`)
 - ✅ **AVRO Support**: Read, match, and produce AVRO messages
 - ✅ **Test Suite**: Integration tests with injection, correlation, and validation
+- ✅ **Send Feature**: Simple message injection without test assertions (for quick testing)
 - ✅ **Hot-Reload**: Configuration updates every 30 seconds (no restart needed)
 - ✅ **Docker Ready**: Lightweight container with all dependencies included
+- ✅ **Angular Web UI**: Modern dashboard for managing tests, sends, rules, and messages
 
-## Quick Start
+## UI Features (Angular 19)
+
+### Phase 1: Core Features (✅ Complete)
+
+The Angular 19 web UI provides a modern dashboard for managing Kafka Wiremock:
+
+#### 📊 Test Suite Manager
+- **Multi-Select Tests**: Select multiple tests with checkboxes or "Select All"
+- **Execution Modes**: Run tests sequentially or in parallel (1-16 workers)
+- **Repeat Functionality**: Run each test N times (1-100)
+- **Search & Filter**: Find tests by name or tags
+- **Real-Time Results**: View pass/fail/skip status and execution time
+- **Statistics**: Total, passed, failed, skipped counts with timing
+
+#### 📮 Send Messages Manager
+- **Multi-Select Sends**: Select multiple message definitions
+- **Execution Modes**: Sequential or parallel execution
+- **Repeat Functionality**: Repeat each send N times
+- **Search & Filter**: Find sends by ID or tags
+- **Execution Tracking**: Monitor send completion status
+
+#### 📋 Rules Viewer & Tester
+- **Rules Explorer**: Browse all configured rules with search
+- **Detailed View**: See matching conditions and output topics
+- **Test Rule Matching**: Test rules with sample payloads before deployment
+- **Visual Condition Display**: Clear formatting of JSONPath, regex, and exact matches
+- **Output Preview**: View all message outputs a rule will produce
+
+#### 💌 Message Inspector & Injector
+- **Inject Messages**: Send test messages to any topic
+- **Consume Messages**: Read messages from topics with configurable limits
+- **JSON Viewer**: Display message payloads with proper formatting
+- **Copy to Clipboard**: Share or debug message content
+- **Headers Display**: View message metadata and headers
+
+#### 🔧 Advanced Debugging (Phase 2)
+
+##### Rule Matching Debugger
+- **Detailed Analysis**: See which conditions matched/failed for each rule
+- **Three Views**:
+  - First Match: Shows matching rule and outputs
+  - All Rules: Compare analysis across all rules
+  - Message Analysis: Inspect payload and topic
+- **Visual Indicators**: Color-coded condition types and status badges
+- **Context Extraction**: View variables available for template rendering
+- **Optional Rule Filtering**: Test specific rules in isolation
+
+##### Test Execution Logs
+- **View All Logs**: Browse test execution history
+- **Search & Filter**: Find logs by test ID
+- **Lazy Loading**: Fast list loading, content loads on demand
+- **Copy & Download**: Export logs for external analysis
+- **Statistics**: Quick overview of test status distribution
+- **Auto-Parse**: Automatically extracts JSON summaries from logs
+
+##### Advanced Test Filtering
+- **Tag Filtering**: Filter tests by tags with dropdown selector
+- **Status Filtering**: Show active or skipped tests
+- **Smart Search**: Combines text search with advanced filters (AND logic)
+- **Dynamic Tags**: Auto-discovers available tags from tests
+- **Reset Filters**: Quick clear of all filter selections
+
+#### 🛠️ Advanced Tools (Phase 3)
+
+##### Template Preview & Validation
+- **Real-Time Rendering**: Test placeholder expressions with actual values
+- **Comprehensive Reference**: Complete guide to all available placeholders
+- **Built-in Functions**: UUID, timestamps, random data generation
+- **Context Variables**: Extract values from message data
+- **Custom Placeholders**: Auto-discover custom placeholder functions
+- **Example Templates**: Pre-built patterns for quick testing
+- **Export**: Copy rendered output to clipboard
+
+##### Execution History & Analytics
+- **Auto-Tracking**: Every test run automatically saved to local storage
+- **Recent Executions**: View all test runs with statistics
+- **Pass Rate Trend**: Visual comparison of execution quality over time
+- **Statistics Dashboard**: Overall metrics and performance tracking
+- **Execution Comparison**: Side-by-side analysis of multiple runs
+- **Change Tracking**: See improvement or regression between runs
+- **Export**: Download executions and comparisons as JSON
+
+#### 🎯 Bulk Execution Features (Phase 4 - Latest)
+
+##### Execution Summary Prompt
+- **Pre-Execution Review**: Confirmation dialog shows all execution parameters
+- **Clear Summary**: Total executions calculated (items × repeat) and displayed
+- **Parameter Preview**: Mode, workers, repeat count, and repeat mode shown
+- **User-Friendly**: Large, readable font with clear descriptions
+- **Cancel Option**: Review and cancel before committing to resource-intensive runs
+
+##### Execution Cancellation
+- **Stop Button**: Red "Stop Execution" button appears during execution
+- **Immediate Feedback**: Click to stop waiting for results
+- **User Friendly**: Clear feedback message when clicked
+- **Graceful Shutdown**: UI stops listening for results
+
+##### SQLite Results Database
+- **Persistent History**: All test and send executions saved to SQLite
+- **Result Details**: Complete execution metadata (mode, workers, repeat settings, results)
+- **Query API**: List, retrieve, and filter results with pagination
+- **Statistics**: Aggregated metrics over time (total runs, pass/fail rates, timing)
+- **Automatic Cleanup**: Remove old results with configurable retention (default 30 days)
+- **No Setup Required**: Database auto-initialized on first run
+
+##### Configurable Repeat Modes
+- **Interleaved Repeats** (default): Run A, B, A, B, A, B... (distributed load)
+- **Sequential Repeats**: Run A, A, A, B, B, B... (concentrated load)
+- **User-Friendly Selection**: Dropdown with clear examples in helper text
+- **Load Testing**: Choose mode based on testing scenario
+
+##### Feature Parity (Tests ↔ Sends)
+- **Identical Controls**: Both components have same execution options
+- **Consistent UI**: Same dialogs, buttons, and result displays
+- **Complete Feature Set**:
+  - Search and filtering (by ID, tags, status)
+  - Parallel execution with worker control
+  - Repeat functionality with configurable mode
+  - Execution history saved to localStorage
+  - Summary prompt and stop button
+  - Execution settings displayed in results
+
+## Recent Improvements (May 2026)
+
+### Phase 4: Bulk Execution & UI Fixes (Latest - May 7, 2026)
+
+#### Bug Fixes
+✅ **Logs Display Issue**: Fixed frontend logs component to properly parse API response structure (logs array in response object)  
+✅ **Rule Matching Test - Key & Headers Support**: UI now allows users to test rules with optional message key and headers in addition to payload  
+✅ **Rule Matching Debugger**: Added clear explanation of tool purpose - tests message against ALL rules, showing which matches first (in priority order)  
+
+#### Enhancements
+✅ **Test Logs API Response**: Updated logs endpoint to return structured response with log file metadata (path, size, modified time)  
+✅ **Backend Rule Matching**: `/rules:match` endpoint now supports optional key and headers parameters for comprehensive rule testing  
+✅ **UI Clarity**: Rule Matching Debugger now displays information panel explaining:
+   - Which rule matches first (in priority order)
+   - Why rules matched or failed (per condition analysis)
+   - What output messages would be produced
+   - Context variables extracted for template rendering
+   - Rule name filtering is optional (tests all rules if not specified)
+
+#### How to Use the Fixes
+
+**Testing Logs:**
+- Logs endpoint `/tests/logs` now properly displays test execution history in the frontend
+- Each log shows relative path, size, modification time, and content preview
+- Click to expand and view full log content
+
+**Testing Rules with Key & Headers:**
+In Rules > Test Rule Matching section:
+ - **Message Key** (optional): Set a key for key-based condition matching
+ - **Message Headers** (JSON, optional): Set headers for header-based condition matching
+ - **Message Payload**: Set the JSON payload
+ - Results show if rule matches and which output messages would be produced
+
+**Rule Matching Debugger Purpose:**
+- Located in Debugging > Rule Matcher
+- **Different from Rules testing**: This tests a message against ALL rules (not just one)
+- Shows first matching rule with details:
+  - Which conditions matched/failed
+  - Extracted context variables
+  - Generated output messages
+- Optional filtering to specific rule by name
+- Takes optional key and headers for complete message metadata testing
+
+### Phase 4: Core Improvements (Previous)
+
+✅ **Phase 4 Complete**: Bulk execution enhancement with summary prompts  
+✅ **SQLite Persistence**: Results saved to database with cleanup API  
+✅ **Configurable Repeat Semantics**: Choose execution order (interleaved/sequential)  
+✅ **Feature Parity**: Tests and Sends components fully aligned  
+✅ **Type Safety**: TypeScript models fixed for full type checking  
+✅ **Execution History**: Both components save to localStorage  
+✅ **Stop Button**: Cancel running executions  
+
+See `IMPLEMENTATION_SUMMARY.md` for detailed changes and `TESTING_GUIDE.md` for testing procedures.
+
 
 ### 1. Using Docker Compose
 
@@ -29,7 +207,21 @@ docker-compose up -d
 curl http://localhost:8000/health
 ```
 
-### 2. Inject a Test Message
+### 2. Starting the UI (Development)
+
+```bash
+# Terminal 1: Start backend
+python3 run.py
+
+# Terminal 2: Start Angular UI
+cd ui
+npm install
+npm start
+
+# Open browser to http://localhost:4200
+```
+
+### 3. Inject a Test Message
 
 ```bash
 curl -X POST http://localhost:8000/inject/orders \
@@ -37,13 +229,13 @@ curl -X POST http://localhost:8000/inject/orders \
   -d '{"message": "order-created"}'
 ```
 
-### 3. Check Produced Messages
+### 4. Check Produced Messages
 
 ```bash
 curl http://localhost:8000/messages/shipments?limit=10
 ```
 
-### 4. View Configured Rules
+### 5. View Configured Rules
 
 ```bash
 curl http://localhost:8000/rules
@@ -89,6 +281,67 @@ skip: true
 
 Useful for maintenance, A/B testing, and gradual rollouts.
 
+### Send Feature (May 2026)
+
+Simple message injection without test assertions. Perfect for quick manual testing without the overhead of full test suites.
+
+**Use Cases**:
+- Quick ad-hoc message generation
+- Manual system testing
+- Load generation
+- Demo and debugging
+
+**Comparison with Test Suite**:
+
+| Feature | Send | Test Suite |
+|---------|------|-----------|
+| **Inject messages** | ✅ | ✅ |
+| **Check results** | ❌ | ✅ |
+| **Scripts** | ✅ | ✅ |
+| **Complexity** | Minimal | Full |
+| **Typical use** | Quick send | Automated validation |
+
+**Example Send Definition**:
+```yaml
+priority: 10
+name: "send-orders"
+tags: ["example", "order"]
+
+inject:
+  - message_id: "order1"
+    topic: "orders.input"
+    payload: |
+      {
+        "orderId": "{{uuid}}",
+        "customerId": "CUST-123",
+        "amount": 99.99,
+        "status": "NEW"
+      }
+    delay_ms: 100
+  
+  - message_id: "order2"
+    topic: "orders.input"
+    payload: |
+      {
+        "orderId": "{{uuid}}",
+        "customerId": "CUST-456",
+        "amount": 199.99,
+        "status": "NEW"
+      }
+```
+
+**API Usage**:
+```bash
+# List all sends
+curl http://localhost:8000/send
+
+# Get send definition
+curl http://localhost:8000/send/send-orders
+
+# Run a send
+curl -X POST http://localhost:8000/send/send-orders
+```
+
 ## Documentation
 
 For detailed configuration and usage, see:
@@ -123,6 +376,11 @@ testSuite/                          # Integration tests (message injection and v
 ├── examples/
 │   └── *.test.yaml
 └── ...
+
+send/                               # Simple message sends (injection without assertions)
+├── examples/
+│   └── *.send.yaml
+└── ...
 ```
 
 **Files are scanned recursively** - organize by subdirectories as your project grows!
@@ -146,6 +404,8 @@ See [API.md](docs/API.md) for complete documentation of all HTTP endpoints:
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Health check |
+| `GET /app-settings` | Get application settings |
+| `POST /app-settings` | Update application settings |
 | `POST /inject/<topic>` | Inject a message into a Kafka topic |
 | `GET /messages/<topic>` | Consume messages from a Kafka topic |
 | `GET /rules` | List all configured rules |
@@ -153,6 +413,9 @@ See [API.md](docs/API.md) for complete documentation of all HTTP endpoints:
 | `POST /rules:match` | Dry-run: show which rule would match a message |
 | `GET /custom-placeholders` | List custom placeholder functions |
 | `GET /dependencies` | Python dependency manager status |
+| `GET /send` | List all send definitions |
+| `GET /send/{send_id}` | Get a specific send definition |
+| `POST /send/{send_id}` | Run a single send (inject messages) |
 | `GET /tests` | List all test definitions |
 | `GET /tests/{test_id}` | Get a specific test definition |
 | `POST /tests/{test_id}` | Run a single test |
@@ -191,7 +454,7 @@ curl -X POST "http://localhost:8000/rules:match?topic=orders" \
 ### General
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| Variable | Default | Description |
 | `HOST` | `0.0.0.0` | Bind address for the HTTP server |
 | `PORT` | `8000` | HTTP API port |
 | `WORKERS` | `1` | Number of Uvicorn worker processes |
@@ -200,6 +463,7 @@ curl -X POST "http://localhost:8000/rules:match?topic=orders" \
 | `PYTHON_REQUIREMENTS_DIR` | `/config/python-requirements` | Directory scanned for `requirements.txt` to auto-install |
 | `PYTHON_REQUIREMENTS_SCAN_INTERVAL` | `30` | Seconds between `requirements.txt` change checks |
 | `TEST_SUITE_DIR` | `/testSuite` | Directory for `*.test.yaml` integration test files |
+| `SEND_DIR` | `/send` | Directory for `*.send.yaml` simple message sends (no assertions) |
 | `SCHEMA_REGISTRY_URL` | _(none)_ | Confluent Schema Registry URL for AVRO (e.g. `http://localhost:8081`) |
 
 ### Kafka Connection
@@ -223,7 +487,71 @@ curl -X POST "http://localhost:8000/rules:match?topic=orders" \
 | `KAFKA_SSL_KEY_LOCATION` | _(none)_ | Path to client private key file (PEM) |
 | `KAFKA_SSL_KEY_PASSWORD` | _(none)_ | Password for the client private key |
 
-## Local Development
+## Application Settings
+
+Global UI and behavior settings are stored in `config/app-settings.json`. This file persists across container recreation (if `/config` is mounted as a volume).
+
+### App Settings File
+
+**Location**: `/config/app-settings.json`
+
+**Default Content**:
+```json
+{
+  "ui": {
+    "test_recap_threshold": 100
+  }
+}
+```
+
+### Configuration Options
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `ui.test_recap_threshold` | integer | `100` | **Test Recap Popup Threshold**: Show the confirmation popup when test executions exceed this value. Set to `0` to always show, or higher values to show less frequently. This helps prevent confirmation fatigue on large test runs. |
+
+### Managing Settings
+
+#### Via Web UI
+
+1. Click the **Settings** button (⚙️) in the top-right corner of the toolbar
+2. Adjust the "Test Recap Threshold" value
+3. Click "Save Settings"
+4. Settings are instantly saved to `config/app-settings.json`
+
+#### Via Configuration File
+
+Edit `/config/app-settings.json` directly:
+
+```json
+{
+  "ui": {
+    "test_recap_threshold": 50
+  }
+}
+```
+
+Changes are automatically detected and reloaded every 30 seconds (no restart needed).
+
+#### Via API
+
+**Get current settings**:
+```bash
+curl http://localhost:8000/api/app-settings | jq
+```
+
+**Update settings**:
+```bash
+curl -X POST http://localhost:8000/api/app-settings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ui": {
+      "test_recap_threshold": 200
+    }
+  }' | jq
+```
+
+
 
 ### Setup
 
@@ -247,6 +575,8 @@ python run.py
 ```
 
 The app will be available at `http://localhost:8000`.
+
+**Web UI**: The Angular frontend is automatically integrated and served at the root path. Visit `http://localhost:8000` to access the dashboard.
 
 ### Testing Configuration
 
@@ -392,19 +722,45 @@ Quick start:
 
 ```bash
 # List tests
-curl http://localhost:8000/tests
+curl http://localhost:8000/api/tests
 
 # Run a single test
-curl -X POST http://localhost:8000/tests/order-flow-test
+curl -X POST http://localhost:8000/api/tests/order-flow-test
 
 # Run all tests in parallel
-curl -X POST "http://localhost:8000/tests:bulk?mode=parallel&iterations=10"
+curl -X POST "http://localhost:8000/api/tests:bulk?mode=parallel&iterations=10"
 
 # Run tests with tag filtering
-curl -X POST "http://localhost:8000/tests:bulk?filter_tags=critical&filter_tags=e2e"
+curl -X POST "http://localhost:8000/api/tests:bulk?filter_tags=critical&filter_tags=e2e"
 ```
 
 Test files go in `/testSuite/` directory with `*.test.yaml` extension. See `/testSuite/examples/` for working examples.
+
+## API Endpoints
+
+All REST API endpoints are served under the `/api` prefix for a unified namespace:
+
+```
+GET    /api/health                  # Health check
+GET    /api/tests                   # List all tests
+POST   /api/tests:bulk              # Run tests in bulk
+GET    /api/send                    # List all sends
+POST   /api/send:bulk               # Execute sends in bulk
+GET    /api/rules                   # Get all rules
+GET    /api/rules/{topic}           # Get rules for a topic
+POST   /api/rules:match             # Test rule matching with message
+POST   /api/inject/{topic}          # Inject message to topic
+GET    /api/messages/{topic}        # Get messages from topic
+GET    /api/debug/topics            # List discovered topics
+GET    /api/debug/cache             # View message cache stats
+POST   /api/debug/decode            # Decode message payload
+POST   /api/debug/match             # Debug rule matching
+POST   /api/debug/template/render   # Render template with context
+GET    /api/custom-placeholders     # List custom placeholder functions
+GET    /api/dependencies            # List dependencies
+```
+
+The frontend served by the container automatically connects to these `/api/*` endpoints. When running the Angular dev server locally, the proxy configuration in `ui/proxy.conf.json` routes `/api` requests to the backend.
 
 ## Docker Compose useful commands
 ```shell

@@ -1,3 +1,15 @@
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /ui
+
+# Copy frontend files
+COPY ui/package*.json ./
+RUN npm ci
+
+COPY ui .
+RUN npm run build
+
+# Python stage
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -17,12 +29,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ src/
 COPY run.py .
 
+# Copy built frontend from frontend builder
+COPY --from=frontend-builder /ui/dist/ui/browser src/static
+
 # Create config directory
-RUN mkdir -p /config
+RUN mkdir -p /config /testSuite /send
 
 # Create non-root user and set permissions
 RUN useradd -m appuser && \
-    chown -R appuser:appuser /app /config
+    chown -R appuser:appuser /app /config /testSuite /send
 
 USER appuser
 
@@ -31,7 +46,7 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"
 
 # Environment variables
 ENV KAFKA_BOOTSTRAP_SERVERS=kafka:9092
