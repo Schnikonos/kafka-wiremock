@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from typing import Optional
 
 from .loader import SendDefinition
 from ..kafka.client import KafkaClientWrapper
@@ -49,12 +50,14 @@ class SendExecutor:
         self,
         kafka_client: KafkaClientWrapper,
         custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None,
-        send_dir: str = "/send"
+        send_dir: str = "/send",
+        jms_registry=None  # NEW: Optional JMS registry for JMS support
     ):
         """Initialize send executor."""
         self.kafka_client = kafka_client
         self.custom_placeholder_registry = custom_placeholder_registry or CustomPlaceholderRegistry()
         self.send_dir = send_dir
+        self.jms_registry = jms_registry  # NEW
 
     async def run_send(self, send: SendDefinition, verbose: bool = False) -> SendResult:
         """Execute a single send definition."""
@@ -157,22 +160,51 @@ class SendExecutor:
                             if FaultInjector._should_fault(item.fault.poison_pill):
                                 rendered_key = FaultInjector.apply_messagekey_poison_pill(rendered_key)
 
-                        self.kafka_client.produce(
-                            topic=item.topic,
-                            message=payload_obj,
-                            headers=rendered_headers,
-                            key=rendered_key
-                        )
+                        # Route to appropriate client based on message type
+                        if item.msg_type == "jms":
+                            # NEW: Handle JMS injection
+                            if not self.jms_registry or self.jms_registry.is_empty():
+                                logger.error(f"JMS client not initialized, cannot inject to {item.topic}")
+                                raise Exception("JMS client(s) not initialized")
 
-                        # Handle message duplication if configured
-                        if item.fault and FaultInjector.should_duplicate(item.fault):
-                            logger.info(f"Duplicating send injection message to {item.topic} (fault injection)")
+                            try:
+                                client = self.jms_registry.get_client(item.queue_manager_ref)
+                            except ValueError as e:
+                                logger.error(f"Failed to get JMS client for queue manager {item.queue_manager_ref}: {e}")
+                                raise
+
+                            client.put_message(
+                                destination=item.topic,
+                                payload=json.dumps(payload_obj) if isinstance(payload_obj, dict) else payload_obj,
+                                headers=rendered_headers
+                            )
+                        else:
+                            # Default: Kafka
                             self.kafka_client.produce(
                                 topic=item.topic,
                                 message=payload_obj,
                                 headers=rendered_headers,
                                 key=rendered_key
                             )
+
+                        # Handle message duplication if configured
+                        if item.fault and FaultInjector.should_duplicate(item.fault):
+                            logger.info(f"Duplicating send injection message to {item.topic} (fault injection)")
+                            if item.msg_type == "jms":
+                                # Duplicate JMS message
+                                dup_client = self.jms_registry.get_client(item.queue_manager_ref)
+                                dup_client.put_message(
+                                    destination=item.topic,
+                                    payload=json.dumps(payload_obj) if isinstance(payload_obj, dict) else payload_obj,
+                                    headers=rendered_headers
+                                )
+                            else:
+                                self.kafka_client.produce(
+                                    topic=item.topic,
+                                    message=payload_obj,
+                                    headers=rendered_headers,
+                                    key=rendered_key
+                                )
 
                         injected_msg = InjectedMessage(
                             message_id=item.message_id,
@@ -184,7 +216,7 @@ class SendExecutor:
                         )
                         injected_messages.append(injected_msg)
 
-                        logger.info(f"Injected message {item.message_id} to {item.topic}")
+                        logger.info(f"Injected message {item.message_id} to {item.msg_type.upper()} {item.topic}")
 
                         if item.delay_ms > 0:
                             await asyncio.sleep(item.delay_ms / 1000.0)

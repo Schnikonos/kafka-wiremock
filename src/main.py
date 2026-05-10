@@ -1,5 +1,5 @@
 """
-FastAPI application for Kafka Wiremock.
+FastAPI application for Kafka Wiremock with Kafka and JMS support.
 
 Main entry point that initializes the application and includes all API routers.
 For endpoint implementations, see src/api/ package.
@@ -14,6 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from .config.loader import ConfigLoader
 from .config.app_settings import AppSettingsLoader
+from .config.jms_config_loader import JMSConfigLoader
+from .config.queue_manager_loader import QueueManagerConfigLoader  # NEW
+from .jms.registry import JMSClientRegistry  # NEW
 from .kafka.client import KafkaClientWrapper
 from .kafka.listener import KafkaListenerEngine
 from .custom.placeholders import CustomPlaceholderRegistry
@@ -29,10 +32,11 @@ from .send.loader import SendLoader
 from .send.executor import SendExecutor
 
 # Import API routers and setter functions
-from .api import health, kafka_injection, rules, custom_placeholders, dependencies_mgmt, results, app_settings
+from .api import health, kafka_injection, rules, custom_placeholders, dependencies_mgmt, results, app_settings, config, jms as jms_api
 from .api.tests import discovery, execution, jobs, logs, bulk
 from .api.send import discovery as send_discovery, execution as send_execution, bulk as send_bulk
 from .api.debug import decode, match, topics, cache, template
+from .jms.providers.factory import ProviderFactory  # NEW: provider factory
 
 # Configure logging
 logging.basicConfig(
@@ -44,8 +48,12 @@ logger = logging.getLogger(__name__)
 # Global instances
 config_loader: Optional[ConfigLoader] = None
 app_settings_loader: Optional[AppSettingsLoader] = None
+qm_config_loader: Optional[QueueManagerConfigLoader] = None  # NEW
+jms_config_loader: Optional[JMSConfigLoader] = None
+jms_registry: Optional[JMSClientRegistry] = None  # NEW: registry instead of single client
 kafka_client: Optional[KafkaClientWrapper] = None
 listener_engine: Optional[KafkaListenerEngine] = None
+jms_listener_engine: Optional[object] = None  # JMSListenerEngine type
 custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None
 test_loader: Optional[TestLoader] = None
 test_suite_runner: Optional[TestSuiteRunner] = None
@@ -61,7 +69,7 @@ results_db: Optional[ResultsDatabase] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown."""
-    global config_loader, app_settings_loader, kafka_client, listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager, message_cache, test_listener_manager, send_loader, send_executor, results_db
+    global config_loader, app_settings_loader, qm_config_loader, jms_config_loader, jms_registry, kafka_client, listener_engine, jms_listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager, message_cache, test_listener_manager, send_loader, send_executor, results_db
     # Startup
     logger.info("Starting Kafka Wiremock...")
     try:
@@ -88,9 +96,84 @@ async def lifespan(app: FastAPI):
         )
         dependency_manager.start()
 
-        # Initialize components
+        # Initialize Kafka components
         config_loader = ConfigLoader(config_dir=config_dir, reload_interval=5)
         kafka_client = KafkaClientWrapper(bootstrap_servers=bootstrap_servers)
+
+        # Initialize JMS components (optional) - NEW: multi-QM support with pooling
+        jms_config_loader = JMSConfigLoader(config_dir=config_dir)
+        qm_config_loader = QueueManagerConfigLoader(config_dir=config_dir)  # NEW
+
+        # NEW: Create pool configuration
+        from .jms.pool import PoolConfig
+        pool_config = PoolConfig(
+            min_idle=int(os.getenv("JMS_POOL_MIN_IDLE", "1")),
+            max_size=int(os.getenv("JMS_POOL_MAX_SIZE", "5")),
+            max_wait_ms=int(os.getenv("JMS_POOL_MAX_WAIT_MS", "5000")),
+            auto_reconnect=os.getenv("JMS_POOL_AUTO_RECONNECT", "true").lower() == "true",
+            reconnect_attempts=int(os.getenv("JMS_POOL_RECONNECT_ATTEMPTS", "3")),
+            reconnect_delay_ms=int(os.getenv("JMS_POOL_RECONNECT_DELAY_MS", "1000"))
+        )
+
+        jms_registry = JMSClientRegistry(
+            enable_pooling=os.getenv("JMS_POOLING_ENABLED", "true").lower() == "true",
+            pool_config=pool_config
+        )  # NEW: registry for multiple clients with pooling
+
+        # Load queue manager configurations from queue-managers.yaml
+        qm_configs = qm_config_loader.load()  # NEW
+
+        if qm_configs:  # NEW: Only initialize if we have queue manager configs
+            try:
+                # Initialize each queue manager from config
+                for qm_name, qm_config in qm_configs.items():  # NEW
+                    try:
+                        # Use provider factory to create appropriate client
+                        provider_type = qm_config.provider or "ibm_mq"
+
+                        # Build config dict for provider
+                        provider_config = {
+                            "broker_url": qm_config.broker_url,
+                            "username": qm_config.username,
+                            "password": qm_config.password,
+                        }
+
+                        # Add provider-specific fields
+                        if provider_type == "ibm_mq":
+                            provider_config["channel"] = qm_config.channel
+                            provider_config["queue_manager"] = qm_config.queue_manager
+                            if hasattr(qm_config, 'ssl_key_store'):
+                                provider_config["ssl_key_store"] = qm_config.ssl_key_store
+                                provider_config["ssl_key_store_password"] = qm_config.ssl_key_store_password
+                        elif provider_type == "activemq":
+                            provider_config["vhost"] = getattr(qm_config, 'vhost', "/")
+                        elif provider_type == "rabbitmq":
+                            provider_config["virtual_host"] = getattr(qm_config, 'virtual_host', "/")
+
+                        # Create client using provider factory
+                        client = ProviderFactory.create(provider_type, provider_config)
+                        jms_registry.add_queue_manager(qm_name, client, config={
+                            "provider": provider_type,
+                            **provider_config
+                        })  # NEW: pass config
+                        logger.info(f"Registered {provider_type} JMS client for queue manager: {qm_name}")
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to initialize queue manager '{qm_name}': {e}. "
+                            f"This queue manager will be skipped."
+                        )
+
+                if not jms_registry.is_empty():  # NEW
+                    logger.info(
+                        f"Initialized {len(jms_registry.clients)} JMS queue manager(s)"
+                    )
+
+            except ImportError:
+                logger.warning("IBM MQ library not available, JMS support disabled")
+            except Exception as e:
+                logger.warning(f"Failed to initialize JMS: {e}")
+        else:
+            logger.info("No queue managers configured in queue-managers.yaml")
 
         # Initialize message cache for tests and rules
         message_cache = MessageCache(ttl_seconds=120, cleanup_interval_seconds=30)
@@ -124,19 +207,38 @@ async def lifespan(app: FastAPI):
             topic_metadata_manager=topic_metadata_manager,
             schema_registry=schema_registry
         )
-        # Start listener engine
+         # Start listener engines
         listener_engine.start()
+
+        # Start JMS listener if we have queue managers configured
+        if not jms_registry.is_empty():  # NEW: check registry instead of single client
+            try:
+                from .jms.listener import JMSListenerEngine
+
+                jms_listener_engine = JMSListenerEngine(
+                    jms_registry=jms_registry,
+                    config_loader=config_loader,
+                    jms_config_loader=jms_config_loader,
+                    kafka_client=kafka_client,  # needed for msg_type=kafka rule outputs
+                    message_cache=message_cache,
+                    custom_placeholder_registry=custom_placeholder_registry
+                )
+                jms_listener_engine.start()
+                logger.info("JMS Listener started")
+            except Exception as e:
+                logger.warning(f"Failed to start JMS listener: {e}")
 
         # Initialize test suite components
         test_loader = TestLoader(test_suite_dir=test_suite_dir)
 
-        # Pass listener_engine and message_cache to test suite runner
+        # Pass listener_engine, message_cache, and jms_registry to test suite runner
         test_suite_runner = TestSuiteRunner(
             kafka_client,
             custom_placeholder_registry,
             test_suite_dir,
             message_cache=message_cache,
-            listener_engine=listener_engine
+            listener_engine=listener_engine,
+            jms_registry=jms_registry
         )
         test_job_manager = TestJobManager()
 
@@ -154,16 +256,24 @@ async def lifespan(app: FastAPI):
         send_executor = SendExecutor(
             kafka_client,
             custom_placeholder_registry,
-            send_dir=send_dir
+            send_dir=send_dir,
+            jms_registry=jms_registry  # NEW: pass JMS registry for JMS support in sends
         )
 
         # Set references in API modules
         kafka_injection.set_kafka_client(kafka_client)
+        if not jms_registry.is_empty():  # NEW: pass registry instead of client
+            kafka_injection.set_jms_registry(jms_registry)
+            kafka_injection.set_jms_config_loader(jms_config_loader)  # NEW
+        kafka_injection.set_config_loader(config_loader)
         rules.set_config_loader(config_loader)
         rules.set_listener_engine(listener_engine)
         custom_placeholders.set_custom_placeholder_registry(custom_placeholder_registry)
         dependencies_mgmt.set_dependency_manager(dependency_manager)
         app_settings.set_app_settings_loader(app_settings_loader)
+        config.set_topic_config_loader(config_loader.topic_config_loader)  # NEW: config API
+        config.set_jms_registry(jms_registry)  # NEW: config API
+        jms_api.set_jms_listener_engine(jms_listener_engine)  # JMS listener control API
         discovery.set_test_loader(test_loader)
         execution.set_test_loader(test_loader)
         execution.set_test_suite_runner(test_suite_runner)
@@ -203,8 +313,12 @@ async def lifespan(app: FastAPI):
             dependency_manager.stop()
         if listener_engine:
             listener_engine.stop()
+        if jms_listener_engine:
+            jms_listener_engine.stop()
         if kafka_client:
             kafka_client.close()
+        if jms_registry:  # NEW: close all clients in registry
+            jms_registry.close_all()
         logger.info("Kafka Wiremock shutdown successfully")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
@@ -232,6 +346,8 @@ app.add_middleware(
 # All routers are included with /api prefix for unified API namespace
 app.include_router(health.router, prefix="/api")
 app.include_router(app_settings.router, prefix="/api")
+app.include_router(config.router, prefix="/api")  # NEW: configuration viewer
+app.include_router(jms_api.router, prefix="/api")  # JMS listener control
 app.include_router(kafka_injection.router, prefix="/api")
 app.include_router(rules.router, prefix="/api")
 app.include_router(custom_placeholders.router, prefix="/api")

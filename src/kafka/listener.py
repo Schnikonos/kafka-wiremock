@@ -67,6 +67,7 @@ class KafkaListenerEngine:
         self._running = False
         self._lock = threading.Lock()
         self._last_subscription_update = 0
+        self._subscription_update_event = threading.Event()
         self._matcher_cache = {}
         self.matcher_factory = MatcherFactory()
 
@@ -138,7 +139,8 @@ class KafkaListenerEngine:
     def ensure_listening_to_topic(self, topic: str, timeout_seconds: int = 5) -> bool:
         """
         Ensure the unified listener is monitoring a specific topic.
-        The topic will be added to subscription on next update cycle.
+        Signals the listener thread to perform an immediate subscription update
+        so topics are registered without waiting for the 30-second refresh cycle.
 
         Args:
             topic: Topic name to listen to
@@ -147,6 +149,10 @@ class KafkaListenerEngine:
         Returns:
             True if subscription includes topic within timeout, False if timeout
         """
+        # Force an immediate subscription update in the listener thread
+        self._last_subscription_update = 0
+        self._subscription_update_event.set()
+
         start_time = time.time()
 
         while time.time() - start_time < timeout_seconds:
@@ -214,11 +220,12 @@ class KafkaListenerEngine:
                             time.sleep(2)
                             continue
 
-                    # Update subscription every 30 seconds
+                    # Update subscription every 30 seconds OR when explicitly requested
                     current_time = time.time()
-                    if current_time - self._last_subscription_update > 30:
+                    if self._subscription_update_event.is_set() or current_time - self._last_subscription_update > 30:
+                        self._subscription_update_event.clear()
                         self._update_subscription()
-                        self._last_subscription_update = current_time
+                        self._last_subscription_update = time.time()
 
                     # Check for config changes
                     if self.config_loader.check_and_reload():
@@ -228,8 +235,8 @@ class KafkaListenerEngine:
                     if self.custom_placeholder_registry and self.custom_placeholder_registry.check_and_reload():
                         logger.info("Custom placeholders reloaded")
 
-                    # Poll for messages
-                    msg = self.consumer.poll(timeout=5.0)
+                    # Poll for messages (short timeout so we can react to subscription-update requests quickly)
+                    msg = self.consumer.poll(timeout=1.0)
 
                     if msg is None:
                         # Timeout

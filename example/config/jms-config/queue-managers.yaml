@@ -1,0 +1,51 @@
+# Queue Manager Configuration File
+# This file defines all available IBM MQ queue managers.
+#
+# Each entry requires its password to be set via environment variable:
+#   Format: JMS_{QM_NAME_UPPERCASE}_PASSWORD
+#   Example: qm_dev_local → JMS_QM_DEV_LOCAL_PASSWORD
+#
+# For docker-compose.full.yml, all entries point to the local IBM MQ container
+# (ibm-mq:1414) and their passwords are defined in docker-compose.full.yml.
+# Each entry uses its own dedicated server-connection channel, defined in
+# docker/ibmmq-init.mqsc.
+
+queue_managers:
+  # Local development — docker-compose.full.yml provides the IBM MQ container
+  qm_dev_local:
+    provider: ibm_mq
+    broker_url: ibm-mq(1414)
+    channel: DEV.APP.SVRCONN
+    queue_manager: QM1
+    username: app
+    # Password: JMS_QM_DEV_LOCAL_PASSWORD
+
+  # Primary queue manager - US East
+  # (points to local container in docker-compose.full.yml)
+  qm_us_east:
+    provider: ibm_mq
+    broker_url: ibm-mq(1414)
+    channel: US.EAST.SVRCONN
+    queue_manager: QM1
+    username: app
+    # Password: JMS_QM_US_EAST_PASSWORD
+
+  # Secondary queue manager - EU West
+  # (points to local container in docker-compose.full.yml)
+  qm_eu_west:
+    provider: ibm_mq
+    broker_url: ibm-mq(1414)
+    channel: EU.WEST.SVRCONN
+    queue_manager: QM1
+    username: app
+    # Password: JMS_QM_EU_WEST_PASSWORD
+
+  # Fallback queue manager
+  # (points to local container in docker-compose.full.yml)
+  qm_backup:
+    provider: ibm_mq
+    broker_url: ibm-mq(1414)
+    channel: BACKUP.SVRCONN
+    queue_manager: QM1
+    username: app
+    # Password: JMS_QM_BACKUP_PASSWORD

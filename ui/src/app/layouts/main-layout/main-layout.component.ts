@@ -94,6 +94,12 @@ import { AppSettingsDialogComponent } from '../../features/settings/app-settings
               <span>Logs</span>
             </div>
            </mat-list-item>
+           <mat-list-item routerLink="/configuration" routerLinkActive="active">
+             <div class="nav-list-item">
+               <mat-icon>settings</mat-icon>
+               <span>Configuration</span>
+             </div>
+           </mat-list-item>
             <mat-divider></mat-divider>
             <h2 matSubheader>Debugging</h2>
             <mat-list-item routerLink="/debug/rule-matcher" routerLinkActive="active">

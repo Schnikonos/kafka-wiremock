@@ -95,7 +95,8 @@ class TestExecutor:
         custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None,
         test_suite_dir: str = "/testSuite",
         message_cache = None,
-        listener_engine = None
+        listener_engine = None,
+        jms_registry = None  # Optional JMS registry for JMS injection/expectation support
     ):
         """Initialize test executor."""
         self.kafka_client = kafka_client
@@ -104,6 +105,7 @@ class TestExecutor:
         self.test_suite_dir = test_suite_dir
         self.message_cache = message_cache  # Optional cache for test message queries
         self.listener_engine = listener_engine  # Optional listener engine for ensuring topics are ready
+        self.jms_registry = jms_registry  # Optional JMS registry for JMS support
 
     async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None, verbose: bool = False) -> TestResult:
         """Execute a single test."""
@@ -258,22 +260,41 @@ class TestExecutor:
                             if FaultInjector._should_fault(item.fault.poison_pill):
                                 rendered_key = FaultInjector.apply_messagekey_poison_pill(rendered_key)
 
-                        self.kafka_client.produce(
-                            topic=item.topic,
-                            message=payload_obj,
-                            headers=rendered_headers,
-                            key=rendered_key
-                        )
-
-                        # Handle message duplication if configured
-                        if item.fault and FaultInjector.should_duplicate(item.fault):
-                            logger.info(f"Duplicating test injection message to {item.topic} (fault injection)")
+                        # Route to appropriate client based on message type
+                        if item.msg_type == "jms":
+                            if not self.jms_registry or self.jms_registry.is_empty():
+                                raise Exception(f"JMS client not initialized, cannot inject to {item.topic}")
+                            jms_client = self.jms_registry.get_client(item.queue_manager_ref)
+                            jms_client.put_message(
+                                destination=item.topic,
+                                payload=json.dumps(payload_obj) if isinstance(payload_obj, dict) else str(payload_obj),
+                                headers=rendered_headers,
+                            )
+                        else:
                             self.kafka_client.produce(
                                 topic=item.topic,
                                 message=payload_obj,
                                 headers=rendered_headers,
                                 key=rendered_key
                             )
+
+                        # Handle message duplication if configured
+                        if item.fault and FaultInjector.should_duplicate(item.fault):
+                            logger.info(f"Duplicating test injection message to {item.topic} (fault injection)")
+                            if item.msg_type == "jms":
+                                jms_client = self.jms_registry.get_client(item.queue_manager_ref)
+                                jms_client.put_message(
+                                    destination=item.topic,
+                                    payload=json.dumps(payload_obj) if isinstance(payload_obj, dict) else str(payload_obj),
+                                    headers=rendered_headers,
+                                )
+                            else:
+                                self.kafka_client.produce(
+                                    topic=item.topic,
+                                    message=payload_obj,
+                                    headers=rendered_headers,
+                                    key=rendered_key
+                                )
 
                         injected_msg = InjectedMessage(
                             message_id=item.message_id,
@@ -455,8 +476,118 @@ class TestExecutor:
             # because the listener only listens to INPUT topics (from rules),
             # not OUTPUT topics. The test will consume directly from Kafka via consume_latest()
             # which works regardless of listener subscription.
-            
-            # Poll messages (use cache if available, otherwise poll Kafka directly)
+
+            # --- JMS expectation ---
+            # Prefer reading from message_cache (populated by JMSListenerEngine) to
+            # avoid concurrent MQGET calls on the shared IBM MQ hConn that trigger
+            # MQRC_HCONN_ERROR (2018).  Fall back to jms_client.consume() only when
+            # no cache is available (e.g. standalone/unit-test mode).
+            if expectation.msg_type == "jms":
+                if self.message_cache:
+                    # Re-use the same cache-polling loop as the Kafka path below — the
+                    # listener already wrote the produced messages into the cache, so we
+                    # can read them without touching the IBM MQ hConn at all.
+                    pass  # fall through to the shared Kafka/cache polling loop
+                else:
+                    # No cache available: consume directly from IBM MQ.
+                    if not self.jms_registry or self.jms_registry.is_empty():
+                        exp_result.status = "NO_MATCH"
+                        exp_result.error = "JMS client not initialized"
+                        exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                        return exp_result
+
+                    jms_client = self.jms_registry.get_client(expectation.queue_manager_ref)
+                    jms_messages = jms_client.consume(
+                        destination=expectation.topic,
+                        limit=100,
+                        timeout_ms=expectation.wait_ms
+                    )
+
+                    received_messages = []
+                    all_received_messages = []
+
+                    for msg in jms_messages:
+                        if "error" in msg:
+                            continue
+
+                        msg_value = msg.get("value")
+                        if isinstance(msg_value, str):
+                            try:
+                                msg_value = json.loads(msg_value)
+                            except json.JSONDecodeError:
+                                pass
+
+                        msg_for_logging = ReceivedMessage(
+                            value=msg_value,
+                            timestamp=msg.get("timestamp", 0),
+                            partition=msg.get("partition", 0),
+                            offset=msg.get("offset", 0),
+                            headers=msg.get("headers"),
+                            key=msg.get("key")
+                        )
+
+                        # Check correlation target if specified
+                        if expectation.correlate and expectation.correlate.target and correlation_value is not None:
+                            try:
+                                target = expectation.correlate.target
+                                target_value = None
+                                if "jsonpath" in target:
+                                    expr_str = target["jsonpath"]
+                                    target_expr = jsonpath_parse(expr_str)
+                                    matches = target_expr.find(msg_value)
+                                    target_value = matches[0].value if matches else None
+                                elif "header" in target:
+                                    header_name = target["header"]
+                                    headers = msg.get("headers", {})
+                                    target_value = headers.get(header_name)
+
+                                if target_value != correlation_value:
+                                    all_received_messages.append(msg_for_logging)
+                                    continue
+                            except Exception as e:
+                                logger.warning(f"Failed to extract/match JMS target correlation: {e}")
+                                all_received_messages.append(msg_for_logging)
+                                continue
+
+                        # Check match conditions
+                        if expectation.match:
+                            conditions_matched = 0
+                            for condition in expectation.match:
+                                try:
+                                    matcher = self.matcher_factory.create(condition.type)
+                                    if condition.type == 'jsonpath':
+                                        matcher_condition = {'path': condition.expression, 'value': condition.value, 'regex': condition.regex}
+                                        if matcher and matcher.match(msg_value, matcher_condition).matched:
+                                            conditions_matched += 1
+                                    elif condition.type == 'header':
+                                        if matcher and matcher.match(msg.get('headers', {}), condition).matched:
+                                            conditions_matched += 1
+                                    else:
+                                        if matcher and matcher.match(msg_value, condition).matched:
+                                            conditions_matched += 1
+                                except Exception as e:
+                                    logger.debug(f"Error matching JMS condition: {e}")
+
+                            if conditions_matched < len(expectation.match):
+                                all_received_messages.append(msg_for_logging)
+                                continue
+
+                        received_messages.append(msg_for_logging)
+                        all_received_messages.append(msg_for_logging)
+
+                    exp_result.received = len(received_messages)
+                    exp_result.received_messages = [asdict(m) for m in received_messages]
+                    exp_result.status = "MATCHED" if received_messages else "TIMEOUT"
+                    exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                    return exp_result
+
+            # --- Kafka / cache polling loop ---
+            # Used for:
+            #   • Kafka expectations (always)
+            #   • JMS expectations when message_cache is available (fall-through from above)
+            #     The JMS listener engine writes every produced JMS message into the
+            #     cache, so test expectations can read from it without touching the
+            #     shared IBM MQ hConn (which would cause MQRC_HCONN_ERROR 2018).
             received_messages = []
             all_received_messages = []  # Track ALL messages for logging/closest match
             seen_message_keys = set()  # Track seen messages to avoid duplicates from cache
@@ -744,7 +875,8 @@ class TestSuiteRunner:
         custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None,
         test_suite_dir: str = "/testSuite",
         message_cache = None,
-        listener_engine = None
+        listener_engine = None,
+        jms_registry = None  # Optional JMS registry for JMS injection/expectation support
     ):
         """Initialize test suite runner."""
         self.kafka_client = kafka_client
@@ -755,7 +887,8 @@ class TestSuiteRunner:
             custom_placeholder_registry,
             test_suite_dir,
             message_cache=message_cache,
-            listener_engine=listener_engine
+            listener_engine=listener_engine,
+            jms_registry=jms_registry
         )
 
     async def run_tests_sequential(self, tests: List[TestDefinition], verbose: bool = False) -> List[TestResult]:

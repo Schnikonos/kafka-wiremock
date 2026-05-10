@@ -1,0 +1,34 @@
+priority: 20
+name: "send-jms-orders"
+tags: ["example", "jms", "order"]
+
+inject:
+  - message_id: "order1"
+    topic: "ORDERS_INPUT"
+    msg_type: jms
+    # queue_manager_ref is optional - if not specified, the default queue manager from queue-managers.yaml is used
+    queue_manager_ref: qm_dev_local
+    payload: |
+      {
+        "orderId": "ORD-001",
+        "customerId": "CUST-123",
+        "amount": 99.99,
+        "status": "NEW",
+        "eventType": "ORDER_CREATED"
+      }
+    delay_ms: 100
+
+  - message_id: "order2"
+    topic: "ORDERS_INPUT"
+    msg_type: jms
+    queue_manager_ref: qm_dev_local
+    payload: |
+      {
+        "orderId": "ORD-002",
+        "customerId": "CUST-456",
+        "amount": 199.99,
+        "status": "NEW",
+        "eventType": "ORDER_CREATED"
+      }
+
+ 

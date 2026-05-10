@@ -41,6 +41,8 @@ class Output:
     schema_id: Optional[int] = None  # AVRO schema ID
     correlation: Optional[CorrelationOutput] = None  # Override topic-config correlation
     fault: Optional[Fault] = None  # Optional fault injection configuration
+    msg_type: str = "kafka"  # "kafka" or "jms" - determines where to send the message
+    queue_manager_ref: Optional[str] = None  # (NEW) For JMS: which queue manager to use (default if None)
 
     @property
     def message_template(self):
@@ -64,3 +66,4 @@ class Rule:
     rule_name: str = ""
     correlation: Optional[CorrelationInput] = None  # Override topic-config correlation
     skip: bool = False  # Optional; set to true to disable this rule
+    input_msg_type: str = "kafka"  # "kafka" or "jms" - type of input message (set by loader from when.msg_type)

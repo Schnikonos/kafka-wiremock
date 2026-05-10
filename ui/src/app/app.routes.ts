@@ -8,6 +8,7 @@ import { LogsComponent } from './features/logs/logs.component';
 import { RuleMatcherDebugComponent } from './features/debug/rule-matcher-debug.component';
 import { TemplatePreviewComponent } from './features/tools/template-preview.component';
 import { ExecutionHistoryComponent } from './features/tools/execution-history.component';
+import { ConfigViewComponent } from './features/config/config-view.component';
 
 export const routes: Routes = [
   {
@@ -22,6 +23,7 @@ export const routes: Routes = [
       { path: 'debug/rule-matcher', component: RuleMatcherDebugComponent },
       { path: 'tools/template-preview', component: TemplatePreviewComponent },
       { path: 'tools/execution-history', component: ExecutionHistoryComponent },
+      { path: 'configuration', component: ConfigViewComponent },
       { path: '', redirectTo: 'tests', pathMatch: 'full' }
     ]
   }

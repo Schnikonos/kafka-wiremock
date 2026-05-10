@@ -34,16 +34,32 @@ async def list_test_logs() -> Dict[str, Any]:
                 "test_suite_exists": test_suite_dir.exists()
             }
 
+        import re
+
         logs = []
         for log_file in log_files:
             try:
                 with open(log_file, 'r') as f:
                     content = f.read()
+
+                # Parse status and elapsed_ms from the YAML-like log header so
+                # the frontend can show them without fetching the full content.
+                status = "UNKNOWN"
+                elapsed_ms = 0
+                status_match = re.search(r'^status:\s*([A-Z_]+)', content, re.MULTILINE)
+                if status_match:
+                    status = status_match.group(1)
+                elapsed_match = re.search(r'^elapsed_ms:\s*(\d+)', content, re.MULTILINE)
+                if elapsed_match:
+                    elapsed_ms = int(elapsed_match.group(1))
+
                 logs.append({
                     "path": str(log_file),
                     "relative_path": str(log_file.relative_to(test_suite_dir)),
                     "size_bytes": log_file.stat().st_size,
                     "modified": log_file.stat().st_mtime,
+                    "status": status,
+                    "elapsed_ms": elapsed_ms,
                     "content_preview": content[:500] + ("..." if len(content) > 500 else "")
                 })
             except Exception as e:

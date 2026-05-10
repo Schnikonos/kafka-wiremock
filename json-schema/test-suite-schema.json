@@ -54,7 +54,8 @@
           "items": {
             "oneOf": [
               { "$ref": "#/definitions/injectionMessage" },
-              { "$ref": "#/definitions/inlineScript" }
+              { "$ref": "#/definitions/inlineScript" },
+              { "$ref": "#/definitions/fileScript" }
             ]
           }
         }
@@ -68,12 +69,13 @@
       "properties": {
         "expectations": {
           "type": "array",
-          "description": "List of expected messages to receive from Kafka or validation scripts.",
+          "description": "List of expected messages to receive from Kafka/JMS or validation scripts.",
           "minItems": 1,
           "items": {
             "oneOf": [
               { "$ref": "#/definitions/expectation" },
-              { "$ref": "#/definitions/inlineScript" }
+              { "$ref": "#/definitions/inlineScript" },
+              { "$ref": "#/definitions/fileScript" }
             ]
           }
         }
@@ -95,9 +97,22 @@
         },
         "topic": {
           "type": "string",
-          "description": "Kafka topic to inject the message into.",
+          "description": "Kafka topic or JMS queue/topic name to inject the message into.",
           "minLength": 1,
-          "examples": ["orders.input", "payments.input", "notifications.input"]
+          "examples": ["orders.input", "payments.input", "notifications.input", "ORDERS_QUEUE"]
+        },
+        "msg_type": {
+          "type": "string",
+          "description": "Message type - kafka (default) or jms. Specifies destination.",
+          "enum": ["kafka", "jms"],
+          "default": "kafka",
+          "examples": ["kafka", "jms"]
+        },
+        "queue_manager_ref": {
+          "type": "string",
+          "description": "Reference to queue manager (only for jms msg_type). Name from queue-managers.yaml.",
+          "minLength": 1,
+          "examples": ["qm_us_east", "qm_eu_west"]
         },
         "payload": {
           "type": "string",
@@ -168,9 +183,22 @@
       "properties": {
         "topic": {
           "type": "string",
-          "description": "Kafka topic to consume messages from.",
+          "description": "Kafka topic or JMS queue/topic name to consume messages from.",
           "minLength": 1,
-          "examples": ["payments.input", "orders.processed", "notifications.output"]
+          "examples": ["payments.input", "orders.processed", "notifications.output", "ORDERS_PROCESSED"]
+        },
+        "msg_type": {
+          "type": "string",
+          "description": "Message type - kafka (default) or jms. Specifies which system to read from.",
+          "enum": ["kafka", "jms"],
+          "default": "kafka",
+          "examples": ["kafka", "jms"]
+        },
+        "queue_manager_ref": {
+          "type": "string",
+          "description": "For JMS only: reference to queue manager defined in queue-managers.yaml.",
+          "minLength": 1,
+          "examples": ["qm_us_east", "qm_eu_west", "qm_dev_local"]
         },
         "wait_ms": {
           "type": "integer",
@@ -257,7 +285,7 @@
     },
     "inlineScript": {
       "type": "object",
-      "description": "Python code to execute inline. In 'when', has access to current_injections. In 'then', has access to current_expectations.",
+      "description": "Inline Python code to execute. In 'when', has access to current_injections. In 'then', has access to current_expectations.",
       "required": ["script"],
       "additionalProperties": false,
       "properties": {
@@ -265,6 +293,20 @@
           "type": "string",
           "description": "Python code to execute. Can contain assertions and custom validation logic.",
           "minLength": 1
+        }
+      }
+    },
+    "fileScript": {
+      "type": "object",
+      "description": "Reference to an external Python script file. In 'when', has access to current_injections. In 'then', has access to current_expectations.",
+      "required": ["script_file"],
+      "additionalProperties": false,
+      "properties": {
+        "script_file": {
+          "type": "string",
+          "description": "Path to external Python script file (relative to test file). Must be the only key in this item.",
+          "minLength": 1,
+          "examples": ["scripts/validate-order.py", "scripts/check-payment.py"]
         }
       }
     },
@@ -557,8 +599,11 @@
         "expectations": [
           {
             "topic": "orders.processed",
-            "source_id": "order1",
-            "target_id": "$.orderId",
+            "correlate": {
+              "message_id": "order1",
+              "source": { "jsonpath": "$.orderId" },
+              "target": { "jsonpath": "$.orderId" }
+            },
             "wait_ms": 2000,
             "match": [
               {
@@ -595,9 +640,12 @@
       "then": {
         "expectations": [
           {
-            "source_id": "order",
             "topic": "payments.input",
-            "target_id": "$.orderId",
+            "correlate": {
+              "message_id": "order",
+              "source": { "jsonpath": "$.orderId" },
+              "target": { "jsonpath": "$.orderId" }
+            },
             "wait_ms": 3000,
             "match": [
               {
@@ -613,10 +661,66 @@
             ]
           },
           {
-            "source_id": "notification",
             "topic": "notifications.output",
-            "target_id": "$.orderId",
+            "correlate": {
+              "message_id": "notification",
+              "source": { "jsonpath": "$.orderId" },
+              "target": { "jsonpath": "$.orderId" }
+            },
             "wait_ms": 3000
+          }
+        ]
+      }
+    },
+    {
+      "priority": 30,
+      "name": "jms-orders-flow",
+      "tags": ["example", "jms"],
+      "skip": true,
+      "timeout_ms": 10000,
+      "when": {
+        "inject": [
+          {
+            "message_id": "jms-order",
+            "topic": "ORDERS_INPUT",
+            "msg_type": "jms",
+            "queue_manager_ref": "qm_dev_local",
+            "payload": "{\"orderId\": \"ORD-{{testId}}-{{uuid}}\", \"customerId\": \"CUST-123\", \"amount\": 99.99, \"eventType\": \"ORDER_CREATED\"}",
+            "delay_ms": 100
+          }
+        ]
+      },
+      "then": {
+        "expectations": [
+          {
+            "topic": "orders.processed",
+            "msg_type": "kafka",
+            "correlate": {
+              "message_id": "jms-order",
+              "source": { "jsonpath": "$.orderId" },
+              "target": { "jsonpath": "$.orderId" }
+            },
+            "wait_ms": 5000,
+            "match": [
+              {
+                "type": "jsonpath",
+                "expression": "$.event",
+                "value": "ORDER_CREATED"
+              }
+            ]
+          },
+          {
+            "topic": "ORDERS_PROCESSED",
+            "msg_type": "jms",
+            "queue_manager_ref": "qm_dev_local",
+            "wait_ms": 5000,
+            "match": [
+              {
+                "type": "jsonpath",
+                "expression": "$.event",
+                "value": "PROCESSED"
+              }
+            ]
           }
         ]
       }

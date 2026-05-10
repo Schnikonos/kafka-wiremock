@@ -1,0 +1,142 @@
+<div class="providers-container">
+  <div *ngIf="!providers" class="loading-state">
+    <p>Loading provider information...</p>
+  </div>
+
+  <div *ngIf="providers" class="providers-content">
+    <!-- Available Providers Section -->
+    <section class="provider-section" *ngIf="providers.available_providers && providers.available_providers.length > 0">
+      <div class="section-header">
+        <mat-icon class="section-icon available-icon">check_circle</mat-icon>
+        <h2>Available Providers</h2>
+        <span class="provider-count">{{ providers.available_providers.length }}</span>
+      </div>
+
+      <div class="providers-grid">
+        <mat-card *ngFor="let provider of providers.available_providers" class="provider-card available">
+          <mat-card-header>
+            <div mat-card-avatar class="provider-avatar available-badge">
+              <mat-icon>check_circle</mat-icon>
+            </div>
+            <mat-card-title>{{ provider.name }}</mat-card-title>
+            <mat-card-subtitle>{{ provider.library }}</mat-card-subtitle>
+          </mat-card-header>
+
+          <mat-card-content>
+            <p class="provider-description">{{ provider.description }}</p>
+
+            <div class="config-fields">
+              <h4>Configuration Fields</h4>
+              <div class="fields-list">
+                <mat-chip *ngFor="let field of provider.config_fields" class="field-chip">
+                  {{ field }}
+                </mat-chip>
+              </div>
+            </div>
+
+            <div class="status-badge installed">
+              <mat-icon>verified</mat-icon>
+              Installed
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </section>
+
+    <!-- Unavailable Providers Section -->
+    <section class="provider-section" *ngIf="providers.unavailable_providers && providers.unavailable_providers.length > 0">
+      <div class="section-header">
+        <mat-icon class="section-icon unavailable-icon">warning</mat-icon>
+        <h2>Additional Providers Available</h2>
+        <span class="provider-count">{{ providers.unavailable_providers.length }}</span>
+      </div>
+
+      <div class="providers-grid">
+        <mat-card *ngFor="let provider of providers.unavailable_providers" class="provider-card unavailable">
+          <mat-card-header>
+            <div mat-card-avatar class="provider-avatar unavailable-badge">
+              <mat-icon>info</mat-icon>
+            </div>
+            <mat-card-title>{{ provider.name }}</mat-card-title>
+            <mat-card-subtitle>{{ provider.library }}</mat-card-subtitle>
+          </mat-card-header>
+
+          <mat-card-content>
+            <p class="provider-description">{{ provider.description }}</p>
+
+            <div class="config-fields">
+              <h4>Configuration Fields</h4>
+              <div class="fields-list">
+                <mat-chip *ngFor="let field of provider.config_fields" class="field-chip">
+                  {{ field }}
+                </mat-chip>
+              </div>
+            </div>
+
+            <div class="install-section">
+              <p class="install-label">To enable this provider, run:</p>
+              <div class="install-command">
+                <code>{{ provider.install_command }}</code>
+                <button mat-icon-button (click)="copyToClipboard(provider.install_command)"
+                        matTooltip="Copy command">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
+              </div>
+            </div>
+
+            <div class="status-badge not-installed">
+              <mat-icon>not_installed</mat-icon>
+              Not Installed
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </section>
+
+    <!-- Info Section -->
+    <section class="info-section">
+      <mat-accordion>
+        <mat-expansion-panel>
+          <mat-expansion-panel-header>
+            <mat-panel-title>
+              <mat-icon>info</mat-icon>
+              About JMS Providers
+            </mat-panel-title>
+          </mat-expansion-panel-header>
+
+          <div class="info-content">
+            <h3>Hybrid Provider Selection</h3>
+            <p>Kafka Wiremock automatically detects which JMS providers are installed and available for use. You can:</p>
+            <ul>
+              <li><strong>Use Available Providers</strong>: Configure queue managers with any installed provider</li>
+              <li><strong>Install Additional Providers</strong>: Copy the pip install command and run it to enable more providers</li>
+              <li><strong>Use Multiple Providers Together</strong>: Mix different providers in the same configuration</li>
+              <li><strong>Mix Message Types</strong>: Single rule can input from Kafka and output to JMS (or vice versa)</li>
+            </ul>
+
+            <h3>Configuration Example</h3>
+            <pre><code>queue_managers:
+  qm_ibm:
+    provider: ibm_mq
+    broker_url: localhost(1414)
+    channel: DEV.APP.SVRCONN
+    queue_manager: QM1
+    username: app_user
+
+  qm_activemq:
+    provider: activemq
+    broker_url: activemq:61613
+    username: admin
+
+  qm_rabbitmq:
+    provider: rabbitmq
+    broker_url: rabbitmq:5672
+    username: guest
+    virtual_host: /</code></pre>
+          </div>
+        </mat-expansion-panel>
+      </mat-accordion>
+    </section>
+  </div>
+</div>
+

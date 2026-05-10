@@ -1,0 +1,59 @@
+priority: 40
+name: "jms-orders-multi-output-flow"
+tags: ["jms", "integration", "orders"]
+# Requires: IBM MQ running (docker-compose.full.yml) and JMS_QM_DEV_LOCAL_PASSWORD env var set.
+# Rule that drives this test: config/rules/jms-multi-qm-example.yaml
+#   - Listens on JMS ORDERS_INPUT (qm_dev_local)
+#   - Produces to Kafka orders.processed  AND  JMS ORDERS_PROCESSED (same QM)
+skip: false
+timeout_ms: 15000
+
+when:
+  inject:
+    # Inject an ORDER_CREATED message into the JMS ORDERS_INPUT queue.
+    # The rule jms-multi-qm-example.yaml will pick this up and fan-out to
+    # both Kafka and JMS destinations.
+    - message_id: "jms-order"
+      topic: "ORDERS_INPUT"
+      msg_type: jms
+      queue_manager_ref: qm_dev_local
+      payload: |
+        {
+          "orderId": "ORD-{{testId}}-{{uuid}}",
+          "customerId": "CUST-{{randomInt(1000, 9999)}}",
+          "amount": 159.99,
+          "currency": "EUR",
+          "eventType": "ORDER_CREATED"
+        }
+      delay_ms: 200
+
+then:
+  expectations:
+#    # 1. Expect the fan-out message on Kafka topic orders.processed
+    - topic: "orders.processed"
+      msg_type: kafka
+      correlate:
+        message_id: "jms-order"
+        source:
+          jsonpath: "$.orderId"
+        target:
+          jsonpath: "$.orderId"
+      wait_ms: 8000
+      match:
+        - type: jsonpath
+          expression: "$.event"
+          value: "ORDER_CREATED"
+        - type: jsonpath
+          expression: "$.source"
+          value: "jms"
+
+    # 2. Expect the fan-out message on JMS ORDERS_PROCESSED queue
+    - topic: "ORDERS_PROCESSED"
+      msg_type: jms
+      queue_manager_ref: qm_dev_local
+      wait_ms: 8000
+      match:
+        - type: jsonpath
+          expression: "$.event"
+          value: "PROCESSED"
+

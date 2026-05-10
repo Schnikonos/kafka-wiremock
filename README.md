@@ -1,13 +1,17 @@
 # Kafka Wiremock
 
-Event-driven Kafka mock container for testing, similar to Pact for APIs. Intercepts messages on Kafka topics, applies configurable matching rules, and produces replies with templated responses.
+Event-driven Kafka and JMS mock container for testing, similar to Pact for APIs. Intercepts messages on Kafka topics and JMS queues, applies configurable matching rules, and produces replies with templated responses.
+
+⚡ **Quick Start**: See **[QUICK_START_BUILD_FIX.md](QUICK_START_BUILD_FIX.md)** for latest build instructions and setup.
 
 ## Key Features
 
+- ✅ **Kafka & JMS Support**: Use with Kafka topics and IBM MQ queues simultaneously
+- ✅ **Mixed Message Flows**: Input from Kafka → Output to JMS (or vice versa)
 - ✅ **Multiple Matching Strategies**: JSONPath, Regex, Exact, Partial matching
 - ✅ **Rich Templating**: UUID, timestamps, random data, JSONPath extraction
 - ✅ **Custom Placeholders**: User-defined functions with ordered pipeline execution
-- ✅ **Multiple Outputs**: Single rule → multiple messages to different topics
+- ✅ **Multiple Outputs**: Single rule → multiple messages to different topics/queues
 - ✅ **Message Headers**: Custom correlation IDs and headers
 - ✅ **Execution Delays**: Simulate processing latency
 - ✅ **Fault Injection**: Simulate failures (drop, duplicate, corruption, latency) in rules and tests
@@ -96,54 +100,399 @@ The Angular 19 web UI provides a modern dashboard for managing Kafka Wiremock:
 - **Auto-Tracking**: Every test run automatically saved to local storage
 - **Recent Executions**: View all test runs with statistics
 - **Pass Rate Trend**: Visual comparison of execution quality over time
-- **Statistics Dashboard**: Overall metrics and performance tracking
-- **Execution Comparison**: Side-by-side analysis of multiple runs
-- **Change Tracking**: See improvement or regression between runs
-- **Export**: Download executions and comparisons as JSON
 
-#### 🎯 Bulk Execution Features (Phase 4 - Latest)
+##### Configuration Management (Phase 4 - UI In Progress)
+- **Topic Configurations**: View all Kafka/JMS topic message formats
+- **Queue Manager Explorer**: Browse all JMS queue managers with connection status
+- **Provider Discovery**: See available JMS providers and installation guidance
+- **Pool Statistics**: Monitor connection pool utilization in real-time
+- **Configuration Export**: Download entire configuration as JSON
 
-##### Execution Summary Prompt
-- **Pre-Execution Review**: Confirmation dialog shows all execution parameters
-- **Clear Summary**: Total executions calculated (items × repeat) and displayed
-- **Parameter Preview**: Mode, workers, repeat count, and repeat mode shown
-- **User-Friendly**: Large, readable font with clear descriptions
-- **Cancel Option**: Review and cancel before committing to resource-intensive runs
+## JMS Multi-Provider Support (Phase 3)
 
-##### Execution Cancellation
-- **Stop Button**: Red "Stop Execution" button appears during execution
-- **Immediate Feedback**: Click to stop waiting for results
-- **User Friendly**: Clear feedback message when clicked
-- **Graceful Shutdown**: UI stops listening for results
+**Status**: ✅ Backend Complete | 🔄 UI In Progress
 
-##### SQLite Results Database
-- **Persistent History**: All test and send executions saved to SQLite
-- **Result Details**: Complete execution metadata (mode, workers, repeat settings, results)
-- **Query API**: List, retrieve, and filter results with pagination
-- **Statistics**: Aggregated metrics over time (total runs, pass/fail rates, timing)
-- **Automatic Cleanup**: Remove old results with configurable retention (default 30 days)
-- **No Setup Required**: Database auto-initialized on first run
+Kafka Wiremock now supports multiple JMS providers in parallel with automatic provider detection:
 
-##### Configurable Repeat Modes
-- **Interleaved Repeats** (default): Run A, B, A, B, A, B... (distributed load)
-- **Sequential Repeats**: Run A, A, A, B, B, B... (concentrated load)
-- **User-Friendly Selection**: Dropdown with clear examples in helper text
-- **Load Testing**: Choose mode based on testing scenario
+### Supported JMS Providers
 
-##### Feature Parity (Tests ↔ Sends)
-- **Identical Controls**: Both components have same execution options
-- **Consistent UI**: Same dialogs, buttons, and result displays
-- **Complete Feature Set**:
-  - Search and filtering (by ID, tags, status)
-  - Parallel execution with worker control
-  - Repeat functionality with configurable mode
-  - Execution history saved to localStorage
-  - Summary prompt and stop button
-  - Execution settings displayed in results
+| Provider | Status | Library | Pooling | Notes |
+|----------|--------|---------|---------|-------|
+| **IBM MQ** | ✅ Full | `pymqi@1.12.13` (Public PyPI) | ✅ | **Recommended for all use cases** - Docker-compose ready |
+| **ActiveMQ** | ✅ Full | `stomp.py@8.1.0` | ✅ | STOMP over TCP |
+| **RabbitMQ** | ✅ Full | `pika@1.3.0` | ✅ | AMQP with vhost support |
+
+### Configuration Example
+
+```yaml
+queue_managers:
+  qm_primary:
+    provider: ibm_mq
+    broker_url: ibmmq.example.com(1414)
+    channel: PROD.SVRCONN
+    queue_manager: QM_PROD
+    username: app_user
+  
+  qm_backup_activemq:
+    provider: activemq
+    broker_url: activemq-backup:61613
+    username: admin
+
+  qm_rabbitmq:
+    provider: rabbitmq
+    broker_url: rabbitmq.example.com:5672
+    username: guest
+    virtual_host: /
+```
+
+### Mixed Message Flows
+
+Rules can mix Kafka and JMS in the same flow:
+
+```yaml
+when:
+  topic: ORDERS_INPUT
+  msg_type: jms              # Input from JMS queue
+  queue_manager_ref: qm_primary
+
+then:
+  - topic: orders.events
+    msg_type: kafka          # Output to Kafka
+    payload: '{"orderId": "{{$.orderId}}", "source": "jms"}'
+
+  - topic: ORDERS_NOTIFY
+    msg_type: jms            # Also notify via another JMS queue
+    queue_manager_ref: qm_backup_activemq
+    payload: '{"orderId": "{{$.orderId}}"}'
+```
+
+### Hybrid Provider Selection (Option C)
+
+Kafka Wiremock uses automatic provider detection with manual override:
+
+1. **Auto-Detection**: Checks installed libraries at startup
+2. **Available Reporting**: API shows which providers are available
+3. **Explicit Override**: Use `queue_manager_ref` to specify which provider to use
+4. **Graceful Fallback**: Missing provider → Error with installation instructions
+
+### Configuration Viewer API
+
+**New REST endpoints** for viewing configurations:
+
+```bash
+# View all topics
+GET /api/config/topics
+
+# View specific topic with correlation rules
+GET /api/config/topics/{topic}
+
+# List all queue managers with status
+GET /api/config/jms-queue-managers
+
+# View queue manager with pool stats
+GET /api/config/jms-queue-managers/{qm_name}
+
+# Discover available JMS providers
+GET /api/jms/providers
+```
+
+### Connection Pooling
+
+All JMS providers support configurable connection pooling:
+
+```yaml
+queue_managers:
+  qm_primary:
+    provider: ibm_mq
+    # ... connection details ...
+    pool:
+      min_idle: 2              # Min connections to keep alive
+      max_size: 10             # Max connections in pool
+      max_wait_ms: 5000        # Timeout waiting for connection
+      auto_reconnect: true     # Reconnect on failure
+      reconnect_attempts: 3    # Number of retries
+```
+
+### Environment Variables
+
+Provider-specific configuration via environment:
+
+```bash
+# Queue manager passwords
+export JMS_QM_PRIMARY_PASSWORD="secret123"
+export JMS_QM_BACKUP_ACTIVEMQ_PASSWORD="secret456"
+
+# Provider override (force specific provider)
+export JMS_PROVIDER_OVERRIDE="rabbit mq"
+
+# IBM MQ specifics
+export IBM_MQ_BROKER_URL="ibmmq.example.com(1414)"
+export IBM_MQ_CHANNEL="PROD.SVRCONN"
+```
+
+| - **Auto-Tracking**: Every test run automatically saved to local storage
+| - **Recent Executions**: View all test runs with statistics
+| - **Pass Rate Trend**: Visual comparison of execution quality over time
+
+## JMS Support (May 2026)
+
+Kafka Wiremock now supports IBM MQ for JMS messaging alongside Kafka, enabling:
+
+### Features
+- **IBM MQ Integration**: Connect to IBM Message Queue systems
+- **Mixed Workloads**: Input from Kafka → Output to JMS (or vice versa)
+- **JMS Configuration Files**: Similar to topic-config, store JMS-specific settings in `config/jms-config/`
+- **Flexible Routing**: Rules can output to Kafka, JMS queues, or both
+- **Message Type Detection**: Specify `msg_type` to route messages appropriately
+
+### Quick Start: IBM MQ with Docker Compose
+
+**✅ Recommended: Use Docker Compose with Official IBM MQ Container**
+
+The easiest way to get started with IBM MQ is using the included `docker-compose.full.yml` which provides a complete development environment:
+
+```bash
+# Start everything (Kafka, Zookeeper, IBM MQ, and Kafka Wiremock)
+docker-compose -f docker-compose.full.yml up -d
+
+# Wait for services to be healthy
+docker-compose -f docker-compose.full.yml ps
+
+# Verify IBM MQ is ready
+docker-compose -f docker-compose.full.yml logs ibm-mq | grep "QM1"
+```
+
+**What you get automatically:**
+- ✅ Official IBM MQ 9.3 container (QM1 queue manager)
+- ✅ Pre-created test queues (ORDERS_INPUT, ORDERS_OUTPUT, PAYMENTS_INPUT, etc.)
+- ✅ Python app with JMS support (Kafka, ActiveMQ, RabbitMQ)
+- ✅ All test/example queues initialized
+- ✅ Health checks to verify everything is ready
+
+**Note on IBM MQ Library Support:**
+The Docker image attempts to install `pymqi` for IBM MQ support. If pymqi compilation fails due to missing IBM MQ C libraries, the build will complete anyway with other JMS providers (stomp.py, pika) still available. See [PYMQI_INSTALLATION_GUIDE.md](PYMQI_INSTALLATION_GUIDE.md) for details.
+
+**Access IBM MQ Admin Console:**
+```
+URL: https://localhost:9443/ibmmq/console/
+Username: admin
+Password: passw0rd
+```
+
+**Verify IBM MQ Queue Configuration:**
+```bash
+# Check queue status
+docker-compose -f docker-compose.full.yml exec ibm-mq dspmq -m QM1
+
+# Verify pre-created queues
+docker-compose -f docker-compose.full.yml exec ibm-mq runmqsc -m QM1 << EOF
+DISPLAY QLOCAL(ORDERS_INPUT)
+DISPLAY QLOCAL(ORDERS_OUTPUT)
+EOF
+```
+
+For comprehensive setup guide, troubleshooting, and advanced configuration:
+
+👉 **See: [IBM_MQ_DOCKER_SETUP.md](IBM_MQ_DOCKER_SETUP.md)**
+
+**pymqi Compilation & Docker Build:**
+
+The Docker build gracefully handles pymqi installation:
+- Attempts to install `pymqi==1.12.13` from PyPI (may use pre-built wheels if available)
+- If pymqi compilation fails, continues with other JMS providers (stomp.py, pika)
+- FastAPI, Kafka client, and core functionality always installed
+- Build completes successfully even if pymqi unavailable
+
+For detailed troubleshooting, installation options, and how to enable IBM MQ support:
+
+👉 **See: [PYMQI_INSTALLATION_GUIDE.md](PYMQI_INSTALLATION_GUIDE.md)**
+
+---
+
+### Alternative: Manual IBM MQ Setup (Advanced)
+
+If you prefer to use an external IBM MQ server or need custom configuration:
+
+**1. Install IBM MQ Client Library**
+```bash
+# Option A: Use pymqi (open-source, recommended for Docker and most use cases)
+pip install pymqi==1.12.13
+
+# Option B: Use official ibm-mq (requires IBM repository credentials, not recommended)
+pip install ibm-mq --index-url https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqpython/
+```
+
+**2. Configure JMS Connection (Environment Variables)**
+```bash
+export IBM_MQ_BROKER_URL="your-mq-server(1414)"
+export IBM_MQ_CHANNEL="YOUR.SVRCONN"
+export IBM_MQ_QUEUE_MANAGER="YOUR_QM"
+export IBM_MQ_USERNAME="your_user"
+export IBM_MQ_PASSWORD="your_password"
+```
+
+**3. Create JMS Configuration** (`config/jms-config/orders.yaml`)
+```yaml
+destination: YOUR_QUEUE_NAME
+destination_type: queue
+message:
+  format: json
+correlation:
+  extract:
+    - from: header
+      name: X-Correlation-Id
+      priority: 1
+```
+
+**4. Create a Rule with Mixed Input/Output** (`config/rules/jms-example.yaml`)
+```yaml
+priority: 10
+name: "jms-to-kafka-rule"
+when:
+  topic: YOUR_QUEUE_NAME
+  msg_type: jms  # Input from JMS
+  match:
+    - type: jsonpath
+      expression: "$.eventType"
+      value: "ORDER_CREATED"
+then:
+  # Output to Kafka
+  - topic: orders.processed
+    msg_type: kafka
+    payload: |
+      {
+        "orderId": "{{$.orderId}}",
+        "event": "PROCESSED"
+      }
+  # Output to another JMS queue
+  - topic: ORDERS_PROCESSED
+    msg_type: jms
+    payload: |
+      {
+        "orderId": "{{$.orderId}}",
+        "status": "processed"
+      }
+```
+
+**5. Inject/Consume via API**
+```bash
+# Inject to JMS queue
+curl -X POST "http://localhost:8000/api/inject/ORDERS_INPUT?msg_type=jms" \
+  -H "Content-Type: application/json" \
+  -d '{"orderId": "ORD-123", "eventType": "ORDER_CREATED"}'
+
+# Consume from JMS queue
+curl "http://localhost:8000/api/messages/ORDERS_PROCESSED?msg_type=jms&limit=5"
+```
+
+### Configuration Files
+
+| Type | Location | Purpose |
+|------|----------|---------|
+| **JMS Config** | `config/jms-config/*.yaml` | Queue/topic metadata, properties, correlation |
+| **Rules** | `config/rules/*.yaml` | Message matching and routing (supports `msg_type` field) |
+| **Topic Config** | `config/topic-config/*.yaml` | Kafka topic config (unchanged) |
+
+### Rule Structure for Mixed Messages
+
+```yaml
+priority: 10
+when:
+  topic: INPUT_QUEUE_OR_TOPIC
+  msg_type: kafka  # or 'jms' - defaults to 'kafka'
+  match:
+    - type: jsonpath
+      expression: "$.eventType"
+      value: "ORDER_CREATED"
+then:
+  - topic: output.queue.or.topic
+    msg_type: jms  # or 'kafka' - defaults to 'kafka'
+    payload: |
+      {
+        "status": "processed"
+      }
+```
+
+### Supported Message Types
+- `kafka` (default) - Send/receive from Kafka topics
+- `jms` - Send/receive from JMS queues via IBM MQ
+
+### Environment Variables for IBM MQ
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IBM_MQ_BROKER_URL` | `localhost(1414)` | Broker connection string |
+| `IBM_MQ_CHANNEL` | `DEV.APP.SVRCONN` | Channel name |
+| `IBM_MQ_QUEUE_MANAGER` | `QM1` | Queue manager name |
+| `IBM_MQ_USERNAME` | _(none)_ | Username for authentication |
+| `IBM_MQ_PASSWORD` | _(none)_ | Password for authentication |
+| `IBM_MQ_SSL_KEY_STORE` | _(none)_ | Path to SSL keystore (PEM) |
+| `IBM_MQ_SSL_KEY_STORE_PASSWORD` | _(none)_ | SSL keystore password |
+
+### JMS Connection Pooling (May 2026)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JMS_POOLING_ENABLED` | `true` | Enable connection pooling for all queue managers |
+| `JMS_POOL_MIN_IDLE` | `1` | Minimum number of idle connections per queue manager |
+| `JMS_POOL_MAX_SIZE` | `5` | Maximum connections per pool |
+| `JMS_POOL_MAX_WAIT_MS` | `5000` | Maximum wait time for connection availability (milliseconds) |
+| `JMS_POOL_AUTO_RECONNECT` | `true` | Enable automatic reconnection on connection failure |
+| `JMS_POOL_RECONNECT_ATTEMPTS` | `3` | Number of reconnection retry attempts |
+| `JMS_POOL_RECONNECT_DELAY_MS` | `1000` | Initial delay between reconnection attempts (milliseconds) |
 
 ## Recent Improvements (May 2026)
 
-### Phase 4: Bulk Execution & UI Fixes (Latest - May 7, 2026)
+### Phase 2: Connection Pooling & Auto-Reconnect (May 9, 2026)
+
+✅ **Connection Pooling**: Reuse JMS connections within registry for improved performance  
+✅ **Auto-Reconnect**: Automatic failure detection and recovery with exponential backoff  
+✅ **Connection Lifecycle**: Automatic cleanup of idle and expired connections  
+✅ **Thread-Safe**: Concurrent access with proper synchronization  
+✅ **Monitoring**: Real-time pool statistics via API endpoint  
+✅ **Configuration**: Environment-based tuning for pool size, timeouts, and retry behavior  
+
+See `PHASE2_IMPLEMENTATION_COMPLETE.md` for detailed implementation information.
+
+#### Features
+- **Min/Max Pool Size**: Control connection bounds (default: min=1, max=5)
+- **Idle Cleanup**: Automatic removal of unused connections (default: 15 minutes)
+- **Auto-Reconnect**: Exponential backoff retry on connection failure
+- **Test-on-Borrow**: Optional connection validation before use
+- **Statistics API**: Real-time metrics for pool health
+
+#### Environment Variables for JMS Connection Pooling
+```bash
+JMS_POOLING_ENABLED=true                    # Enable pooling (default: true)
+JMS_POOL_MIN_IDLE=1                         # Minimum idle connections
+JMS_POOL_MAX_SIZE=5                         # Maximum pool size
+JMS_POOL_MAX_WAIT_MS=5000                   # Max wait for connection
+JMS_POOL_AUTO_RECONNECT=true                # Enable auto-reconnect
+JMS_POOL_RECONNECT_ATTEMPTS=3               # Reconnect retry count
+JMS_POOL_RECONNECT_DELAY_MS=1000            # Delay between retries
+```
+
+#### Check Pool Statistics
+```bash
+curl http://localhost:8000/api/jms/pool-stats
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "pooling_enabled": true,
+  "pools": {
+    "qm1": {
+      "queue_manager": "qm1",
+      "available": 2,
+      "in_use": 1,
+      "total": 3,
+      "max_size": 5
+    }
+  }
+}
+```
+
+### Phase 4: Bulk Execution & UI Fixes (Previous - May 7, 2026)
 
 #### Bug Fixes
 ✅ **Logs Display Issue**: Fixed frontend logs component to properly parse API response structure (logs array in response object)  
@@ -342,14 +691,41 @@ curl http://localhost:8000/send/send-orders
 curl -X POST http://localhost:8000/send/send-orders
 ```
 
+**JMS Support in Sends (May 2026)**:
+
+You can inject messages into IBM MQ queues directly from sends, just like from rules:
+
+```yaml
+priority: 20
+name: "send-jms-orders"
+tags: ["example", "jms"]
+
+inject:
+  - message_id: "order1"
+    topic: "ORDERS_INPUT"         # IBM MQ queue name
+    msg_type: jms                 # Specify JMS as destination type
+    queue_manager_ref: qm_dev_local  # Optional: specify queue manager (uses default if omitted)
+    payload: |
+      {
+        "orderId": "ORD-001",
+        "customerId": "CUST-123",
+        "amount": 99.99,
+        "eventType": "ORDER_CREATED"
+      }
+    delay_ms: 100
+```
+
+See [send/examples/04-send-jms-orders.send.yaml](send/examples/04-send-jms-orders.send.yaml) for a complete example.
+
 ## Documentation
 
 For detailed configuration and usage, see:
 
 | Topic | Documentation |
 |-------|---|
+| **JMS Support** | [📘 JMS.md](docs/JMS.md) - IBM MQ integration, mixed Kafka/JMS workflows, configuration |
 | **Topic Configuration** | [📘 TOPIC_CONFIG.md](docs/TOPIC_CONFIG.md) - Message format, schema registry, correlation rules |
-| **Rules Configuration** | [📘 RULES.md](docs/RULES.md) - Matching strategies, outputs, templates, AVRO support |
+| **Rules Configuration** | [📘 RULES.md](docs/RULES.md) - Matching strategies, outputs, templates, AVRO support, msg_type |
 | **Custom Placeholders** | [📘 CUSTOM_PLACEHOLDERS.md](docs/CUSTOM_PLACEHOLDERS.md) - Creating custom functions, pipeline execution, examples |
 | **Test Suite** | [📘 TEST_SUITE.md](docs/TEST_SUITE.md) - Integration tests, message correlation, validation |
 | **API Reference** | [📘 API.md](docs/API.md) - Complete HTTP API endpoints and examples |
@@ -358,11 +734,15 @@ For detailed configuration and usage, see:
 
 ```
 config/
-├── topic-config/                   # Topic configuration (message format, correlation)
+├── topic-config/                   # Kafka topic configuration (message format, correlation)
 │   ├── orders/
 │   │   └── 01-orders.yaml
 │   └── ...
-├── rules/                          # Rule matching and output generation
+├── jms-config/                     # JMS queue configuration (IBM MQ)
+│   ├── orders/
+│   │   └── 01-orders.yaml
+│   └── ...
+├── rules/                          # Rule matching and output generation (Kafka + JMS)
 │   ├── order-processing/
 │   │   ├── 01-order-created.yaml
 │   │   └── 02-order-shipped.yaml
@@ -424,6 +804,7 @@ See [API.md](docs/API.md) for complete documentation of all HTTP endpoints:
 | `GET /tests/jobs/{job_id}` | Get async test job status |
 | `GET /tests/logs` | List test log files |
 | `GET /tests/logs/{test_id}` | Get log for a specific test |
+| `GET /jms/pool-stats` | Get JMS connection pooling statistics (May 2026) |
 | `POST /debug/decode` | Decode a raw message and detect its format |
 | `POST /debug/match` | Detailed rule-matching analysis for a message |
 | `GET /debug/topics` | Show discovered topics and metadata |
@@ -751,6 +1132,7 @@ GET    /api/rules/{topic}           # Get rules for a topic
 POST   /api/rules:match             # Test rule matching with message
 POST   /api/inject/{topic}          # Inject message to topic
 GET    /api/messages/{topic}        # Get messages from topic
+GET    /api/jms/pool-stats          # Get JMS connection pooling statistics
 GET    /api/debug/topics            # List discovered topics
 GET    /api/debug/cache             # View message cache stats
 POST   /api/debug/decode            # Decode message payload

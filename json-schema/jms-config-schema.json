@@ -1,0 +1,257 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Schnikonos/kafka-wiremock/blob/main/json-schema/jms-config-schema.json",
+  "$comment": "DEPRECATED — this schema has been merged into jms-schema.json. Point your IDE / validator to json-schema/jms-schema.json instead.",
+  "title": "JMS Queue Manager Configuration (deprecated alias — use jms-schema.json)",
+  "description": "DEPRECATED. Schema for queue-managers.yaml file defining JMS queue managers (IBM MQ, ActiveMQ, RabbitMQ, etc.). Merged into jms-schema.json.",
+  "type": "object",
+  "required": ["queue_managers"],
+  "additionalProperties": false,
+  "properties": {
+    "queue_managers": {
+      "type": "object",
+      "description": "Dictionary of queue manager configurations, keyed by reference name.",
+      "additionalProperties": {
+        "$ref": "#/definitions/queueManager"
+      }
+    }
+  },
+  "definitions": {
+    "queueManager": {
+      "type": "object",
+      "description": "Configuration for a single queue manager.",
+      "required": ["provider"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "JMS provider type (ibm_mq, activemq, or rabbitmq).",
+          "enum": ["ibm_mq", "activemq", "rabbitmq"],
+          "examples": ["ibm_mq", "activemq", "rabbitmq"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "provider": { "const": "ibm_mq" } }
+          },
+          "then": { "$ref": "#/definitions/ibmMQConfig" }
+        },
+        {
+          "if": {
+            "properties": { "provider": { "const": "activemq" } }
+          },
+          "then": { "$ref": "#/definitions/activeMQConfig" }
+        },
+        {
+          "if": {
+            "properties": { "provider": { "const": "rabbitmq" } }
+          },
+          "then": { "$ref": "#/definitions/rabbitMQConfig" }
+        }
+      ]
+    },
+    "ibmMQConfig": {
+      "type": "object",
+      "description": "IBM MQ specific configuration.",
+      "required": ["provider", "broker_url", "channel", "queue_manager"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "ibm_mq"
+        },
+        "broker_url": {
+          "type": "string",
+          "description": "Broker connection string (e.g., 'localhost(1414)' or 'ibmmq.example.com(1414)').",
+          "minLength": 1,
+          "examples": ["localhost(1414)", "ibmmq.example.com(1414)", "mq-us-east(1414)"]
+        },
+        "channel": {
+          "type": "string",
+          "description": "Channel name for connection.",
+          "minLength": 1,
+          "examples": ["DEV.APP.SVRCONN", "PROD.SVRCONN", "APP.CHANNEL"]
+        },
+        "queue_manager": {
+          "type": "string",
+          "description": "Queue manager name.",
+          "minLength": 1,
+          "examples": ["QM1", "QM_PROD", "QM_EU"]
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for authentication (password via JMS_<QM_NAME>_PASSWORD env var).",
+          "minLength": 1,
+          "examples": ["app_user", "mq_admin"]
+        },
+        "ssl_key_store": {
+          "type": "string",
+          "description": "Path to SSL keystore file (optional, for TLS connections).",
+          "examples": ["/etc/ssl/keystore.pem", "/config/certs/mq-keystore.pem"]
+        },
+        "ssl_key_store_password": {
+          "type": "string",
+          "description": "Password for SSL keystore (via environment variable)."
+        },
+        "pool": {
+          "$ref": "#/definitions/poolConfig",
+          "description": "Optional connection pool configuration (overrides global defaults)."
+        }
+      }
+    },
+    "activeMQConfig": {
+      "type": "object",
+      "description": "ActiveMQ specific configuration (STOMP protocol).",
+      "required": ["provider", "broker_url"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "activemq"
+        },
+        "broker_url": {
+          "type": "string",
+          "description": "Broker URL (host:port format for STOMP).",
+          "minLength": 1,
+          "examples": ["localhost:61613", "activemq.example.com:61613", "amq-prod:61613"]
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for authentication.",
+          "minLength": 1,
+          "examples": ["admin", "app_user"]
+        },
+        "vhost": {
+          "type": "string",
+          "description": "Virtual host name (rarely used with ActiveMQ).",
+          "default": "/",
+          "examples": ["/", "myhost"]
+        },
+        "pool": {
+          "$ref": "#/definitions/poolConfig",
+          "description": "Optional connection pool configuration (overrides global defaults)."
+        }
+      }
+    },
+    "rabbitMQConfig": {
+      "type": "object",
+      "description": "RabbitMQ specific configuration (AMQP protocol).",
+      "required": ["provider", "broker_url"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "rabbitmq"
+        },
+        "broker_url": {
+          "type": "string",
+          "description": "Broker URL (host:port format for AMQP).",
+          "minLength": 1,
+          "examples": ["localhost:5672", "rabbitmq.example.com:5672", "rmq-prod:5672"]
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for authentication (default: guest).",
+          "default": "guest",
+          "examples": ["guest", "admin", "app_user"]
+        },
+        "virtual_host": {
+          "type": "string",
+          "description": "RabbitMQ virtual host.",
+          "default": "/",
+          "examples": ["/", "myapp", "testing"]
+        },
+        "pool": {
+          "$ref": "#/definitions/poolConfig",
+          "description": "Optional connection pool configuration (overrides global defaults)."
+        }
+      }
+    },
+    "poolConfig": {
+      "type": "object",
+      "description": "Connection pool configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "min_idle": {
+          "type": "integer",
+          "description": "Minimum number of idle connections to maintain.",
+          "minimum": 0,
+          "default": 1,
+          "examples": [0, 1, 2]
+        },
+        "max_size": {
+          "type": "integer",
+          "description": "Maximum number of connections in pool.",
+          "minimum": 1,
+          "default": 5,
+          "examples": [5, 10, 20]
+        },
+        "max_wait_ms": {
+          "type": "integer",
+          "description": "Maximum wait time for a connection in milliseconds.",
+          "minimum": 100,
+          "default": 5000,
+          "examples": [5000, 10000, 30000]
+        },
+        "idle_timeout_ms": {
+          "type": "integer",
+          "description": "Idle connection timeout in milliseconds (default: 15 minutes).",
+          "minimum": 1000,
+          "default": 900000,
+          "examples": [300000, 600000, 900000]
+        },
+        "max_lifetime_ms": {
+          "type": "integer",
+          "description": "Maximum connection lifetime in milliseconds (default: 30 minutes).",
+          "minimum": 10000,
+          "default": 1800000,
+          "examples": [600000, 1200000, 1800000]
+        },
+        "auto_reconnect": {
+          "type": "boolean",
+          "description": "Enable automatic reconnection on connection failure.",
+          "default": true
+        },
+        "reconnect_attempts": {
+          "type": "integer",
+          "description": "Number of reconnection attempts.",
+          "minimum": 1,
+          "default": 3,
+          "examples": [1, 3, 5]
+        },
+        "reconnect_delay_ms": {
+          "type": "integer",
+          "description": "Initial delay between reconnection attempts in milliseconds.",
+          "minimum": 100,
+          "default": 1000,
+          "examples": [1000, 2000, 5000]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "queue_managers": {
+        "qm_us_east": {
+          "provider": "ibm_mq",
+          "broker_url": "localhost(1414)",
+          "channel": "DEV.APP.SVRCONN",
+          "queue_manager": "QM1",
+          "username": "app_user"
+        },
+        "qm_eu_west": {
+          "provider": "activemq",
+          "broker_url": "activemq-eu.example.com:61613",
+          "username": "admin"
+        },
+        "qm_rabbitmq": {
+          "provider": "rabbitmq",
+          "broker_url": "rabbitmq.example.com:5672",
+          "username": "guest",
+          "virtual_host": "/"
+        }
+      }
+    }
+  ]
+}
+

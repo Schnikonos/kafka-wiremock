@@ -9,3 +9,15 @@ six==1.17.0
 fastavro==1.12.1
 requests==2.33.1
 httpx==0.27.0
+
+# JMS Providers (optional - graceful fallback if compilation fails)
+# pymqi: IBM MQ - requires IBM MQ C client libraries to compile.
+#        NOT listed here because it cannot be installed in CI/test environments
+#        without those native libraries. The Dockerfile installs it separately
+#        after setting up the IBM MQ redistributable client.
+#        The code handles its absence gracefully (IBM_MQ_AVAILABLE = False).
+#        To install manually: pip install pymqi==1.12.13
+# stomp.py: Apache ActiveMQ (pure Python, always compiles)
+# pika: RabbitMQ (pure Python, always compiles)
+stomp.py==8.1.0
+pika==1.3.0

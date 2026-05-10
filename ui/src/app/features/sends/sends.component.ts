@@ -15,6 +15,7 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatDialogModule, MatDialog } from '@angular/material/dialog';
 import { ApiService } from '../../core/services/api.service';
+import { AppConfigService } from '../../core/services/app-config.service';
 import { Send, BulkSendExecutionRequest, BulkSendExecutionResult } from '../../core/models';
 import { SelectionModel } from '@angular/cdk/collections';
 
@@ -461,6 +462,7 @@ export class SendsComponent implements OnInit {
 
   constructor(
     private api: ApiService,
+    private appConfigService: AppConfigService,
     private snackBar: MatSnackBar,
     private fb: FormBuilder,
     private dialog: MatDialog
@@ -531,7 +533,11 @@ export class SendsComponent implements OnInit {
     }
 
     const totalExecutions = this.selection.selected.length * this.repeatControl.value;
-    const summaryMessage = `You are about to run ${totalExecutions} send execution(s):
+    const threshold = this.appConfigService.getTestRecapThreshold();
+
+    // Only show recap popup if total executions exceed threshold
+    if (totalExecutions > threshold) {
+      const summaryMessage = `You are about to run ${totalExecutions} send execution(s):
 - Selected Sends: ${this.selection.selected.length}
 - Repeat Count: ${this.repeatControl.value}
 - Mode: ${this.modeControl.value}
@@ -540,16 +546,20 @@ export class SendsComponent implements OnInit {
 
 This may take some time depending on your send configuration.`;
 
-    const dialogRef = this.dialog.open(SendExecutionSummaryDialog, {
-      width: '500px',
-      data: { message: summaryMessage }
-    });
+      const dialogRef = this.dialog.open(SendExecutionSummaryDialog, {
+        width: '500px',
+        data: { message: summaryMessage }
+      });
 
-    dialogRef.afterClosed().subscribe(result => {
-      if (result) {
-        this.executeSends();
-      }
-    });
+      dialogRef.afterClosed().subscribe(result => {
+        if (result) {
+          this.executeSends();
+        }
+      });
+    } else {
+      // If below threshold, execute without confirmation
+      this.executeSends();
+    }
   }
 
   private executeSends() {

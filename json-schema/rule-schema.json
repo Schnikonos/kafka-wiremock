@@ -24,15 +24,28 @@
     },
     "when": {
       "type": "object",
-      "description": "Defines which incoming Kafka messages this rule matches.",
+      "description": "Defines which incoming messages (Kafka or JMS) this rule matches.",
       "required": ["topic"],
       "additionalProperties": false,
       "properties": {
         "topic": {
           "type": "string",
-          "description": "The Kafka topic to listen on.",
+          "description": "The Kafka topic or JMS queue/topic name to listen on.",
           "minLength": 1,
-          "examples": ["orders.input", "payments.events", "transfers"]
+          "examples": ["orders.input", "payments.events", "transfers", "ORDERS_INPUT"]
+        },
+        "msg_type": {
+          "type": "string",
+          "description": "Input message type - kafka (default) or jms. Determines which listener handles this rule.",
+          "enum": ["kafka", "jms"],
+          "default": "kafka",
+          "examples": ["kafka", "jms"]
+        },
+        "queue_manager_ref": {
+          "type": "string",
+          "description": "For JMS only: reference to queue manager defined in queue-managers.yaml. Uses default queue manager when omitted.",
+          "minLength": 1,
+          "examples": ["qm_us_east", "qm_eu_west", "qm_dev_local"]
         },
         "match": {
           "type": "array",
@@ -308,9 +321,22 @@
       "properties": {
         "topic": {
           "type": "string",
-          "description": "Kafka topic to publish the output message to.",
+          "description": "Kafka topic or JMS queue/topic name to publish the output message to.",
           "minLength": 1,
-          "examples": ["payments.input", "shipments.output", "dlq.archive"]
+          "examples": ["payments.input", "shipments.output", "dlq.archive", "ORDERS_QUEUE"]
+        },
+        "msg_type": {
+          "type": "string",
+          "description": "Message type - kafka (default) or jms. Specifies output message destination.",
+          "enum": ["kafka", "jms"],
+          "default": "kafka",
+          "examples": ["kafka", "jms"]
+        },
+        "queue_manager_ref": {
+          "type": "string",
+          "description": "Reference to queue manager (only for jms msg_type). Name from queue-managers.yaml.",
+          "minLength": 1,
+          "examples": ["qm_us_east", "qm_eu_west"]
         },
         "payload": {
           "type": "string",

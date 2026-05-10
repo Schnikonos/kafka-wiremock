@@ -1,0 +1,260 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Schnikonos/kafka-wiremock/blob/main/send-schema.json",
+  "title": "Kafka Wiremock Send Configuration",
+  "description": "Schema for send YAML files that define messages to send to Kafka or JMS. One send operation per YAML file (*.send.yaml).",
+  "type": "object",
+  "required": ["inject"],
+  "additionalProperties": false,
+  "properties": {
+    "priority": {
+      "type": "integer",
+      "description": "Execution order. Lower values execute first. Default is 999.",
+      "default": 999,
+      "examples": [10, 20, 50, 100, 999]
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable identifier for this send operation.",
+      "minLength": 1,
+      "examples": ["send-orders", "send-payments", "send-notifications"]
+    },
+    "tags": {
+      "type": "array",
+      "description": "Optional tags for filtering send operations (e.g., 'example', 'critical').",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "examples": [["example", "order"], ["critical"]]
+    },
+    "skip": {
+      "type": "boolean",
+      "description": "Set to true to skip this send operation.",
+      "default": false
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "description": "Maximum duration for the entire send operation in milliseconds.",
+      "minimum": 100,
+      "default": 5000,
+      "examples": [5000, 10000, 30000]
+    },
+    "inject": {
+      "type": "array",
+      "description": "List of messages to send (and optional inline/file-based scripts).",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/definitions/sendMessage" },
+          { "$ref": "#/definitions/inlineScript" },
+          { "$ref": "#/definitions/fileScript" }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "sendMessage": {
+      "type": "object",
+      "description": "A message to send to Kafka or JMS.",
+      "required": ["message_id", "topic"],
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "type": "string",
+          "description": "Unique identifier for this message.",
+          "minLength": 1,
+          "examples": ["msg1", "order-1", "payment-123"]
+        },
+        "topic": {
+          "type": "string",
+          "description": "Destination (Kafka topic or JMS queue/topic name).",
+          "minLength": 1,
+          "examples": ["orders.input", "ORDERS_QUEUE", "payments.topic"]
+        },
+        "msg_type": {
+          "type": "string",
+          "description": "Message type - kafka or jms (default: kafka).",
+          "enum": ["kafka", "jms"],
+          "default": "kafka",
+          "examples": ["kafka", "jms"]
+        },
+        "queue_manager_ref": {
+          "type": "string",
+          "description": "Reference to queue manager (only for jms msg_type). Name from queue-managers.yaml.",
+          "minLength": 1,
+          "examples": ["qm_us_east", "qm_eu_west", "qm_primary"]
+        },
+        "payload": {
+          "type": "string",
+          "description": "Message payload. Supports template placeholders: {{uuid}}, {{now}}, {{now+5m}}, {{randomInt(1,100)}}. Mutually exclusive with payload_file.",
+          "minLength": 1,
+          "examples": [
+            "{\"orderId\": \"ORD-{{uuid}}\", \"status\": \"NEW\"}",
+            "{\"customerId\": \"CUST-123\", \"amount\": 99.99}"
+          ]
+        },
+        "payload_file": {
+          "type": "string",
+          "description": "Path to external file containing the payload template (relative to send file). Mutually exclusive with payload.",
+          "minLength": 1,
+          "examples": ["payloads/order.json", "../shared/payment.json"]
+        },
+        "headers": {
+          "type": "object",
+          "description": "Optional message headers. Values support template placeholders.",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "examples": [
+            {
+              "X-Correlation-ID": "{{uuid}}",
+              "X-Source": "send-operation"
+            }
+          ]
+        },
+        "key": {
+          "type": "string",
+          "description": "Message key (Kafka) or routing key (JMS). Supports template placeholders.",
+          "examples": ["{{uuid}}", "order-{{$.orderId}}"]
+        },
+        "delay_ms": {
+          "type": "integer",
+          "description": "Delay in milliseconds before sending this message.",
+          "minimum": 0,
+          "default": 0,
+          "examples": [0, 100, 500]
+        },
+        "schema_id": {
+          "type": "integer",
+          "description": "Confluent Schema Registry schema ID for AVRO encoding (Kafka only).",
+          "minimum": 1,
+          "examples": [123, 456]
+        },
+        "correlation_id": {
+          "type": "string",
+          "description": "Optional correlation ID for tracing (auto-generated if not specified).",
+          "minLength": 1,
+          "examples": ["corr-123", "trace-abc-def"]
+        },
+        "fault": {
+          "$ref": "#/definitions/faultInjection"
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["payload"],
+          "not": { "required": ["payload_file"] }
+        },
+        {
+          "required": ["payload_file"],
+          "not": { "required": ["payload"] }
+        }
+      ]
+    },
+    "inlineScript": {
+      "type": "object",
+      "description": "Inline Python code to execute between send operations. Has access to current_injections list.",
+      "required": ["script"],
+      "additionalProperties": false,
+      "properties": {
+        "script": {
+          "type": "string",
+          "description": "Python code to execute. Can use current_injections to inspect prior sends.",
+          "minLength": 1
+        }
+      }
+    },
+    "fileScript": {
+      "type": "object",
+      "description": "Reference to an external Python script file to execute between send operations.",
+      "required": ["script_file"],
+      "additionalProperties": false,
+      "properties": {
+        "script_file": {
+          "type": "string",
+          "description": "Path to external Python script file (relative to send file).",
+          "minLength": 1,
+          "examples": ["scripts/pre-send.py"]
+        }
+      }
+    },
+    "faultInjection": {
+      "type": "object",
+      "description": "Optional fault injection configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "drop": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is dropped.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1, 0.2]
+        },
+        "duplicate": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is duplicated.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1]
+        },
+        "random_latency": {
+          "type": "string",
+          "description": "Range for random latency injection (e.g., '0-100' means 0-100ms).",
+          "pattern": "^[0-9]+-[0-9]+$",
+          "examples": ["0-100", "50-200", "100-500"]
+        },
+        "poison_pill": {
+          "type": "number",
+          "description": "Probability (0.0-1.0) that the message is corrupted.",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "examples": [0.05, 0.1]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "priority": 10,
+      "name": "send-orders",
+      "inject": [
+        {
+          "message_id": "order1",
+          "topic": "orders.input",
+          "msg_type": "kafka",
+          "payload": "{\"orderId\": \"ORD-{{uuid}}\", \"customerId\": \"CUST-123\", \"amount\": 99.99, \"status\": \"NEW\"}",
+          "delay_ms": 0
+        },
+        {
+          "message_id": "order2",
+          "topic": "orders.input",
+          "msg_type": "kafka",
+          "payload": "{\"orderId\": \"ORD-{{uuid}}\", \"customerId\": \"CUST-456\", \"amount\": 199.99, \"status\": \"NEW\"}",
+          "delay_ms": 100
+        }
+      ]
+    },
+    {
+      "priority": 20,
+      "name": "send-jms-orders",
+      "tags": ["example", "jms"],
+      "inject": [
+        {
+          "message_id": "jms-order1",
+          "topic": "ORDERS_INPUT",
+          "msg_type": "jms",
+          "queue_manager_ref": "qm_us_east",
+          "payload": "{\"orderId\": \"ORD-001\", \"status\": \"NEW\"}",
+          "headers": {
+            "X-Source": "send-test"
+          }
+        }
+      ]
+    }
+  ]
+}
+
