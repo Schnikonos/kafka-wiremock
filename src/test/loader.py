@@ -32,6 +32,8 @@ class TestInjection:
     delay_ms: int = 0
     correlation_id: Optional[str] = None  # Optional override correlation ID
     fault: Optional[Fault] = None  # Optional fault injection configuration
+    msg_type: str = "kafka"  # "kafka" (default) or "jms" - type of destination
+    queue_manager_ref: Optional[str] = None  # (JMS only) Reference to queue manager from queue-managers.yaml
 
 
 @dataclass
@@ -49,6 +51,8 @@ class TestExpectation:
     match: List[Condition] = field(default_factory=list)  # Optional conditions
     match_file: Optional[str] = None  # Path to external match conditions file (YAML)
     correlate: Optional[TestCorrelation] = None  # Correlation configuration
+    msg_type: str = "kafka"  # "kafka" (default) or "jms" - type of destination to consume from
+    queue_manager_ref: Optional[str] = None  # (JMS only) Reference to queue manager from queue-managers.yaml
 
 
 @dataclass
@@ -217,7 +221,9 @@ class TestValidator:
                     key=item_dict.get("key"),
                     delay_ms=int(item_dict.get("delay_ms", 0)),
                     correlation_id=item_dict.get("correlation_id"),
-                    fault=TestYamlParser._parse_fault(item_dict.get("fault"))
+                    fault=TestYamlParser._parse_fault(item_dict.get("fault")),
+                    msg_type=str(item_dict.get("msg_type", "kafka")).lower(),
+                    queue_manager_ref=item_dict.get("queue_manager_ref")
                 )
                 items.append(injection)
 
@@ -285,7 +291,9 @@ class TestValidator:
                     wait_ms=int(item_dict.get("wait_ms", 2000)),
                     match=conditions,
                     match_file=item_dict.get("match_file"),
-                    correlate=correlate
+                    correlate=correlate,
+                    msg_type=str(item_dict.get("msg_type", "kafka")).lower(),
+                    queue_manager_ref=item_dict.get("queue_manager_ref")
                 )
                 items.append(expectation)
 
@@ -318,12 +326,12 @@ class TestLoader:
         Returns:
             List of TestDefinition objects, sorted by priority
         """
-        # Get current test files
+        # Build {path: mtime} dict — detects both new/removed files AND edits
         yaml_files = sorted(self.test_suite_dir.rglob("*.test.yaml")) + \
                      sorted(self.test_suite_dir.rglob("*.test.yml"))
-        current_files = {str(f) for f in yaml_files}
+        current_files = {str(f): f.stat().st_mtime for f in yaml_files}
 
-        # Check if test files have changed
+        # Cache hit: same files AND none of them were modified
         if self._cached_tests is not None and self._cached_test_files == current_files:
             return self._cached_tests
 

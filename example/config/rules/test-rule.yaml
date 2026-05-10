@@ -1,0 +1,16 @@
+priority: 10
+name: "test-rule"
+when:
+  topic: users.commands
+  match:
+    - type: jsonpath
+      expression: "$.eventType"
+      value: "USER_CREATED"
+then:
+  - topic: users.events
+    payload: |
+      {
+        "userId": "{{$.userId}}",
+        "event": "USER_CREATED",
+        "timestamp": "{{now}}"
+      }

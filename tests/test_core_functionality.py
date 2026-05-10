@@ -729,9 +729,9 @@ class TestTemplaterCoverage(unittest.TestCase):
         self.assertEqual(obj['obj']['key'], 'value')
 
     def test_traverse_path_array(self):
-        """Test _traverse_path with array - returns the array itself."""
+        """Test _traverse_path with array - returns the array itself (limitation of implementation)."""
         context = {'items': ['a', 'b', 'c']}
-        # array[index] syntax returns the whole array (limitation of implementation)
+        # array[index] syntax returns the whole array due to how the while loop is structured
         result = TemplateRenderer._traverse_path(context, 'items[0]')
         self.assertEqual(result, ['a', 'b', 'c'])
 

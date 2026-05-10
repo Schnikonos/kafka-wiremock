@@ -5,6 +5,7 @@ import logging
 import json
 from typing import Dict, Any, Optional, Union, List
 from fastapi import APIRouter, HTTPException, Query, Body
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,13 @@ router = APIRouter(prefix="", tags=["rules"])
 # Global references - will be set by main.py
 _config_loader = None
 _listener_engine = None
+
+
+class RuleMatchRequest(BaseModel):
+    """Request model for rule matching test"""
+    payload: Union[Dict[str, Any], str]
+    key: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
 
 
 def set_config_loader(loader):
@@ -110,14 +118,16 @@ async def get_rules_for_topic(input_topic: str):
 @router.post("/rules:match")
 async def explain_rule_match(
     topic: str = Query(..., description="Input topic"),
-    message: Union[Dict[str, Any], str] = Body(..., description="Message to test against rules")
+    rule_name: Optional[str] = Query(None, description="Filter to specific rule (optional)"),
+    request: RuleMatchRequest = Body(..., description="Message with payload, key, and headers")
 ) -> Dict[str, Any]:
     """
     Dry-run endpoint: Show which rule would match a message and why.
 
     Args:
         topic: Input topic for the message
-        message: Message payload (JSON object or string)
+        rule_name: Optional specific rule to test
+        request: RuleMatchRequest with payload, key, and headers
 
     Returns:
         Matching rule details with matcher context and extraction results
@@ -126,40 +136,85 @@ async def explain_rule_match(
         raise HTTPException(status_code=503, detail="Services not initialized")
 
     try:
+        # Import MatcherFactory here
+        from ..rules.matcher import MatcherFactory
+
         # Get rules for the topic
         rules = _config_loader.get_rules_for_topic(topic)
+
+        # Filter by rule name if specified
+        if rule_name:
+            rules = [r for r in rules if r.rule_name == rule_name]
 
         if not rules:
             return {
                 "matched": False,
                 "message": "No rules configured for this topic",
-                "message_preview": str(message)[:200],
+                "message_preview": str(request.payload)[:200],
                 "topic": topic,
                 "evaluated_rules": 0
             }
 
         # Try to match each rule
         for rule in rules:
-            match_result = _listener_engine.matcher_factory.match_rule(
-                message=message,
-                rule=rule
-            )
+            matched_all_conditions = True
+            context = {}
+            conditions_detail = []
 
-            if match_result.matched:
-                # Extract details about what matched
-                conditions_detail = []
-                for i, cond in enumerate(rule.conditions):
-                    cond_match = match_result.context.get(f"condition_{i}")
+            # Check all conditions
+            for i, condition in enumerate(rule.conditions):
+                try:
+                    # Create matcher based on condition type
+                    matcher = MatcherFactory.create(condition.type)
+
+                    # Prepare data to match based on condition type
+                    if condition.type == 'jsonpath':
+                        match_condition = {
+                            'path': condition.expression,
+                            'value': condition.value,
+                            'regex': condition.regex
+                        }
+                        match_data = request.payload
+                    elif condition.type == 'key':
+                        match_condition = condition
+                        match_data = request.key
+                    elif condition.type == 'header':
+                        match_condition = condition
+                        match_data = request.headers or {}
+                    else:
+                        match_condition = condition.regex if condition.regex else condition.value
+                        match_data = request.payload
+
+                    # Match the condition
+                    match_result = matcher.match(match_data, match_condition)
+
                     conditions_detail.append({
                         "index": i,
-                        "type": cond.type,
-                        "expression": cond.expression,
-                        "value": cond.value,
-                        "regex": cond.regex,
-                        "matched": cond_match is not None,
-                        "extracted_context": dict(list(match_result.context.items())[i:i+1]) if cond_match else {}
+                        "type": condition.type,
+                        "expression": condition.expression,
+                        "value": condition.value,
+                        "regex": condition.regex,
+                        "matched": match_result.matched
                     })
 
+                    if not match_result.matched:
+                        matched_all_conditions = False
+
+                    # Add context from this match to the overall context
+                    context.update(match_result.context)
+
+                except Exception as e:
+                    logger.warning(f"Error matching condition {i}: {e}")
+                    matched_all_conditions = False
+                    conditions_detail.append({
+                        "index": i,
+                        "type": condition.type,
+                        "matched": False,
+                        "error": str(e)
+                    })
+
+            # If all conditions matched, return rule details
+            if matched_all_conditions:
                 return {
                     "matched": True,
                     "rule": {
@@ -168,8 +223,8 @@ async def explain_rule_match(
                         "input_topic": rule.input_topic
                     },
                     "conditions": conditions_detail,
-                    "context": match_result.context,
-                    "message_preview": str(message)[:200],
+                    "context": context,
+                    "message_preview": str(request.payload)[:200],
                     "topic": topic,
                     "outputs_count": len(rule.outputs),
                     "outputs": [{"topic": o.topic, "delay_ms": o.delay_ms} for o in rule.outputs]
@@ -179,7 +234,7 @@ async def explain_rule_match(
         return {
             "matched": False,
             "message": "No rules matched this message",
-            "message_preview": str(message)[:200],
+            "message_preview": str(request.payload)[:200],
             "topic": topic,
             "evaluated_rules": len(rules),
             "available_rules": [

@@ -96,7 +96,7 @@ class TestListenerManager:
                     # Check if topic exists in Kafka
                     if self.listener_engine.kafka_client._verify_topic_exists(topic):
                         logger.info(f"Starting listener for test expectation topic: {topic}")
-                        if self.listener_engine.ensure_listening_to_topic(topic, timeout_seconds=2):
+                        if self.listener_engine.ensure_listening_to_topic(topic, timeout_seconds=5):
                             logger.info(f"Listener ready for test topic: {topic}")
                         else:
                             logger.warning(f"Failed to start listener for test topic: {topic}")

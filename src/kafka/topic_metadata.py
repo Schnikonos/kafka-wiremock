@@ -256,6 +256,10 @@ class TopicMetadataManager:
         current_time = time.time()
 
         with self._lock:
+            # Fast path: topic already confirmed as existing – no need to re-verify
+            if self.topic_existence.get(topic, False):
+                return True
+
             # If recently checked and marked as not existing, respect retry interval
             if topic in self.topic_last_check:
                 last_check = self.topic_last_check[topic]

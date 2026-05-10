@@ -1,0 +1,58 @@
+<div class="config-view-container">
+  <mat-toolbar color="primary" class="main-toolbar">
+    <mat-icon class="toolbar-icon">settings</mat-icon>
+    <span>Configuration Management</span>
+    <span class="spacer"></span>
+    <button mat-icon-button (click)="downloadAsJson()" matTooltip="Download Config as JSON" matTooltipPosition="left">
+      <mat-icon>download</mat-icon>
+    </button>
+    <button mat-icon-button (click)="refresh()" matTooltip="Refresh All" matTooltipPosition="left">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <mat-tab-group (selectedIndexChange)="onTabChange($event)" class="config-tabs">
+    <!-- Topics Tab -->
+    <mat-tab label="Topics" class="tab-content">
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">topic</mat-icon>
+        <span class="tab-label">Topics</span>
+      </ng-template>
+      <div class="tab-body">
+        <app-topic-config *ngIf="selectedTab === 0 && topicConfig"></app-topic-config>
+        <div *ngIf="topicLoading" class="tab-loading">
+          <mat-spinner diameter="30"></mat-spinner>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- JMS Queue Managers Tab -->
+    <mat-tab label="JMS Queue Managers" class="tab-content">
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">cloud_queue</mat-icon>
+        <span class="tab-label">JMS Queue Managers</span>
+      </ng-template>
+      <div class="tab-body">
+        <app-jms-config *ngIf="selectedTab === 1 && jmsConfig"></app-jms-config>
+        <div *ngIf="jmsLoading" class="tab-loading">
+          <mat-spinner diameter="30"></mat-spinner>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Providers Tab -->
+    <mat-tab label="JMS Providers" class="tab-content">
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">dns</mat-icon>
+        <span class="tab-label">Providers</span>
+      </ng-template>
+      <div class="tab-body">
+        <app-providers-info *ngIf="selectedTab === 2 && providers" [providers]="providers"></app-providers-info>
+        <div *ngIf="providersLoading" class="tab-loading">
+          <mat-spinner diameter="30"></mat-spinner>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>
+

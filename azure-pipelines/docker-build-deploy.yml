@@ -22,6 +22,9 @@ variables:
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
   latestTag: 'latest'
+  INSTALL_IBM_MQ: 'false' # Set to 'true' to include IBM MQ support in Docker image
+  IBM_MQ_METHOD: 'pymqi' # Options: 'pymqi' (open-source, recommended), 'ibm-mq' (requires credentials)
+  IBM_MQ_REPO_URL: 'https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqpython/' # IBM's private repository (requires authentication)
 stages:
   - stage: Build
     displayName: Build and Test
@@ -44,17 +47,21 @@ stages:
           - script: |
               python -m pytest tests/ -v --cov=src --cov-report=xml
             displayName: 'Run Tests'
-          - script: |
-              python -m py_compile src/*.py
-            displayName: 'Check Python syntax'
-          - task: Docker@2
-            displayName: 'Build Docker image'
-            inputs:
-              command: 'build'
-              Dockerfile: '$(dockerfilePath)'
-              tags: |
-                $(containerRegistry)/$(imageRepository):$(tag)
-                $(containerRegistry)/$(imageRepository):$(latestTag)
+           - script: |
+               python -m py_compile src/*.py
+             displayName: 'Check Python syntax'
+           - task: Docker@2
+             displayName: 'Build Docker image'
+             inputs:
+               command: 'build'
+               Dockerfile: '$(dockerfilePath)'
+               tags: |
+                 $(containerRegistry)/$(imageRepository):$(tag)
+                 $(containerRegistry)/$(imageRepository):$(latestTag)
+               arguments: |
+                 --build-arg INSTALL_IBM_MQ=$(INSTALL_IBM_MQ)
+                 --build-arg IBM_MQ_METHOD=$(IBM_MQ_METHOD)
+                 --build-arg IBM_MQ_REPO_URL=$(IBM_MQ_REPO_URL)
   - stage: Push
     displayName: Push to Registry
     dependsOn: Build
@@ -66,21 +73,25 @@ stages:
           vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
-          - task: Docker@2
-            displayName: 'Login to Container Registry'
-            inputs:
-              command: 'login'
-              containerRegistry: '$(dockerRegistryServiceConnection)'
-          - task: Docker@2
-            displayName: 'Build and push image to registry'
-            inputs:
-              command: 'buildAndPush'
-              repository: '$(imageRepository)'
-              dockerfile: '$(dockerfilePath)'
-              containerRegistry: '$(dockerRegistryServiceConnection)'
-              tags: |
-                $(tag)
-                $(latestTag)
+           - task: Docker@2
+             displayName: 'Login to Container Registry'
+             inputs:
+               command: 'login'
+               containerRegistry: '$(dockerRegistryServiceConnection)'
+           - task: Docker@2
+             displayName: 'Build and push image to registry'
+             inputs:
+               command: 'buildAndPush'
+               repository: '$(imageRepository)'
+               dockerfile: '$(dockerfilePath)'
+               containerRegistry: '$(dockerRegistryServiceConnection)'
+               tags: |
+                 $(tag)
+                 $(latestTag)
+               arguments: |
+                 --build-arg INSTALL_IBM_MQ=$(INSTALL_IBM_MQ)
+                 --build-arg IBM_MQ_METHOD=$(IBM_MQ_METHOD)
+                 --build-arg IBM_MQ_REPO_URL=$(IBM_MQ_REPO_URL)
   - stage: Deploy
     displayName: Deploy to Dev
     dependsOn: Push

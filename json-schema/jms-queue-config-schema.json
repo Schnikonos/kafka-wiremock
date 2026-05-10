@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Schnikonos/kafka-wiremock/blob/main/json-schema/jms-queue-config-schema.json",
+  "$comment": "DEPRECATED — this schema has been merged into jms-schema.json. Point your IDE / validator to json-schema/jms-schema.json instead.",
+  "title": "JMS Queue / Topic Configuration (deprecated alias — use jms-schema.json)",
+  "description": "DEPRECATED. Schema for per-destination JMS configuration files located in config/jms-config/. Merged into jms-schema.json.",
+  "type": "object",
+  "required": ["destination"],
+  "additionalProperties": false,
+  "properties": {
+    "destination": {
+      "type": "string",
+      "description": "JMS queue or topic name (exact name as it exists on the broker).",
+      "minLength": 1,
+      "examples": ["ORDERS_INPUT", "ORDERS_PROCESSED", "PAYMENTS.QUEUE"]
+    },
+    "destination_type": {
+      "type": "string",
+      "description": "Whether this destination is a queue or a topic.",
+      "enum": ["queue", "topic"],
+      "default": "queue",
+      "examples": ["queue", "topic"]
+    },
+    "queue_manager_ref": {
+      "type": "string",
+      "description": "Reference to a queue manager defined in queue-managers.yaml. Use 'default' to pick the first registered queue manager.",
+      "default": "default",
+      "examples": ["qm_us_east", "qm_dev_local", "default"]
+    },
+    "provider": {
+      "type": "string",
+      "description": "JMS provider type. Must match the provider field on the referenced queue manager.",
+      "enum": ["ibm_mq", "activemq", "rabbitmq"],
+      "default": "ibm_mq",
+      "examples": ["ibm_mq", "activemq", "rabbitmq"]
+    },
+    "message": {
+      "type": "object",
+      "description": "Message format settings for this destination.",
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "type": "string",
+          "description": "Serialisation format for messages on this destination.",
+          "enum": ["json", "avro", "text", "bytes"],
+          "default": "json",
+          "examples": ["json", "avro", "text", "bytes"]
+        }
+      }
+    },
+    "jms_properties": {
+      "type": "object",
+      "description": "IBM MQ / JMS message delivery properties applied when producing to this destination.",
+      "additionalProperties": false,
+      "properties": {
+        "persistence": {
+          "type": "boolean",
+          "description": "Whether messages should be persisted (survive broker restart). Maps to MQPER_PERSISTENT.",
+          "default": true,
+          "examples": [true, false]
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Message priority (0 = lowest, 9 = highest). Maps to MQPRI_*.",
+          "minimum": 0,
+          "maximum": 9,
+          "default": 4,
+          "examples": [0, 4, 9]
+        },
+        "expiry_ms": {
+          "type": "integer",
+          "description": "Message time-to-live in milliseconds (0 = unlimited).",
+          "minimum": 0,
+          "default": 0,
+          "examples": [0, 60000, 3600000]
+        }
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "description": "Correlation ID extraction and propagation rules for this destination (mirrors the topic-config correlation structure).",
+      "additionalProperties": false,
+      "properties": {
+        "extract": {
+          "type": "array",
+          "description": "Ordered list of rules for extracting a correlation ID from incoming messages. Rules are tried in ascending priority order; the first successful extraction wins.",
+          "items": {
+            "type": "object",
+            "required": ["from"],
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "Source of the correlation ID.",
+                "enum": ["header", "jsonpath"]
+              },
+              "name": {
+                "type": "string",
+                "description": "JMS property / header name to read from. Required when from=header.",
+                "examples": ["X-Correlation-Id", "JMSCorrelationID"]
+              },
+              "expression": {
+                "type": "string",
+                "description": "JSONPath expression to evaluate on the message body. Required when from=jsonpath.",
+                "examples": ["$.correlationId", "$.orderId"]
+              },
+              "priority": {
+                "type": "integer",
+                "description": "Evaluation order — lower values are tried first.",
+                "default": 0,
+                "examples": [1, 2, 10]
+              }
+            }
+          }
+        },
+        "propagate": {
+          "type": "object",
+          "description": "Rules for writing the resolved correlation ID into outgoing messages produced to this destination.",
+          "additionalProperties": false,
+          "properties": {
+            "to_headers": {
+              "type": "object",
+              "description": "JMS properties / headers to set on outgoing messages. Values support {{correlationId}} placeholder.",
+              "additionalProperties": {
+                "type": "string",
+                "description": "Header value template.",
+                "examples": ["{{correlationId}}"]
+              },
+              "examples": [
+                { "X-Correlation-Id": "{{correlationId}}" }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "destination": "ORDERS_INPUT",
+      "destination_type": "queue",
+      "queue_manager_ref": "qm_us_east",
+      "provider": "ibm_mq",
+      "message": {
+        "format": "json"
+      },
+      "jms_properties": {
+        "persistence": true,
+        "priority": 4
+      },
+      "correlation": {
+        "extract": [
+          { "from": "header", "name": "X-Correlation-Id", "priority": 1 },
+          { "from": "jsonpath", "expression": "$.correlationId", "priority": 2 }
+        ],
+        "propagate": {
+          "to_headers": {
+            "X-Correlation-Id": "{{correlationId}}"
+          }
+        }
+      }
+    },
+    {
+      "destination": "ORDERS_PROCESSED",
+      "destination_type": "queue",
+      "queue_manager_ref": "qm_dev_local",
+      "provider": "ibm_mq",
+      "message": {
+        "format": "json"
+      },
+      "jms_properties": {
+        "persistence": true,
+        "priority": 4
+      }
+    }
+  ]
+}
+

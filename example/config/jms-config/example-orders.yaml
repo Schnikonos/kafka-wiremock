@@ -1,0 +1,38 @@
+# JMS Configuration for ORDERS_INPUT queue
+# Used by config/rules/jms-multi-qm-example.yaml as the input source.
+
+# Which queue manager to use (defined in queue-managers.yaml)
+queue_manager_ref: qm_dev_local
+provider: ibm_mq
+
+destination: ORDERS_INPUT
+destination_type: queue
+
+# Message format and schema settings
+message:
+  format: json  # json, avro, text, or bytes
+
+# JMS specific properties
+jms_properties:
+  persistence: true
+  priority: 4
+
+# Correlation ID extraction and propagation
+correlation:
+  # How to extract correlation ID from incoming messages
+  extract:
+    # First, try to find in message headers
+    - from: header
+      name: X-Correlation-Id
+      priority: 1
+
+    # Fall back to JSON field
+    - from: jsonpath
+      expression: $.correlationId
+      priority: 2
+
+  # Where to write correlation ID when producing to this queue
+  propagate:
+    to_headers:
+      X-Correlation-Id: "{{correlationId}}"
+

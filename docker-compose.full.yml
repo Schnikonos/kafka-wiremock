@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
@@ -33,13 +31,13 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
-      test: ["CMD", "bash", "-c", "kafka-broker-api-versions.sh --bootstrap-server localhost:29092 | grep ApiVersion || echo 'Kafka is ready'"]
-      interval: 10s
-      timeout: 10s
-      retries: 30
-      start_period: 20s
+       test: ["CMD", "bash", "-c", "kafka-broker-api-versions.sh --bootstrap-server localhost:29092 | grep ApiVersion || echo 'Kafka is ready'"]
+       interval: 10s
+       timeout: 10s
+       retries: 30
+       start_period: 20s
     networks:
-      - wiremock-network
+       - wiremock-network
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -69,6 +67,11 @@ services:
       -c '
       echo "Creating Kafka topics..."
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic orders.processed \
+        --partitions 2 \
+        --replication-factor 1 \
+        --config retention.ms=43200000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
         --topic users.commands \
         --partitions 2 \
         --replication-factor 1 \
@@ -84,6 +87,28 @@ services:
     networks:
       - wiremock-network
 
+  ibm-mq:
+    image: icr.io/ibm-messaging/mq:9.3.4.0-r1-amd64
+    ports:
+      - "1414:1414"
+      - "9443:9443"
+    environment:
+      LICENSE: accept
+      MQ_QMGR_NAME: QM1
+      MQ_APP_PASSWORD: passw0rd
+      MQ_ADMIN_PASSWORD: passw0rd
+    volumes:
+      - ./example/ibmmq-init.mqsc:/etc/mqm/ibmmq-init.mqsc:ro
+      - mq-data:/mnt/mqm
+    healthcheck:
+      test: ["CMD", "dspmq", "-m", "QM1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - wiremock-network
+
   kafka-wiremock:
     build:
       context: .
@@ -93,20 +118,29 @@ services:
         condition: service_healthy
       kafka-topics-init:
         condition: service_completed_successfully
+      ibm-mq:
+        condition: service_healthy
     ports:
-      - "8001:8000"
+      - "8000:8000"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       CONFIG_DIR: /config
       HOST: 0.0.0.0
       PORT: 8000
       WORKERS: 1
+      # Passwords for queue managers (config/jms-config/queue-managers.yaml)
+      # Format: JMS_{QM_NAME_UPPERCASE}_PASSWORD
+      JMS_QM_DEV_LOCAL_PASSWORD: passw0rd
+      JMS_QM_US_EAST_PASSWORD: passw0rd
+      JMS_QM_EU_WEST_PASSWORD: passw0rd
+      JMS_QM_BACKUP_PASSWORD: passw0rd
     volumes:
-      - ./config:/config
-      - ./testSuite:/testSuite
-      - ./logs:/var/log/wiremock
+      - ./example/config:/config
+      - ./example/testSuite:/testSuite
+      - ./example/send:/send
+      - ./example/logs:/var/log/wiremock
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s
       timeout: 10s
       retries: 10
@@ -119,3 +153,5 @@ networks:
   wiremock-network:
     driver: bridge
 
+volumes:
+  mq-data:

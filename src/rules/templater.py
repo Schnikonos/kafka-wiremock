@@ -173,7 +173,6 @@ class TemplateRenderer:
             return 0
 
     @staticmethod
-    @staticmethod
     def _get_context_value(context: Dict[str, Any], key: str) -> Optional[Any]:
         """
         Get a value from context using dot notation (e.g., '$.user.name' or 'items[0]').

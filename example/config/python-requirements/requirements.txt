@@ -1,0 +1,24 @@
+# Example: Common Python Packages for Testing and Custom Rules
+
+# Database Drivers
+#psycopg2-binary==2.9.9
+#pymongo==4.6.0
+#mysql-connector-python==8.2.0
+#sqlalchemy==2.0.23
+
+# HTTP Requests
+requests==2.31.0
+#httpx==0.25.0
+
+# Data Processing
+#pandas==2.1.0
+#numpy==1.24.0
+
+# Utilities
+python-dateutil==2.8.2
+
+# JMS & Messaging (ALREADY IN MAIN IMAGE)
+# Note: pymqi, stomp.py, and pika are installed from main requirements.txt during Docker build
+# This file is for additional test-time or custom dependencies only
+# Do NOT add JMS packages here to avoid conflicts or duplicate versions
+pymqi==1.12.13

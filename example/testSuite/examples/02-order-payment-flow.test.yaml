@@ -1,0 +1,70 @@
+priority: 20
+name: "order-to-payment-flow"
+tags: ["example", "integration"]
+skip: true
+timeout_ms: 8000
+
+when:
+  inject:
+    - message_id: "order"
+      topic: "orders.input"
+      payload: |
+        {
+          "orderId": "ORD-{{testId}}-{{uuid}}",
+          "customerId": "CUST-456",
+          "amount": 150.50,
+          "currency": "USD",
+          "status": "CREATED"
+        }
+      delay_ms: 100
+
+    - script_file: scripts/validate-order.py
+
+    - message_id: "notification"
+      topic: "notifications.input"
+      payload: |
+        {
+          "type": "order_created",
+          "orderId": "ORD-{{testId}}-{{uuid}}",
+          "timestamp": "{{now}}"
+        }
+
+    - script: |
+        assert current_injections[-1]['payload'].get('type') == 'order_created', \
+            "Notification type must be 'order_created'"
+
+then:
+  expectations:
+    - topic: "payments.input"
+      correlate:
+        message_id: "order"
+        source:
+          jsonpath: "$.orderId"
+        target:
+          jsonpath: "$.orderId"
+      wait_ms: 3000
+      match:
+        - type: jsonpath
+          expression: "$.amount"
+          value: 150.50
+        - type: jsonpath
+          expression: "$.currency"
+          value: "USD"
+
+    - script_file: scripts/validate-payment.py
+
+    - topic: "notifications.output"
+      correlate:
+        message_id: "notification"
+        source:
+          jsonpath: "$.orderId"
+        target:
+          jsonpath: "$.orderId"
+      wait_ms: 3000
+
+    - script: |
+        notif_result = current_expectations[-1]
+        if notif_result.received_messages:
+            msg = notif_result.received_messages[0]
+            assert msg.get('value', {}).get('type') == 'order_created', \
+                "Notification type must be 'order_created'"

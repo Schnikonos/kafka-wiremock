@@ -1,0 +1,28 @@
+# JMS Configuration for ORDERS_PROCESSED queue
+# Matches the output queue used by config/rules/jms-multi-qm-example.yaml
+
+queue_manager_ref: qm_dev_local
+provider: ibm_mq
+
+destination: ORDERS_PROCESSED
+destination_type: queue
+
+message:
+  format: json
+
+jms_properties:
+  persistence: true
+  priority: 4
+
+correlation:
+  extract:
+    - from: header
+      name: X-Correlation-Id
+      priority: 1
+    - from: jsonpath
+      expression: $.orderId
+      priority: 2
+  propagate:
+    to_headers:
+      X-Correlation-Id: "{{correlationId}}"
+

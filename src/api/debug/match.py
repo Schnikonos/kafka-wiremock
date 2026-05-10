@@ -4,7 +4,8 @@ Debug endpoint for rule matching analysis.
 import logging
 import json
 from typing import Dict, Any, Union, Optional
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,13 @@ router = APIRouter(prefix="/debug", tags=["debug"])
 
 # Global reference - will be set by main.py
 _config_loader = None
+
+
+class RuleMatchRequest(BaseModel):
+    """Request model for rule matching debug endpoint."""
+    payload: Union[str, dict]
+    key: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
 
 
 def set_config_loader(loader):
@@ -22,9 +30,9 @@ def set_config_loader(loader):
 
 @router.post("/match")
 async def debug_match(
-    topic: str = Body(..., description="Kafka topic name"),
-    payload: Union[str, dict] = Body(..., description="Message payload (JSON)"),
-    rule_name: Optional[str] = Body(None, description="Specific rule name to test (optional, tests all if omitted)")
+    topic: str = Query(..., description="Kafka topic name"),
+    rule_name: Optional[str] = Query(None, description="Specific rule name to test (optional, tests all if omitted)"),
+    request: RuleMatchRequest = ...
 ) -> Dict[str, Any]:
     """
     Debug endpoint: Test message matching against rules and show detailed analysis.
@@ -42,6 +50,7 @@ async def debug_match(
             raise HTTPException(status_code=503, detail="Config loader not initialized")
 
         # Parse payload if string
+        payload = request.payload
         if isinstance(payload, str):
             payload = json.loads(payload)
 

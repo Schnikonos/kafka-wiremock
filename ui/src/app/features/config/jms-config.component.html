@@ -1,0 +1,179 @@
+<div class="config-container">
+  <mat-toolbar class="config-toolbar">
+    <span>JMS Queue Managers</span>
+    <span class="spacer"></span>
+    <mat-form-field class="search-field">
+      <mat-label>Filter queue managers...</mat-label>
+      <input matInput (keyup)="applyFilter($event)" placeholder="">
+    </mat-form-field>
+    <button mat-icon-button (click)="refresh()" [disabled]="loading" matTooltip="Refresh">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+  <!-- JMS Listener Engine Status & Controls                   -->
+  <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+  <mat-card class="listener-card" *ngIf="listenerStatus !== null">
+    <mat-card-header>
+      <mat-icon mat-card-avatar [ngClass]="listenerStatus.running ? 'icon-running' : 'icon-stopped'">
+        {{ listenerStatus.running ? 'sensors' : 'sensors_off' }}
+      </mat-icon>
+      <mat-card-title>JMS Listener Engine</mat-card-title>
+      <mat-card-subtitle>
+        <span [ngClass]="listenerStatus.running ? 'badge-running' : 'badge-stopped'">
+          {{ listenerStatus.running ? 'Running' : 'Stopped' }}
+        </span>
+        <span class="poll-info" *ngIf="listenerStatus.running">
+          &nbsp;· polling every {{ listenerStatus.poll_interval_ms }} ms
+        </span>
+      </mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <div class="listener-stats" *ngIf="listenerStatus.running">
+        <div class="stat-pill">
+          <mat-icon class="pill-icon active-icon">play_circle</mat-icon>
+          <span>{{ listenerStatus.listening_queues?.length || 0 }} listening</span>
+        </div>
+        <div class="stat-pill" *ngIf="listenerStatus.paused_queues?.length">
+          <mat-icon class="pill-icon paused-icon">pause_circle</mat-icon>
+          <span>{{ listenerStatus.paused_queues?.length }} paused</span>
+        </div>
+      </div>
+
+      <!-- Per-queue controls -->
+      <div *ngIf="listenerStatus.running && listenerStatus.active_queues?.length" class="queue-controls">
+        <mat-divider></mat-divider>
+        <h4 class="queue-controls-title">Queue Listener Control</h4>
+        <p class="queue-controls-hint">
+          Pausing a queue stops the listener from consuming messages on that queue.
+          Messages remain on the broker and will be processed when the queue is resumed — <strong>no messages are lost</strong>.
+        </p>
+        <div class="queue-row" *ngFor="let q of listenerStatus.active_queues">
+          <div class="queue-name">
+            <mat-icon class="queue-icon" [ngClass]="isQueuePaused(q) ? 'paused-icon' : 'active-icon'">
+              {{ isQueuePaused(q) ? 'pause_circle' : 'play_circle' }}
+            </mat-icon>
+            <span>{{ q }}</span>
+            <span class="queue-badge" [ngClass]="isQueuePaused(q) ? 'badge-paused' : 'badge-listening'">
+              {{ isQueuePaused(q) ? 'Paused' : 'Listening' }}
+            </span>
+          </div>
+          <button
+            mat-stroked-button
+            [color]="isQueuePaused(q) ? 'primary' : 'warn'"
+            [disabled]="togglingQueue.has(q)"
+            (click)="toggleQueue(q)"
+            [matTooltip]="isQueuePaused(q) ? 'Resume listening (process accumulated messages)' : 'Pause (messages stay on broker)'">
+            <mat-icon>{{ isQueuePaused(q) ? 'play_arrow' : 'pause' }}</mat-icon>
+            {{ isQueuePaused(q) ? 'Resume' : 'Pause' }}
+          </button>
+        </div>
+      </div>
+
+      <div *ngIf="listenerStatus.running && !listenerStatus.active_queues?.length" class="no-queues-hint">
+        <mat-icon>info</mat-icon>
+        No queues active yet — queues appear here once rules with <code>msg_type: jms</code> are loaded.
+      </div>
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      <button
+        mat-raised-button
+        [color]="listenerStatus.running ? 'warn' : 'primary'"
+        [disabled]="togglingListener"
+        (click)="toggleListener()"
+        [matTooltip]="listenerStatus.running ? 'Stop the JMS listener engine' : 'Start the JMS listener engine'">
+        <mat-icon>{{ listenerStatus.running ? 'stop' : 'play_arrow' }}</mat-icon>
+        {{ listenerStatus.running ? 'Stop Listener' : 'Start Listener' }}
+      </button>
+    </mat-card-actions>
+  </mat-card>
+
+  <div *ngIf="listenerLoading" class="loading-container">
+    <mat-spinner diameter="30"></mat-spinner>
+    <p>Loading listener status...</p>
+  </div>
+
+  <mat-divider class="section-divider"></mat-divider>
+
+  <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+  <!-- Queue Manager Table                                      -->
+  <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <p>Loading queue managers...</p>
+  </div>
+
+  <div *ngIf="!loading && dataSource.data.length === 0" class="empty-state">
+    <mat-icon>cloud_off</mat-icon>
+    <p>No queue managers configured</p>
+    <small>Configure queue managers in config/jms-config/queue-managers.yaml</small>
+  </div>
+
+  <table mat-table [dataSource]="dataSource" class="full-width-table" *ngIf="!loading && dataSource.data.length > 0">
+    <!-- Name Column -->
+    <ng-container matColumnDef="name">
+      <th mat-header-cell *matHeaderCellDef>Queue Manager</th>
+      <td mat-cell *matCellDef="let element" class="name-cell">
+        <strong>{{ element.name }}</strong>
+      </td>
+    </ng-container>
+
+    <!-- Provider Column -->
+    <ng-container matColumnDef="provider">
+      <th mat-header-cell *matHeaderCellDef>Provider</th>
+      <td mat-cell *matCellDef="let element">
+        <mat-chip-set aria-label="Provider">
+          <mat-chip class="provider-chip" [ngClass]="'provider-' + element.provider">
+            {{ element.provider }}
+          </mat-chip>
+        </mat-chip-set>
+      </td>
+    </ng-container>
+
+    <!-- Connection Status Column -->
+    <ng-container matColumnDef="connected">
+      <th mat-header-cell *matHeaderCellDef>Connection Status</th>
+      <td mat-cell *matCellDef="let element">
+        <div class="status-container" [ngClass]="element.connected ? 'status-connected' : 'status-disconnected'">
+          <mat-icon class="status-icon">
+            {{ getStatusIcon(element.connected) }}
+          </mat-icon>
+          <span>{{ element.connected ? 'Connected' : 'Disconnected' }}</span>
+        </div>
+      </td>
+    </ng-container>
+
+    <!-- Configuration Fields Column -->
+    <ng-container matColumnDef="pool_status">
+      <th mat-header-cell *matHeaderCellDef>Configuration</th>
+      <td mat-cell *matCellDef="let element">
+        <span class="config-badge">
+          <mat-icon class="small-icon">settings</mat-icon>
+          {{ element.config_fields?.length || 0 }} fields
+        </span>
+      </td>
+    </ng-container>
+
+    <!-- Actions Column -->
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef>Actions</th>
+      <td mat-cell *matCellDef="let element" class="actions-cell">
+        <button mat-icon-button (click)="viewDetails(element.name)"
+                matTooltip="View Details" matTooltipPosition="above">
+          <mat-icon>info</mat-icon>
+        </button>
+        <button mat-icon-button (click)="testConnection(element.name)"
+                matTooltip="Test Connection" matTooltipPosition="above">
+          <mat-icon>link</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns;" class="table-row"></tr>
+  </table>
+</div>
+

@@ -1,0 +1,452 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Schnikonos/kafka-wiremock/blob/main/json-schema/jms-schema.json",
+  "title": "JMS Configuration",
+  "description": "Unified schema for all JMS-related configuration files. Validates either a queue-managers.yaml file (defining JMS broker connections) or a per-destination JMS config file located in config/jms-config/ (defining queue/topic metadata, message format, and correlation rules). The two formats are mutually exclusive: a queue-managers file has a top-level 'queue_managers' key, while a destination config file has a top-level 'destination' key.",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/queueManagersFile",
+      "title": "Queue Managers File (queue-managers.yaml)"
+    },
+    {
+      "$ref": "#/definitions/destinationConfig",
+      "title": "Destination Config File (config/jms-config/*.yaml)"
+    }
+  ],
+  "definitions": {
+
+    "queueManagersFile": {
+      "type": "object",
+      "title": "Queue Managers File",
+      "description": "Top-level structure of queue-managers.yaml. Defines named JMS broker connections (IBM MQ, ActiveMQ, RabbitMQ). Referenced by 'queue_manager_ref' in rules, test suites, and jms-config files.",
+      "required": ["queue_managers"],
+      "additionalProperties": false,
+      "properties": {
+        "queue_managers": {
+          "type": "object",
+          "description": "Dictionary of queue manager configurations, keyed by a reference name used elsewhere (e.g. 'qm_us_east').",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/definitions/queueManager"
+          }
+        }
+      },
+      "examples": [
+        {
+          "queue_managers": {
+            "qm_us_east": {
+              "provider": "ibm_mq",
+              "broker_url": "localhost(1414)",
+              "channel": "DEV.APP.SVRCONN",
+              "queue_manager": "QM1",
+              "username": "app_user"
+            },
+            "qm_eu_west": {
+              "provider": "activemq",
+              "broker_url": "activemq-eu.example.com:61613",
+              "username": "admin"
+            },
+            "qm_rabbitmq": {
+              "provider": "rabbitmq",
+              "broker_url": "rabbitmq.example.com:5672",
+              "username": "guest",
+              "virtual_host": "/"
+            }
+          }
+        }
+      ]
+    },
+
+    "queueManager": {
+      "type": "object",
+      "description": "Configuration for a single queue manager. The required fields vary by provider (see ibmMQConfig, activeMQConfig, rabbitMQConfig).",
+      "required": ["provider"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "JMS provider type.",
+          "enum": ["ibm_mq", "activemq", "rabbitmq"],
+          "examples": ["ibm_mq", "activemq", "rabbitmq"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "provider": { "const": "ibm_mq" } }
+          },
+          "then": { "$ref": "#/definitions/ibmMQConfig" }
+        },
+        {
+          "if": {
+            "properties": { "provider": { "const": "activemq" } }
+          },
+          "then": { "$ref": "#/definitions/activeMQConfig" }
+        },
+        {
+          "if": {
+            "properties": { "provider": { "const": "rabbitmq" } }
+          },
+          "then": { "$ref": "#/definitions/rabbitMQConfig" }
+        }
+      ]
+    },
+
+    "ibmMQConfig": {
+      "type": "object",
+      "description": "IBM MQ specific configuration.",
+      "required": ["provider", "broker_url", "channel", "queue_manager"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "ibm_mq"
+        },
+        "broker_url": {
+          "type": "string",
+          "description": "Broker connection string in IBM MQ format: 'hostname(port)'.",
+          "minLength": 1,
+          "examples": ["localhost(1414)", "ibmmq.example.com(1414)", "mq-us-east(1414)"]
+        },
+        "channel": {
+          "type": "string",
+          "description": "Server-connection channel name.",
+          "minLength": 1,
+          "examples": ["DEV.APP.SVRCONN", "PROD.SVRCONN", "APP.CHANNEL"]
+        },
+        "queue_manager": {
+          "type": "string",
+          "description": "Queue manager name.",
+          "minLength": 1,
+          "examples": ["QM1", "QM_PROD", "QM_EU"]
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for authentication. Password is supplied via the JMS_<QM_NAME>_PASSWORD environment variable.",
+          "minLength": 1,
+          "examples": ["app_user", "mq_admin"]
+        },
+        "ssl_key_store": {
+          "type": "string",
+          "description": "Path to the SSL keystore file (PEM format) for TLS connections.",
+          "examples": ["/etc/ssl/keystore.pem", "/config/certs/mq-keystore.pem"]
+        },
+        "ssl_key_store_password": {
+          "type": "string",
+          "description": "Password for the SSL keystore. Prefer supplying this via an environment variable."
+        },
+        "pool": {
+          "$ref": "#/definitions/poolConfig",
+          "description": "Per-queue-manager connection pool settings. Overrides the global JMS_POOL_* environment variables."
+        }
+      }
+    },
+
+    "activeMQConfig": {
+      "type": "object",
+      "description": "ActiveMQ specific configuration (uses STOMP protocol via stomp.py).",
+      "required": ["provider", "broker_url"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "activemq"
+        },
+        "broker_url": {
+          "type": "string",
+          "description": "Broker address in 'host:port' format for STOMP.",
+          "minLength": 1,
+          "examples": ["localhost:61613", "activemq.example.com:61613", "amq-prod:61613"]
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for authentication.",
+          "minLength": 1,
+          "examples": ["admin", "app_user"]
+        },
+        "vhost": {
+          "type": "string",
+          "description": "Virtual host name (rarely needed with ActiveMQ).",
+          "default": "/",
+          "examples": ["/", "myhost"]
+        },
+        "pool": {
+          "$ref": "#/definitions/poolConfig",
+          "description": "Per-queue-manager connection pool settings. Overrides the global JMS_POOL_* environment variables."
+        }
+      }
+    },
+
+    "rabbitMQConfig": {
+      "type": "object",
+      "description": "RabbitMQ specific configuration (uses AMQP protocol via pika).",
+      "required": ["provider", "broker_url"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "rabbitmq"
+        },
+        "broker_url": {
+          "type": "string",
+          "description": "Broker address in 'host:port' format for AMQP.",
+          "minLength": 1,
+          "examples": ["localhost:5672", "rabbitmq.example.com:5672", "rmq-prod:5672"]
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for authentication.",
+          "default": "guest",
+          "examples": ["guest", "admin", "app_user"]
+        },
+        "virtual_host": {
+          "type": "string",
+          "description": "RabbitMQ virtual host.",
+          "default": "/",
+          "examples": ["/", "myapp", "testing"]
+        },
+        "pool": {
+          "$ref": "#/definitions/poolConfig",
+          "description": "Per-queue-manager connection pool settings. Overrides the global JMS_POOL_* environment variables."
+        }
+      }
+    },
+
+    "poolConfig": {
+      "type": "object",
+      "description": "Connection pool configuration for a queue manager. All fields are optional — omitted fields fall back to the global JMS_POOL_* environment variables.",
+      "additionalProperties": false,
+      "properties": {
+        "min_idle": {
+          "type": "integer",
+          "description": "Minimum number of idle connections to keep alive.",
+          "minimum": 0,
+          "default": 1,
+          "examples": [0, 1, 2]
+        },
+        "max_size": {
+          "type": "integer",
+          "description": "Maximum number of connections in the pool.",
+          "minimum": 1,
+          "default": 5,
+          "examples": [5, 10, 20]
+        },
+        "max_wait_ms": {
+          "type": "integer",
+          "description": "Maximum time (ms) to wait for a connection to become available.",
+          "minimum": 100,
+          "default": 5000,
+          "examples": [5000, 10000, 30000]
+        },
+        "idle_timeout_ms": {
+          "type": "integer",
+          "description": "How long (ms) an idle connection may remain in the pool before being closed (default: 15 minutes).",
+          "minimum": 1000,
+          "default": 900000,
+          "examples": [300000, 600000, 900000]
+        },
+        "max_lifetime_ms": {
+          "type": "integer",
+          "description": "Maximum total lifetime (ms) of a connection regardless of activity (default: 30 minutes).",
+          "minimum": 10000,
+          "default": 1800000,
+          "examples": [600000, 1200000, 1800000]
+        },
+        "auto_reconnect": {
+          "type": "boolean",
+          "description": "Re-establish connections automatically after a failure.",
+          "default": true
+        },
+        "reconnect_attempts": {
+          "type": "integer",
+          "description": "Number of times to retry a failed connection before giving up.",
+          "minimum": 1,
+          "default": 3,
+          "examples": [1, 3, 5]
+        },
+        "reconnect_delay_ms": {
+          "type": "integer",
+          "description": "Initial delay (ms) between reconnection attempts. Subsequent attempts use exponential back-off.",
+          "minimum": 100,
+          "default": 1000,
+          "examples": [1000, 2000, 5000]
+        }
+      }
+    },
+
+    "destinationConfig": {
+      "type": "object",
+      "title": "JMS Destination Config",
+      "description": "Per-destination JMS configuration file (config/jms-config/*.yaml). Each file (or '---'-separated document within a file) describes one JMS queue or topic: which queue manager to use, the message format, optional JMS delivery properties, and correlation-ID extraction/propagation rules.",
+      "required": ["destination"],
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "type": "string",
+          "description": "JMS queue or topic name, exactly as it exists on the broker.",
+          "minLength": 1,
+          "examples": ["ORDERS_INPUT", "ORDERS_PROCESSED", "PAYMENTS.QUEUE"]
+        },
+        "destination_type": {
+          "type": "string",
+          "description": "Whether this destination is a queue or a pub/sub topic.",
+          "enum": ["queue", "topic"],
+          "default": "queue",
+          "examples": ["queue", "topic"]
+        },
+        "queue_manager_ref": {
+          "type": "string",
+          "description": "Key of the queue manager in queue-managers.yaml to use for this destination. Use 'default' to pick the first registered queue manager.",
+          "default": "default",
+          "examples": ["qm_us_east", "qm_dev_local", "default"]
+        },
+        "provider": {
+          "type": "string",
+          "description": "JMS provider type. Must match the 'provider' field of the referenced queue manager.",
+          "enum": ["ibm_mq", "activemq", "rabbitmq"],
+          "default": "ibm_mq",
+          "examples": ["ibm_mq", "activemq", "rabbitmq"]
+        },
+        "message": {
+          "type": "object",
+          "description": "Message format settings for this destination.",
+          "additionalProperties": false,
+          "properties": {
+            "format": {
+              "type": "string",
+              "description": "Serialisation format for messages on this destination.",
+              "enum": ["json", "avro", "text", "bytes"],
+              "default": "json",
+              "examples": ["json", "avro", "text", "bytes"]
+            }
+          }
+        },
+        "jms_properties": {
+          "type": "object",
+          "description": "JMS / IBM MQ delivery properties applied when producing messages to this destination.",
+          "additionalProperties": false,
+          "properties": {
+            "persistence": {
+              "type": "boolean",
+              "description": "Persist messages so they survive a broker restart (maps to MQPER_PERSISTENT).",
+              "default": true,
+              "examples": [true, false]
+            },
+            "priority": {
+              "type": "integer",
+              "description": "Message priority — 0 (lowest) to 9 (highest). Maps to MQPRI_*.",
+              "minimum": 0,
+              "maximum": 9,
+              "default": 4,
+              "examples": [0, 4, 9]
+            },
+            "expiry_ms": {
+              "type": "integer",
+              "description": "Message time-to-live in milliseconds. 0 means no expiry.",
+              "minimum": 0,
+              "default": 0,
+              "examples": [0, 60000, 3600000]
+            }
+          }
+        },
+        "correlation": {
+          "type": "object",
+          "description": "Correlation-ID extraction and propagation rules for this destination. Mirrors the structure used in topic-config.",
+          "additionalProperties": false,
+          "properties": {
+            "extract": {
+              "type": "array",
+              "description": "Ordered list of rules for extracting a correlation ID from incoming messages. Rules are tried in ascending priority order; the first successful extraction wins.",
+              "items": {
+                "type": "object",
+                "required": ["from"],
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "description": "Source of the correlation ID.",
+                    "enum": ["header", "jsonpath"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "JMS property / header name to read. Required when from=header.",
+                    "examples": ["X-Correlation-Id", "JMSCorrelationID"]
+                  },
+                  "expression": {
+                    "type": "string",
+                    "description": "JSONPath expression evaluated against the message body. Required when from=jsonpath.",
+                    "examples": ["$.correlationId", "$.orderId"]
+                  },
+                  "priority": {
+                    "type": "integer",
+                    "description": "Evaluation order — lower values are tried first.",
+                    "default": 0,
+                    "examples": [1, 2, 10]
+                  }
+                }
+              }
+            },
+            "propagate": {
+              "type": "object",
+              "description": "Rules for writing the resolved correlation ID into outgoing messages sent to this destination.",
+              "additionalProperties": false,
+              "properties": {
+                "to_headers": {
+                  "type": "object",
+                  "description": "JMS properties / headers to set on outgoing messages. Values support the {{correlationId}} placeholder.",
+                  "additionalProperties": {
+                    "type": "string",
+                    "examples": ["{{correlationId}}"]
+                  },
+                  "examples": [
+                    { "X-Correlation-Id": "{{correlationId}}" }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "examples": [
+        {
+          "destination": "ORDERS_INPUT",
+          "destination_type": "queue",
+          "queue_manager_ref": "qm_us_east",
+          "provider": "ibm_mq",
+          "message": {
+            "format": "json"
+          },
+          "jms_properties": {
+            "persistence": true,
+            "priority": 4
+          },
+          "correlation": {
+            "extract": [
+              { "from": "header", "name": "X-Correlation-Id", "priority": 1 },
+              { "from": "jsonpath", "expression": "$.correlationId", "priority": 2 }
+            ],
+            "propagate": {
+              "to_headers": {
+                "X-Correlation-Id": "{{correlationId}}"
+              }
+            }
+          }
+        },
+        {
+          "destination": "ORDERS_PROCESSED",
+          "destination_type": "queue",
+          "queue_manager_ref": "qm_dev_local",
+          "provider": "ibm_mq",
+          "message": {
+            "format": "json"
+          },
+          "jms_properties": {
+            "persistence": true,
+            "priority": 4
+          }
+        }
+      ]
+    }
+
+  }
+}
+

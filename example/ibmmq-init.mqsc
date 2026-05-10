@@ -1,0 +1,160 @@
+* ============================================================================
+* IBM MQ Script for Kafka Wiremock Test Environment
+* This script initializes queues and channels for development and testing
+* ============================================================================
+
+* Create application user for connections
+* Note: User 'app' is created in the IBM MQ container with password 'passw0rd'
+
+* ============================================================================
+* SERVER-CONNECTION CHANNELS
+* One channel per queue manager entry in config/jms-config/queue-managers.yaml
+* ============================================================================
+
+* qm_dev_local
+DEFINE CHANNEL(DEV.APP.SVRCONN) CHLTYPE(SVRCONN) +
+  TRPTYPE(TCP) +
+  MAXINST(999) +
+  MAXINSTC(999) +
+  KAINT(10) +
+  SSLCAUTH(OPTIONAL) +
+  SSLCIPH('ANY_TLS12_OR_HIGHER')
+
+* qm_us_east
+DEFINE CHANNEL(US.EAST.SVRCONN) CHLTYPE(SVRCONN) +
+  TRPTYPE(TCP) +
+  MAXINST(999) +
+  MAXINSTC(999) +
+  SSLCAUTH(OPTIONAL) +
+  SSLCIPH('ANY_TLS12_OR_HIGHER')
+
+* qm_eu_west
+DEFINE CHANNEL(EU.WEST.SVRCONN) CHLTYPE(SVRCONN) +
+  TRPTYPE(TCP) +
+  MAXINST(999) +
+  MAXINSTC(999) +
+  SSLCAUTH(OPTIONAL) +
+  SSLCIPH('ANY_TLS12_OR_HIGHER')
+
+* qm_backup
+DEFINE CHANNEL(BACKUP.SVRCONN) CHLTYPE(SVRCONN) +
+  TRPTYPE(TCP) +
+  MAXINST(999) +
+  MAXINSTC(999) +
+  SSLCAUTH(OPTIONAL) +
+  SSLCIPH('ANY_TLS12_OR_HIGHER')
+
+* ============================================================================
+* LOCAL QUEUES FOR TEST SUITE
+* ============================================================================
+
+* Orders queue - used by test suite and send examples
+DEFINE QLOCAL(ORDERS_INPUT) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+DEFINE QLOCAL(ORDERS_OUTPUT) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+DEFINE QLOCAL(ORDERS_BACKUP) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+DEFINE QLOCAL(ORDERS_PROCESSED) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+* Payment processing queues
+DEFINE QLOCAL(PAYMENTS_INPUT) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+DEFINE QLOCAL(PAYMENTS_CONFIRMATION) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+* Notification queues
+DEFINE QLOCAL(NOTIFICATIONS_EMAIL) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+DEFINE QLOCAL(NOTIFICATIONS_SMS) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+* Event queue for message flow testing
+DEFINE QLOCAL(EVENTS_INPUT) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+DEFINE QLOCAL(EVENTS_OUTPUT) +
+  DEFPSIST(YES) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+* ============================================================================
+* DEAD LETTER QUEUE (for failed messages)
+* ============================================================================
+DEFINE QLOCAL(SYSTEM.DEAD.LETTER.QUEUE) +
+  DEFPSIST(YES) +
+  MAXDEPTH(500000) +
+  USAGE(NORMAL)
+
+* ============================================================================
+* MODEL QUEUE (optional - for dynamic queue creation if needed)
+* ============================================================================
+DEFINE QMODEL(SYSTEM.SAMPLE.MODEL) +
+  DEFTYPE(TEMPDYN) +
+  MAXDEPTH(100000) +
+  USAGE(NORMAL)
+
+* ============================================================================
+* LISTENER - for TCP connections on port 1414
+* ============================================================================
+DEFINE LISTENER(LISTENER_TCP) +
+  TRPTYPE(TCP) +
+  PORT(1414) +
+  IPADDR(0.0.0.0)
+
+* ============================================================================
+* START LISTENER
+* ============================================================================
+START LISTENER(LISTENER_TCP)
+
+* ============================================================================
+* AUTHORIZATION RECORDS
+* The IBM MQ dev container auto-authorizes the 'app' user only on DEV.**
+* queues. Grant access to all our custom queues via a broad profile so
+* 'app' can PUT, GET, BROWSE and INQ any queue on this queue manager.
+* ============================================================================
+
+* Queue-manager level: app user can connect and inquire
+SET AUTHREC OBJTYPE(QMGR) PRINCIPAL('app') AUTHADD(CONNECT,INQ)
+
+* Queue level: app user has full MQI access on all queues (ALLMQI covers
+* BROWSE, GET, INQ, PUT, SET, PASSID, PASSALL, SETID, SETALL)
+SET AUTHREC PROFILE('**') OBJTYPE(QUEUE) PRINCIPAL('app') AUTHADD(ALLMQI)
+
+* ============================================================================
+* DISPLAY COMMANDS FOR VERIFICATION
+* ============================================================================
+DISPLAY QLOCAL(ORDERS_INPUT)
+DISPLAY QLOCAL(ORDERS_OUTPUT)
+DISPLAY QLOCAL(ORDERS_BACKUP)
+DISPLAY QLOCAL(ORDERS_PROCESSED)
+DISPLAY LISTENER(LISTENER_TCP)
+DISPLAY CHANNEL(DEV.APP.SVRCONN)
+DISPLAY CHANNEL(US.EAST.SVRCONN)
+DISPLAY CHANNEL(EU.WEST.SVRCONN)
+DISPLAY CHANNEL(BACKUP.SVRCONN)
+

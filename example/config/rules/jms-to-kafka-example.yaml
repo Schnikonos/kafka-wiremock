@@ -1,0 +1,35 @@
+priority: 10
+name: "jms-to-kafka-example"
+
+# Input from JMS queue
+when:
+  topic: ORDERS_INPUT
+  msg_type: jms  # This is a JMS message
+  match:
+    - type: jsonpath
+      expression: "$.eventType"
+      value: "ORDER_CREATED"
+
+# Output to both Kafka and JMS
+then:
+  # Output 1: Send to Kafka topic
+  - topic: orders.processed
+    msg_type: kafka  # Output to Kafka (explicit, but default)
+    payload: |
+      {
+        "orderId": "{{$.orderId}}",
+        "event": "ORDER_CREATED",
+        "source": "jms",
+        "timestamp": "{{now}}"
+      }
+
+  # Output 2: Send to another JMS queue
+  - topic: ORDERS_PROCESSED
+    msg_type: jms  # Output to JMS queue
+    payload: |
+      {
+        "orderId": "{{$.orderId}}",
+        "event": "PROCESSED",
+        "correlationId": "{{correlationId}}"
+      }
+

@@ -1,0 +1,87 @@
+<div class="config-container">
+  <mat-toolbar class="config-toolbar">
+    <span>Topic Configurations</span>
+    <span class="spacer"></span>
+    <mat-form-field class="search-field">
+      <mat-label>Filter topics...</mat-label>
+      <input matInput (keyup)="applyFilter($event)" placeholder="">
+    </mat-form-field>
+    <button mat-icon-button (click)="refresh()" [disabled]="loading" matTooltip="Refresh Topics">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <p>Loading topics...</p>
+  </div>
+
+  <div *ngIf="!loading && dataSource.data.length === 0" class="empty-state">
+    <mat-icon>folder_open</mat-icon>
+    <p>No topics configured</p>
+    <small>Topic configurations in config/topic-config/ will appear here</small>
+  </div>
+
+  <table mat-table [dataSource]="dataSource" class="full-width-table" *ngIf="!loading && dataSource.data.length > 0">
+    <!-- Topic Column -->
+    <ng-container matColumnDef="topic">
+      <th mat-header-cell *matHeaderCellDef>Topic Name</th>
+      <td mat-cell *matCellDef="let element" class="topic-cell">
+        <strong>{{ element.topic }}</strong>
+      </td>
+    </ng-container>
+
+    <!-- Format Column -->
+    <ng-container matColumnDef="message_format">
+      <th mat-header-cell *matHeaderCellDef>Message Format</th>
+      <td mat-cell *matCellDef="let element">
+        <mat-chip-set aria-label="Format">
+          <mat-chip class="format-chip" [ngClass]="'format-' + (element.message_format || 'json')">
+            {{ element.message_format || 'json' }}
+          </mat-chip>
+        </mat-chip-set>
+      </td>
+    </ng-container>
+
+    <!-- Schema Registry Column -->
+    <ng-container matColumnDef="schema_registry">
+      <th mat-header-cell *matHeaderCellDef>Schema Registry</th>
+      <td mat-cell *matCellDef="let element">
+        <span *ngIf="element.schema_registry_url" class="has-registry">
+          <mat-icon class="small-icon">check_circle</mat-icon> Configured
+        </span>
+        <span *ngIf="!element.schema_registry_url" class="no-registry">
+          <mat-icon class="small-icon">cancel</mat-icon> None
+        </span>
+      </td>
+    </ng-container>
+
+    <!-- Correlation Rules Column -->
+    <ng-container matColumnDef="correlation">
+      <th mat-header-cell *matHeaderCellDef>Correlation Rules</th>
+      <td mat-cell *matCellDef="let element">
+        <span *ngIf="element.has_correlation_rules" class="has-correlation">
+          <mat-icon class="small-icon">check</mat-icon> Yes
+        </span>
+        <span *ngIf="!element.has_correlation_rules" class="no-correlation">
+          <mat-icon class="small-icon">close</mat-icon> No
+        </span>
+      </td>
+    </ng-container>
+
+    <!-- Actions Column -->
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef>Actions</th>
+      <td mat-cell *matCellDef="let element" class="actions-cell">
+        <button mat-icon-button (click)="viewDetails(element.topic)"
+                matTooltip="View Details" matTooltipPosition="above">
+          <mat-icon>info</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns;" class="table-row"></tr>
+  </table>
+</div>
+

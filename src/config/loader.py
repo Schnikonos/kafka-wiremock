@@ -298,6 +298,10 @@ class ConfigLoader:
                     check_result=bool(fault_data.get('check_result', False))
                 )
 
+            # Parse output message type (kafka or jms)
+            output_msg_type = then_item.get('msg_type', 'kafka').lower()
+            output_queue_manager_ref = then_item.get('queue_manager_ref')  # NEW
+
             output = Output(
                 topic=output_topic,
                 payload=then_item.get('payload'),
@@ -307,7 +311,9 @@ class ConfigLoader:
                 key=then_item.get('key'),
                 schema_id=then_item.get('schema_id'),
                 correlation=correlation,
-                fault=fault
+                fault=fault,
+                msg_type=output_msg_type,  # NEW
+                queue_manager_ref=output_queue_manager_ref  # NEW
             )
             outputs.append(output)
 
@@ -318,6 +324,9 @@ class ConfigLoader:
             extract_rules = corr_data.get("extract", [])
             input_correlation = CorrelationInput(extract=extract_rules)
 
+        # Parse input message type from when block
+        input_msg_type = when_block.get('msg_type', 'kafka').lower()
+
         return Rule(
             priority=priority,
             input_topic=input_topic,
@@ -325,7 +334,8 @@ class ConfigLoader:
             outputs=outputs,
             rule_name=rule_name,
             correlation=input_correlation,
-            skip=skip
+            skip=skip,
+            input_msg_type=input_msg_type
         )
 
     def _parse_rule_old_format(self, rule_data: Dict[str, Any], filename: str, index: int) -> Rule:
