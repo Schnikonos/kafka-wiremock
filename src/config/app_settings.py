@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 class UISettings:
     """UI-specific settings."""
     test_recap_threshold: int = 100  # Show recap popup if total runs > this value
+    verbose_tests: bool = False      # Log sent/received messages + per-condition breakdown for tests
+    verbose_rules: bool = False      # Log per-condition match diagnostics for rules
+    export_format: str = 'json'     # Default export format: 'json', 'csv', or 'html'
 
 
 @dataclass
@@ -81,7 +84,7 @@ class AppSettingsLoader:
     def _load_default_settings(self) -> AppSettings:
         """Create default settings."""
         return AppSettings(
-            ui=UISettings(test_recap_threshold=100)
+            ui=UISettings(test_recap_threshold=100, verbose_tests=False, verbose_rules=False, export_format='json')
         )
 
     def _load_settings(self) -> None:
@@ -125,7 +128,10 @@ class AppSettingsLoader:
         # Get UI settings
         ui_data = data.get("ui", {})
         ui_settings = UISettings(
-            test_recap_threshold=ui_data.get("test_recap_threshold", 100)
+            test_recap_threshold=ui_data.get("test_recap_threshold", 100),
+            verbose_tests=bool(ui_data.get("verbose_tests", False)),
+            verbose_rules=bool(ui_data.get("verbose_rules", False)),
+            export_format=str(ui_data.get("export_format", "json")),
         )
 
         # Validate threshold

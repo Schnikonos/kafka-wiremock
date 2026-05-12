@@ -6,17 +6,20 @@ timeout_ms: 5000
 
 inject:
   - message_id: "order1"
-    topic: "orders.input"
+    topic: "users.commands"
     headers:
-      X-Source: "SendExample"
-      X-Version: "1.0"
-    key: "order-{{uuid}}"
+      my-test-header: "HeaderValue123"
+    key: "myMessageKey"
     payload: |
       {
-        "orderId": "{{uuid}}",
-        "customerId": "CUST-{{randomInt(1000, 9999)}}",
-        "amount": {{randomInt(10, 1000)}}.99,
-        "status": "NEW",
-        "createdAt": "{{now}}"
+        "orderId": "{{testId}}-{{uuid}}",
+        "sourceId": "{{uuid}}",
+        "username": "ABC",
+        "action": "REGISTER",
+        "source": "SomeSource",
+        "email": "aaa@ing.com",
+        "customerId": "CUST-123",
+        "amount": 99.99,
+        "status": "NEW"
       }
 

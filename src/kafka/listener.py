@@ -16,7 +16,7 @@ try:
 except ImportError:
     AVRO_AVAILABLE = False
 
-from ..rules.matcher import MatcherFactory
+from ..rules.matcher import MatcherFactory, is_verbose as _matcher_is_verbose
 from ..rules.templater import TemplateRenderer
 from ..config.loader import ConfigLoader
 from ..config.models import Rule
@@ -356,6 +356,19 @@ class KafkaListenerEngine:
                 logger.debug(f"No rules configured for topic: {topic}")
                 return
 
+            # Verbose: log the incoming message once before checking all rules
+            if _matcher_is_verbose():
+                try:
+                    import json as _json
+                    msg_repr = _json.dumps(message_data, default=str)[:800]
+                except Exception:
+                    msg_repr = repr(message_data)[:800]
+                logger.info(
+                    f"[VERBOSE-RULES] Received message on topic={topic!r} "
+                    f"key={message_key!r} headers={message_headers} "
+                    f"payload={msg_repr} — trying {len(rules)} rule(s)"
+                )
+
             # Evaluate rules in priority order
             for rule in rules:
                 if self._evaluate_rule(rule, message_data, message_headers=message_headers, message_key=message_key):
@@ -445,8 +458,24 @@ class KafkaListenerEngine:
     def _evaluate_rule(self, rule: Rule, message_data: any, message_headers: dict = None, message_key: str = None) -> bool:
         """Evaluate if a message matches a rule."""
         try:
+            # Verbose: log the message being evaluated against this rule
+            if _matcher_is_verbose():
+                try:
+                    import json as _json
+                    msg_repr = _json.dumps(message_data, default=str)[:500]
+                except Exception:
+                    msg_repr = repr(message_data)[:500]
+                logger.info(
+                    f"[VERBOSE-RULES] Evaluating rule={rule.rule_name!r} "
+                    f"conditions={len(rule.conditions)} "
+                    f"message={msg_repr} "
+                    f"headers={message_headers} key={message_key!r}"
+                )
+
             # If no conditions, rule matches everything (wildcard)
             if not rule.conditions:
+                if _matcher_is_verbose():
+                    logger.info(f"[VERBOSE-RULES] rule={rule.rule_name!r} → MATCH (no conditions = wildcard)")
                 return True
 
             # All conditions must match (AND logic)
@@ -473,8 +502,15 @@ class KafkaListenerEngine:
                     result = matcher.match(message_data, match_condition)
 
                 if not result.matched:
+                    if _matcher_is_verbose():
+                        logger.info(
+                            f"[VERBOSE-RULES] rule={rule.rule_name!r} → NO MATCH "
+                            f"(condition {condition.type} failed first)"
+                        )
                     return False
 
+            if _matcher_is_verbose():
+                logger.info(f"[VERBOSE-RULES] rule={rule.rule_name!r} → MATCH (all {len(rule.conditions)} conditions passed)")
             return True
 
         except Exception as e:

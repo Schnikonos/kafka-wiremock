@@ -1,5 +1,8 @@
 {
   "ui": {
-    "test_recap_threshold": 100
+    "test_recap_threshold": 100,
+    "verbose_tests": true,
+    "verbose_rules": true,
+    "export_format": "html"
   }
 }

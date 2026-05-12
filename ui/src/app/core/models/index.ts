@@ -39,6 +39,7 @@ export interface BulkTestExecutionRequest {
   repeat: number;
   parallel_workers?: number;
   repeat_mode?: 'sequential-repeats' | 'interleaved-repeats';
+  force_run?: boolean;  // Execute even if test.skip == true
 }
 
 export interface BulkSendExecutionRequest {

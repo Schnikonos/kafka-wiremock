@@ -24,6 +24,9 @@ def set_app_settings_loader(loader: 'AppSettingsLoader') -> None:
 class UISettingsRequest(BaseModel):
     """UI settings request model."""
     test_recap_threshold: int = 100
+    verbose_tests: bool = False
+    verbose_rules: bool = False
+    export_format: str = 'json'
 
 
 class AppSettingsRequest(BaseModel):
@@ -50,7 +53,10 @@ async def get_app_settings():
     settings = app_settings_loader.get_settings()
     return AppSettingsResponse(
         ui=UISettingsRequest(
-            test_recap_threshold=settings.ui.test_recap_threshold
+            test_recap_threshold=settings.ui.test_recap_threshold,
+            verbose_tests=settings.ui.verbose_tests,
+            verbose_rules=settings.ui.verbose_rules,
+            export_format=settings.ui.export_format,
         )
     )
 
@@ -74,24 +80,42 @@ async def update_app_settings(request: AppSettingsRequest):
         if request.ui.test_recap_threshold < 0:
             raise ValueError("test_recap_threshold must be >= 0")
 
+        # Validate export_format
+        allowed_formats = {'json', 'csv', 'html'}
+        if request.ui.export_format not in allowed_formats:
+            raise ValueError(f"export_format must be one of {allowed_formats}")
+
         # Import AppSettings here to avoid circular imports
         from ..config.app_settings import AppSettings, UISettings
 
         # Create new settings object
         new_settings = AppSettings(
             ui=UISettings(
-                test_recap_threshold=request.ui.test_recap_threshold
+                test_recap_threshold=request.ui.test_recap_threshold,
+                verbose_tests=request.ui.verbose_tests,
+                verbose_rules=request.ui.verbose_rules,
+                export_format=request.ui.export_format,
             )
         )
 
         # Update and save
         app_settings_loader.update_settings(new_settings)
 
+        # Apply verbose rules flag to matcher immediately
+        try:
+            from ..rules.matcher import set_verbose as set_matcher_verbose
+            set_matcher_verbose(new_settings.ui.verbose_rules)
+        except Exception as e:
+            logger.warning(f"Could not update matcher verbose flag: {e}")
+
         logger.info(f"App settings updated: {new_settings}")
 
         return AppSettingsResponse(
             ui=UISettingsRequest(
-                test_recap_threshold=new_settings.ui.test_recap_threshold
+                test_recap_threshold=new_settings.ui.test_recap_threshold,
+                verbose_tests=new_settings.ui.verbose_tests,
+                verbose_rules=new_settings.ui.verbose_rules,
+                export_format=new_settings.ui.export_format,
             )
         )
     except ValueError as e:

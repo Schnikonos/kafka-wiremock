@@ -32,7 +32,7 @@ then:
         message_id: "order1"
       match:
         - type: key
-          value: "myMessageKey"
+          value: "myMessageKey1"
         - type: header
           expression: "my-header"
           value: "MyCustomHeader"

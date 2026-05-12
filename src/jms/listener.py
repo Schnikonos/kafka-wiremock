@@ -15,7 +15,7 @@ try:
 except ImportError:
     IBM_MQ_AVAILABLE = False
 
-from ..rules.matcher import MatcherFactory
+from ..rules.matcher import MatcherFactory, is_verbose as _matcher_is_verbose
 from ..rules.templater import TemplateRenderer
 from ..config.loader import ConfigLoader
 from ..config.jms_config_loader import JMSConfigLoader  # NEW
@@ -278,6 +278,19 @@ class JMSListenerEngine:
                 except Exception as e:
                     logger.debug(f"Failed to cache message: {e}")
 
+            # Verbose: log the incoming message once before checking all rules
+            if _matcher_is_verbose():
+                try:
+                    import json as _json
+                    msg_repr = _json.dumps(message_data, default=str)[:800]
+                except Exception:
+                    msg_repr = repr(message_data)[:800]
+                logger.info(
+                    f"[VERBOSE-RULES] Received message on queue={queue_name!r} "
+                    f"key={message_key!r} headers={message_headers} "
+                    f"payload={msg_repr} — trying {len(rules)} rule(s)"
+                )
+
             # Try matching rules
             for rule in rules:
                 if rule.input_msg_type != "jms":
@@ -310,8 +323,24 @@ class JMSListenerEngine:
     ) -> bool:
         """Evaluate if a message matches a rule."""
         try:
+            # Verbose: log the message being evaluated against this rule
+            if _matcher_is_verbose():
+                try:
+                    import json as _json
+                    msg_repr = _json.dumps(message_data, default=str)[:500]
+                except Exception:
+                    msg_repr = repr(message_data)[:500]
+                logger.info(
+                    f"[VERBOSE-RULES] Evaluating rule={rule.rule_name!r} "
+                    f"conditions={len(rule.conditions)} "
+                    f"message={msg_repr} "
+                    f"headers={message_headers} key={message_key!r}"
+                )
+
             # If no conditions, rule matches everything
             if not rule.conditions:
+                if _matcher_is_verbose():
+                    logger.info(f"[VERBOSE-RULES] rule={rule.rule_name!r} → MATCH (no conditions = wildcard)")
                 return True
 
             # Check all conditions (AND logic)
@@ -336,8 +365,15 @@ class JMSListenerEngine:
                     result = matcher.match(message_data, match_condition)
 
                 if not result.matched:
+                    if _matcher_is_verbose():
+                        logger.info(
+                            f"[VERBOSE-RULES] rule={rule.rule_name!r} → NO MATCH "
+                            f"(condition {condition.type} failed first)"
+                        )
                     return False
 
+            if _matcher_is_verbose():
+                logger.info(f"[VERBOSE-RULES] rule={rule.rule_name!r} → MATCH (all {len(rule.conditions)} conditions passed)")
             return True
 
         except Exception as e:

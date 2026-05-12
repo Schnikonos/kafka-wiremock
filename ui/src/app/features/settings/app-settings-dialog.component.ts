@@ -8,6 +8,10 @@ import { MatInputModule } from '@angular/material/input';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatCardModule } from '@angular/material/card';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatSelectModule } from '@angular/material/select';
+import { MatDividerModule } from '@angular/material/divider';
+
 import { AppConfigService, AppSettings } from '../../core/services/app-config.service';
 
 @Component({
@@ -23,7 +27,10 @@ import { AppConfigService, AppSettings } from '../../core/services/app-config.se
     MatInputModule,
     MatIconModule,
     MatSnackBarModule,
-    MatCardModule
+    MatCardModule,
+    MatSlideToggleModule,
+    MatDividerModule,
+    MatSelectModule,
   ],
   template: `
     <h2 mat-dialog-title>Application Settings</h2>
@@ -46,6 +53,54 @@ import { AppConfigService, AppSettings } from '../../core/services/app-config.se
               <mat-hint>
                 Show recap popup when test runs exceed this value (0 = always show, 100+ = rarely show)
               </mat-hint>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="settings-card">
+          <mat-card-header>
+            <mat-card-title class="section-title">Verbose / Diagnostic Mode</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <span class="toggle-label">Verbose Rules</span>
+                <span class="toggle-hint">Log per-condition match diagnostics for every rule evaluation (expected value, actual value, result)</span>
+              </div>
+              <mat-slide-toggle formControlName="verboseRules" color="accent"></mat-slide-toggle>
+            </div>
+
+            <mat-divider class="divider"></mat-divider>
+
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <span class="toggle-label">Verbose Tests</span>
+                <span class="toggle-hint">Include sent/received messages and per-condition breakdowns in test log files</span>
+              </div>
+              <mat-slide-toggle formControlName="verboseTests" color="accent"></mat-slide-toggle>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="settings-card">
+          <mat-card-header>
+            <mat-card-title class="section-title">Export</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Default Export Format</mat-label>
+              <mat-select formControlName="exportFormat">
+                <mat-option value="json">
+                  JSON — full-fidelity, suitable for programmatic processing
+                </mat-option>
+                <mat-option value="html">
+                  HTML — visual report with collapsible details, open in any browser
+                </mat-option>
+                <mat-option value="csv">
+                  CSV — condensed summary table, open in Excel / Google Sheets
+                </mat-option>
+              </mat-select>
+              <mat-hint>Used by the Export button on the Tests and Logs pages</mat-hint>
             </mat-form-field>
           </mat-card-content>
         </mat-card>
@@ -74,7 +129,7 @@ import { AppConfigService, AppSettings } from '../../core/services/app-config.se
   styles: [`
     mat-dialog-content {
       padding: 20px;
-      min-width: 400px;
+      min-width: 420px;
     }
 
     .settings-card {
@@ -93,6 +148,37 @@ import { AppConfigService, AppSettings } from '../../core/services/app-config.se
 
     .full-width {
       width: 100%;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 8px 0;
+    }
+
+    .toggle-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 1;
+    }
+
+    .toggle-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: #333;
+    }
+
+    .toggle-hint {
+      font-size: 12px;
+      color: #777;
+      line-height: 1.4;
+    }
+
+    .divider {
+      margin: 8px 0;
     }
 
     .info-box {
@@ -155,7 +241,10 @@ export class AppSettingsDialogComponent implements OnInit {
     @Inject(MAT_DIALOG_DATA) public data: any
   ) {
     this.settingsForm = this.fb.group({
-      testRecapThreshold: [100, [Validators.required, Validators.min(0)]]
+      testRecapThreshold: [100, [Validators.required, Validators.min(0)]],
+      verboseRules: [false],
+      verboseTests: [false],
+      exportFormat: ['json'],
     });
   }
 
@@ -163,7 +252,10 @@ export class AppSettingsDialogComponent implements OnInit {
     const settings = this.appConfigService.getSettings();
     if (settings) {
       this.settingsForm.patchValue({
-        testRecapThreshold: settings.ui.test_recap_threshold
+        testRecapThreshold: settings.ui.test_recap_threshold,
+        verboseRules: settings.ui.verbose_rules ?? false,
+        verboseTests: settings.ui.verbose_tests ?? false,
+        exportFormat: settings.ui.export_format ?? 'json',
       });
     }
   }
@@ -177,7 +269,10 @@ export class AppSettingsDialogComponent implements OnInit {
 
     const newSettings: AppSettings = {
       ui: {
-        test_recap_threshold: this.settingsForm.get('testRecapThreshold')?.value ?? 100
+        test_recap_threshold: this.settingsForm.get('testRecapThreshold')?.value ?? 100,
+        verbose_rules: this.settingsForm.get('verboseRules')?.value ?? false,
+        verbose_tests: this.settingsForm.get('verboseTests')?.value ?? false,
+        export_format: this.settingsForm.get('exportFormat')?.value ?? 'json',
       }
     };
 
@@ -198,4 +293,3 @@ export class AppSettingsDialogComponent implements OnInit {
     this.dialogRef.close();
   }
 }
-
