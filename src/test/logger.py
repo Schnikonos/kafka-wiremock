@@ -1,6 +1,8 @@
 """
 Test logging module - writes per-test log files with execution details.
 Includes closest-match reporting when tests fail.
+Each run is appended as a single JSON line; the file keeps the last
+MAX_RUNS_PER_FILE runs (default 10).
 """
 import json
 import logging
@@ -10,6 +12,8 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 
 logger = logging.getLogger(__name__)
+
+MAX_RUNS_PER_FILE = 10  # Maximum number of runs to keep per log file
 
 
 @dataclass
@@ -230,7 +234,11 @@ class TestLogger:
 
     def write_log_file(self, test_name: str, status: str, elapsed_ms: int, errors: List[str]):
         """
-        Write test execution log to file.
+        Append test execution results to the log file (JSON-Lines format).
+
+        Each run is stored as a single JSON object on its own line.
+        The file is trimmed to keep at most MAX_RUNS_PER_FILE entries,
+        so the UI can display all historical runs for this test.
 
         Args:
             test_name: Name of the test
@@ -244,8 +252,8 @@ class TestLogger:
             # Ensure parent directory exists
             self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Build log content
-            log_content = {
+            # Build run entry
+            run_entry: Dict[str, Any] = {
                 "test_name": test_name,
                 "status": status,
                 "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
@@ -254,33 +262,45 @@ class TestLogger:
                 "sent_messages": [self._msg_to_dict(m) for m in self.sent_messages],
             }
 
-            # Add received_messages only in verbose mode
-            if self.verbose:
-                log_content["received_messages"] = [self._msg_to_dict(m) for m in self.received_messages]
-
-            # Add verbose info if enabled
+            # Always include received messages so the UI can show them regardless of verbose flag.
+            # Verbose mode additionally includes skipped messages.
+            if self.received_messages:
+                run_entry["received_messages"] = [self._msg_to_dict(m) for m in self.received_messages]
             if self.verbose and self.skipped_messages:
-                log_content["skipped_messages"] = [self._msg_to_dict(m) for m in self.skipped_messages]
+                run_entry["skipped_messages"] = [self._msg_to_dict(m) for m in self.skipped_messages]
 
-            # Add match summary based on test status (always, regardless of verbose mode)
+            # Match summary
             if status == "PASSED":
                 perfect = self.find_perfect_match()
                 if perfect:
-                    log_content["perfect_match"] = perfect
+                    run_entry["perfect_match"] = perfect
             elif status == "FAILED":
                 closest = self.find_closest_match()
                 if closest:
-                    log_content["closest_match"] = closest
+                    run_entry["closest_match"] = closest
 
-            # Add expectations results
             if self.expectations_results:
-                log_content["expectations"] = self.expectations_results
+                run_entry["expectations"] = self.expectations_results
 
-            # Write as YAML-like format (for readability)
+            # Read existing runs from file
+            existing_runs: List[str] = []
+            if self.log_file_path.exists():
+                try:
+                    with open(self.log_file_path, "r") as f:
+                        existing_runs = [line for line in f.read().splitlines() if line.strip()]
+                except Exception as read_err:
+                    logger.warning(f"Could not read existing log file, starting fresh: {read_err}")
+
+            # Append new run and trim to last MAX_RUNS_PER_FILE
+            new_line = json.dumps(run_entry, default=str)
+            existing_runs.append(new_line)
+            existing_runs = existing_runs[-MAX_RUNS_PER_FILE:]
+
+            # Rewrite file
             with open(self.log_file_path, "w") as f:
-                f.write(self._to_yaml_string(log_content))
+                f.write("\n".join(existing_runs) + "\n")
 
-            logger.info(f"Test log successfully written to {self.log_file_path}")
+            logger.info(f"Test log successfully written to {self.log_file_path} ({len(existing_runs)} runs kept)")
 
         except Exception as e:
             logger.error(f"Failed to write test log file to {self.log_file_path}: {e}", exc_info=True)

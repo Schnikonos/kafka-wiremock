@@ -25,6 +25,110 @@ from .logger import TestLogger
 logger = logging.getLogger(__name__)
 
 
+def _vtest(verbose: bool, msg: str) -> None:
+    """Emit a verbose test log line when verbose mode is active."""
+    if verbose:
+        logger.info(f"[VERBOSE-TESTS] {msg}")
+
+
+def _extract_actual_value(condition_type: str, expression, msg_value, msg: dict) -> str:
+    """
+    Extract the actual value from a message for verbose condition logging.
+    Mirrors the 'actual=' field that matchers emit in [VERBOSE-RULES] lines.
+    """
+    try:
+        if condition_type == 'jsonpath' and expression:
+            from jsonpath_ng import parse as _jp_parse
+            matches = _jp_parse(expression).find(msg_value)
+            return repr(matches[0].value) if matches else "<not found>"
+        elif condition_type == 'header' and expression:
+            headers = msg.get('headers') or {}
+            v = headers.get(expression)
+            return repr(v) if v is not None else "<not found>"
+        elif condition_type == 'key':
+            k = msg.get('key')
+            return repr(k) if k is not None else "<no key>"
+        else:
+            # exact / partial / regex — show first 120 chars of stringified message
+            return repr(str(msg_value)[:120])
+    except Exception as e:
+        return f"<error: {e}>"
+
+
+def _format_condition_vtest(
+    exp_idx: int,
+    topic: str,
+    idx: int,
+    condition,
+    matched: bool,
+    msg_value,
+    msg: dict,
+) -> str:
+    """
+    Build a single verbose test log line for one condition evaluation.
+
+    Format mirrors [VERBOSE-RULES] matcher output, e.g.:
+      topic='out' [expectation #0] condition #0 (jsonpath) path='$.status' expected='ACTIVE' actual='INACTIVE' → ✗ NO MATCH
+      topic='out' [expectation #0] condition #1 (header) header='X-Corr-Id' expected='abc' actual='xyz' → ✓ MATCH
+    """
+    ctype = getattr(condition, 'type', '?')
+    expression = getattr(condition, 'expression', None)
+    value = getattr(condition, 'value', None)
+    regex = getattr(condition, 'regex', None)
+    icon = "✓ MATCH" if matched else "✗ NO MATCH"
+
+    prefix = f"topic={topic!r} [expectation #{exp_idx}] condition #{idx} ({ctype})"
+    parts = [prefix]
+
+    if ctype == 'jsonpath':
+        parts.append(f"path={expression!r}")
+        if value is not None:
+            parts.append(f"expected={value!r}")
+        if regex:
+            parts.append(f"regex={regex!r}")
+        parts.append(f"actual={_extract_actual_value(ctype, expression, msg_value, msg)}")
+    elif ctype == 'header':
+        parts.append(f"header={expression!r}")
+        if value is not None:
+            parts.append(f"expected={value!r}")
+        if regex:
+            parts.append(f"regex={regex!r}")
+        parts.append(f"actual={_extract_actual_value(ctype, expression, msg_value, msg)}")
+    elif ctype == 'key':
+        if value is not None:
+            parts.append(f"expected={value!r}")
+        if regex:
+            parts.append(f"regex={regex!r}")
+        parts.append(f"actual={_extract_actual_value(ctype, expression, msg_value, msg)}")
+    else:
+        # exact / partial / regex
+        if value is not None:
+            parts.append(f"expected={value!r}")
+        if regex:
+            parts.append(f"pattern={regex!r}")
+        parts.append(f"actual={_extract_actual_value(ctype, expression, msg_value, msg)}")
+
+    parts.append(f"→ {icon}")
+    return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Timestamp helpers
+# ---------------------------------------------------------------------------
+
+# In 2026 Unix seconds ≈ 1.78 × 10⁹.  Unix milliseconds ≈ 1.78 × 10¹².
+# Any value ≥ 10¹¹ is almost certainly milliseconds; anything below is seconds.
+_MS_THRESHOLD = 1e11
+
+
+def _to_seconds(ts: float) -> float:
+    """Normalise a timestamp to seconds regardless of whether it was supplied
+    in seconds or milliseconds."""
+    if ts is None:
+        return 0.0
+    return float(ts) / 1000.0 if float(ts) >= _MS_THRESHOLD else float(ts)
+
+
 @dataclass
 class InjectedMessage:
     """Captured injected message for context."""
@@ -107,7 +211,7 @@ class TestExecutor:
         self.listener_engine = listener_engine  # Optional listener engine for ensuring topics are ready
         self.jms_registry = jms_registry  # Optional JMS registry for JMS support
 
-    async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None, verbose: bool = False) -> TestResult:
+    async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None, verbose: bool = False, force_run: bool = False) -> TestResult:
         """Execute a single test."""
         start_time = time.time()
         result = TestResult(test_id=test.name, status="PENDING")
@@ -133,13 +237,13 @@ class TestExecutor:
             logger.warning(f"Test {test.name} has no file path - logging disabled")
 
         try:
-            if test.skip:
+            if test.skip and not force_run:
                 result.status = "SKIPPED"
                 result.elapsed_ms = int((time.time() - start_time) * 1000)
                 return result
 
             # Phase 1: Execute "when"
-            when_result = await self._execute_when(test, test_logger)
+            when_result = await self._execute_when(test, test_logger, verbose=verbose)
             result.when_result = when_result
 
             if when_result.script_error:
@@ -151,7 +255,7 @@ class TestExecutor:
                 return result
 
             # Phase 2: Execute "then"
-            then_result = await self._execute_then(test, result.when_result, test_logger, test_start_time=start_time)
+            then_result = await self._execute_then(test, result.when_result, test_logger, test_start_time=start_time, verbose=verbose)
             result.then_result = then_result
 
             if then_result.script_error:
@@ -188,7 +292,7 @@ class TestExecutor:
 
         return result
 
-    async def _execute_when(self, test: TestDefinition, test_logger: Optional[TestLogger] = None) -> WhenResult:
+    async def _execute_when(self, test: TestDefinition, test_logger: Optional[TestLogger] = None, verbose: bool = False) -> WhenResult:
         """Execute 'when' phase: injections and scripts, sequential."""
         result = WhenResult()
         injected_messages = []
@@ -322,6 +426,12 @@ class TestExecutor:
                                 key=rendered_key
                             )
 
+                        _vtest(verbose, (
+                            f"test={test.name!r} INJECT→ topic={item.topic!r} "
+                            f"message_id={item.message_id!r} key={rendered_key!r} "
+                            f"headers={rendered_headers} payload={json.dumps(payload_obj, default=str)[:500]}"
+                        ))
+
                         if item.delay_ms > 0:
                             await asyncio.sleep(item.delay_ms / 1000.0)
 
@@ -358,7 +468,7 @@ class TestExecutor:
 
         return result
 
-    async def _execute_then(self, test: TestDefinition, when_result: WhenResult, test_logger: Optional[TestLogger] = None, test_start_time: float = None) -> ThenResult:
+    async def _execute_then(self, test: TestDefinition, when_result: WhenResult, test_logger: Optional[TestLogger] = None, test_start_time: float = None, verbose: bool = False) -> ThenResult:
         """Execute 'then' phase: expectations and scripts, sequential."""
         result = ThenResult()
         context = {}
@@ -373,7 +483,7 @@ class TestExecutor:
                 if isinstance(item, TestExpectation):
                     # Collect expectation messages
                     exp_result = await self._collect_expectation_messages(
-                        item, len(collected_results), when_result, injections_dict, context, test_logger, test_start_time=test_start_time
+                        item, len(collected_results), when_result, injections_dict, context, test_logger, test_start_time=test_start_time, verbose=verbose
                     )
                     result.expectations.append(exp_result)
                     collected_results.append(exp_result)
@@ -409,7 +519,8 @@ class TestExecutor:
         injections_dict: Dict[str, Any],
         context: Dict[str, Any],
         test_logger: Optional[TestLogger] = None,
-        test_start_time: float = None
+        test_start_time: float = None,
+        verbose: bool = False
     ) -> ExpectationResult:
         """Collect messages for a single expectation with correlation."""
         exp_result = ExpectationResult(
@@ -597,8 +708,11 @@ class TestExecutor:
             while time.time() < end_time:
                 # Use cache if available, otherwise fall back to Kafka polling
                 if self.message_cache:
-                    # Get messages from cache received since we started waiting
-                    cached_msgs = self.message_cache.get_messages(expectation.topic, since=start_time)
+                    # Get messages from cache received since the test started.
+                    # Subtract 1 s safety margin so messages produced by the listener
+                    # just before the expectation phase are never missed.
+                    cache_since = (test_start_time - 1.0) if test_start_time is not None else start_time
+                    cached_msgs = self.message_cache.get_messages(expectation.topic, since=cache_since)
                     messages = [
                         {
                             "value": m.value,
@@ -631,12 +745,22 @@ class TestExecutor:
                         continue
                     seen_message_keys.add(msg_key)
 
+                    # Verbose: log every new (non-duplicate) candidate message
+                    _vtest(verbose, (
+                        f"topic={expectation.topic!r} "
+                        f"[expectation #{exp_idx}] evaluating message "
+                        f"partition={msg.get('partition', 0)} offset={msg.get('offset', 0)} "
+                        f"key={msg.get('key')!r} headers={msg.get('headers')} "
+                        f"payload={json.dumps(msg.get('value'), default=str)[:500]}"
+                    ))
+
                     # Filter messages to only those received after test start
-                    # Message timestamp is in milliseconds, test_start_time is in seconds
+                    # Apply a 1 s safety margin to handle slight timing differences.
+                    # Use _to_seconds() to tolerate timestamps in either seconds or ms.
                     if test_start_time is not None:
-                        msg_timestamp_seconds = msg.get("timestamp", 0) / 1000.0
-                        if msg_timestamp_seconds < test_start_time:
-                            logger.debug(f"Skipping message received before test start: {msg_timestamp_seconds} < {test_start_time}")
+                        msg_timestamp_seconds = _to_seconds(msg.get("timestamp", 0))
+                        if msg_timestamp_seconds < test_start_time - 1.0:
+                            logger.debug(f"Skipping message received before test start: {msg_timestamp_seconds} < {test_start_time - 1.0}")
                             continue
 
                     try:
@@ -722,36 +846,40 @@ class TestExecutor:
                             try:
                                 matcher = self.matcher_factory.create(condition.type)
                                 condition_matched = False
+                                match_result = None
 
-                                # Build matcher-specific condition dict (same as _match_conditions)
+                                # Build matcher-specific condition dict and run match
                                 if condition.type == 'jsonpath':
-                                    # JSONPathMatcher expects {'path', 'value', 'regex'}
                                     matcher_condition = {
                                         'path': condition.expression,
                                         'value': condition.value,
                                         'regex': condition.regex
                                     }
-                                    if matcher and matcher.match(msg_value, matcher_condition).matched:
-                                        conditions_matched += 1
-                                        condition_matched = True
+                                    match_result = matcher.match(msg_value, matcher_condition) if matcher else None
                                 elif condition.type == 'header':
-                                    # For header matching, pass headers dict
                                     headers_dict = msg.get('headers', {})
-                                    if matcher and matcher.match(headers_dict, condition).matched:
-                                        conditions_matched += 1
-                                        condition_matched = True
+                                    match_result = matcher.match(headers_dict, condition) if matcher else None
                                 elif condition.type == 'key':
-                                    # For key matching, pass message key
                                     msg_key = msg.get('key')
-                                    if matcher and matcher.match(msg_key, condition).matched:
-                                        conditions_matched += 1
-                                        condition_matched = True
+                                    match_result = matcher.match(msg_key, condition) if matcher else None
                                 else:
-                                    # Other matchers work with the condition object directly
-                                    matcher_condition = condition
-                                    if matcher and matcher.match(msg_value, matcher_condition).matched:
-                                        conditions_matched += 1
-                                        condition_matched = True
+                                    match_result = matcher.match(msg_value, condition) if matcher else None
+
+                                condition_matched = bool(match_result and match_result.matched)
+                                if condition_matched:
+                                    conditions_matched += 1
+
+                                # Emit one verbose line per condition (mirrors VERBOSE-RULES format)
+                                if verbose:
+                                    _vtest(verbose, _format_condition_vtest(
+                                        exp_idx=exp_idx,
+                                        topic=expectation.topic,
+                                        idx=idx,
+                                        condition=condition,
+                                        matched=condition_matched,
+                                        msg_value=msg_value,
+                                        msg=msg,
+                                    ))
 
                                 # Record condition result
                                 condition_results.append({
@@ -782,9 +910,20 @@ class TestExecutor:
                                     'type': getattr(condition, 'type', 'unknown'),
                                     'error': str(e)
                                 })
+                                if verbose:
+                                    _vtest(verbose, (
+                                        f"topic={expectation.topic!r} [expectation #{exp_idx}] "
+                                        f"condition #{idx} ({getattr(condition, 'type', '?')}) ✗ ERROR: {e}"
+                                    ))
 
                         if conditions_matched < len(expectation.match):
-                            # Log this non-matching message for debugging
+                            # Summary NO MATCH line after per-condition detail
+                            _vtest(verbose, (
+                                f"topic={expectation.topic!r} "
+                                f"[expectation #{exp_idx}] ✗ NO MATCH "
+                                f"conditions {conditions_matched}/{len(expectation.match)} passed "
+                                f"payload={json.dumps(msg_value, default=str)[:500]}"
+                            ))
                             if test_logger:
                                 test_logger.log_received_message(
                                     topic=expectation.topic,
@@ -802,6 +941,13 @@ class TestExecutor:
                     # Message matches all conditions!
                     received_messages.append(msg_for_logging)
                     all_received_messages.append(msg_for_logging)
+
+                    _vtest(verbose, (
+                        f"topic={expectation.topic!r} "
+                        f"[expectation #{exp_idx}] ✓ MATCH "
+                        f"partition={msg.get('partition', 0)} offset={msg.get('offset', 0)} "
+                        f"payload={json.dumps(msg_value, default=str)[:500]}"
+                    ))
 
                     # Always log matching message
                     if test_logger:

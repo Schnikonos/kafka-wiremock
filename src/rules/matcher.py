@@ -11,6 +11,31 @@ from jsonpath_ng.exceptions import JSONPathError
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Global verbose flag — toggled via set_verbose() from the settings API.
+# When True every matcher emits INFO-level diagnostics so they appear in
+# the application log without requiring the log level to be set to DEBUG.
+# ---------------------------------------------------------------------------
+_verbose: bool = False
+
+
+def set_verbose(flag: bool) -> None:
+    """Enable / disable verbose matching diagnostics globally."""
+    global _verbose
+    _verbose = bool(flag)
+    logger.info(f"Rules matcher verbose mode: {'ON' if _verbose else 'OFF'}")
+
+
+def is_verbose() -> bool:
+    """Return current verbose flag."""
+    return _verbose
+
+
+def _vlog(msg: str) -> None:
+    """Emit a verbose log line (INFO when verbose, suppressed otherwise)."""
+    if _verbose:
+        logger.info(f"[VERBOSE-RULES] {msg}")
+
 
 class MatchResult:
     """Result of a message matching attempt."""
@@ -51,6 +76,7 @@ class ExactMatcher(Matcher):
             message_str = str(message)
 
             matched = message_str == condition_str
+            _vlog(f"ExactMatcher: expected={condition_str!r} actual={message_str!r} → {'MATCH' if matched else 'NO MATCH'}")
             return MatchResult(matched, {"full_message": message_str})
         except Exception as e:
             logger.warning(f"ExactMatcher error: {e}")
@@ -70,6 +96,7 @@ class PartialMatcher(Matcher):
             message_str = str(message)
 
             matched = condition_str in message_str
+            _vlog(f"PartialMatcher: substring={condition_str!r} in message → {'MATCH' if matched else 'NO MATCH'}")
             return MatchResult(matched, {"full_message": message_str})
         except Exception as e:
             logger.warning(f"PartialMatcher error: {e}")
@@ -92,16 +119,16 @@ class RegexMatcher(Matcher):
             match_obj = compiled_pattern.search(message_str)
 
             if match_obj:
-                # Include named groups and full match in context
                 context = {"full_message": message_str}
                 context.update(match_obj.groupdict())
                 if match_obj.groups():
-                    # Add numbered groups
                     for i, group in enumerate(match_obj.groups(), 1):
                         if f"group_{i}" not in context:
                             context[f"group_{i}"] = group
+                _vlog(f"RegexMatcher: pattern={pattern!r} → MATCH (groups={match_obj.groups()})")
                 return MatchResult(True, context)
             else:
+                _vlog(f"RegexMatcher: pattern={pattern!r} against {message_str!r} → NO MATCH")
                 return MatchResult(False, {"full_message": message_str})
         except re.error as e:
             logger.warning(f"RegexMatcher: Invalid pattern '{condition}': {e}")
@@ -147,6 +174,7 @@ class JSONPathMatcher(Matcher):
             matches = jsonpath_expr.find(message_obj)
 
             if not matches:
+                _vlog(f"JSONPathMatcher: path={path!r} → no match in message (field not found)")
                 return MatchResult(False, {"message": message_obj})
 
             # Check if any match satisfies the condition
@@ -155,19 +183,23 @@ class JSONPathMatcher(Matcher):
                 if regex_pattern:
                     try:
                         if re.search(regex_pattern, str(match.value)):
-                            # Return context with the matched value
                             context = {"message": message_obj, "matched_value": match.value}
                             context.update(flatten_dict(message_obj))
+                            _vlog(f"JSONPathMatcher: path={path!r} regex={regex_pattern!r} actual={match.value!r} → MATCH")
                             return MatchResult(True, context)
+                        else:
+                            _vlog(f"JSONPathMatcher: path={path!r} regex={regex_pattern!r} actual={match.value!r} → NO MATCH")
                     except re.error as e:
                         logger.warning(f"JSONPathMatcher: Invalid regex pattern '{regex_pattern}': {e}")
                         continue
                 # Otherwise use exact value matching
                 elif expected_value is not None and match.value == expected_value:
-                    # Return context with the matched value
                     context = {"message": message_obj, "matched_value": match.value}
                     context.update(flatten_dict(message_obj))
+                    _vlog(f"JSONPathMatcher: path={path!r} expected={expected_value!r} actual={match.value!r} → MATCH")
                     return MatchResult(True, context)
+                elif expected_value is not None:
+                    _vlog(f"JSONPathMatcher: path={path!r} expected={expected_value!r} actual={match.value!r} → NO MATCH")
 
             return MatchResult(False, {"message": message_obj})
 
@@ -213,6 +245,7 @@ class HeaderMatcher(Matcher):
             # Check value match if specified
             if hasattr(condition, 'value') and condition.value:
                 matched = str(header_value) == str(condition.value)
+                _vlog(f"HeaderMatcher: header={header_name!r} expected={condition.value!r} actual={header_value!r} → {'MATCH' if matched else 'NO MATCH'}")
                 logger.debug(f"HeaderMatcher: Comparing '{header_name}': '{header_value}' == '{condition.value}' -> {matched}")
                 return MatchResult(matched, {f"header.{header_name}": header_value})
 
@@ -221,6 +254,7 @@ class HeaderMatcher(Matcher):
                 try:
                     pattern = re.compile(condition.regex)
                     matched = pattern.search(str(header_value)) is not None
+                    _vlog(f"HeaderMatcher: header={header_name!r} regex={condition.regex!r} actual={header_value!r} → {'MATCH' if matched else 'NO MATCH'}")
                     logger.debug(f"HeaderMatcher: Regex '{condition.regex}' against '{header_value}' -> {matched}")
                     return MatchResult(matched, {f"header.{header_name}": header_value})
                 except Exception as e:
@@ -228,6 +262,7 @@ class HeaderMatcher(Matcher):
                     return MatchResult(False)
 
             # No value or regex specified, just check header exists
+            _vlog(f"HeaderMatcher: header={header_name!r} exists (value={header_value!r}) → MATCH")
             logger.debug(f"HeaderMatcher: Header '{header_name}' exists with value '{header_value}'")
             return MatchResult(True, {f"header.{header_name}": header_value})
 
@@ -260,6 +295,7 @@ class KeyMatcher(Matcher):
             # Check value match if specified
             if hasattr(condition, 'value') and condition.value:
                 matched = key_str == str(condition.value)
+                _vlog(f"KeyMatcher: expected={condition.value!r} actual={key_str!r} → {'MATCH' if matched else 'NO MATCH'}")
                 logger.debug(f"KeyMatcher: Comparing key '{key_str}' == '{condition.value}' -> {matched}")
                 return MatchResult(matched, {"messageKey": key_str})
 
@@ -268,6 +304,7 @@ class KeyMatcher(Matcher):
                 try:
                     pattern = re.compile(condition.regex)
                     matched = pattern.search(key_str) is not None
+                    _vlog(f"KeyMatcher: regex={condition.regex!r} actual={key_str!r} → {'MATCH' if matched else 'NO MATCH'}")
                     logger.debug(f"KeyMatcher: Regex '{condition.regex}' against '{key_str}' -> {matched}")
                     return MatchResult(matched, {"messageKey": key_str})
                 except Exception as e:
@@ -275,6 +312,7 @@ class KeyMatcher(Matcher):
                     return MatchResult(False)
 
             # No value or regex specified, just check key exists
+            _vlog(f"KeyMatcher: key exists (value={key_str!r}) → MATCH")
             logger.debug(f"KeyMatcher: Message key exists with value '{key_str}'")
             return MatchResult(True, {"messageKey": key_str})
 

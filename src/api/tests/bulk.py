@@ -4,6 +4,7 @@ Bulk test execution endpoints for running multiple tests with repeat functionali
 import logging
 import asyncio
 import json
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -43,6 +44,7 @@ class BulkTestRequest(BaseModel):
     repeat: int = 1  # Number of times to run each test
     parallel_workers: int = 4  # Workers for parallel execution
     repeat_mode: str = "interleaved-repeats"  # "interleaved-repeats" or "sequential-repeats"
+    force_run: bool = False  # Run even if test.skip == True (explicit selection)
 
 
 def _convert_test_result_to_dict(result) -> Dict[str, Any]:
@@ -108,19 +110,43 @@ async def run_tests_bulk(request: BulkTestRequest) -> Dict[str, Any]:
             f"({len(tests_to_run)} total) in {request.mode} mode"
         )
 
+        # Read verbose_tests flag from app settings.
+        # Import the MODULE (not a variable copy) so we always get the live object.
+        # Use getattr() for backward-compat in case the attribute doesn't exist yet
+        # on an old in-memory settings instance (avoids silent AttributeError).
+        verbose = False
+        try:
+            from ...api import app_settings as _app_settings_mod
+            _asl = _app_settings_mod.app_settings_loader
+            if _asl:
+                verbose = bool(getattr(_asl.get_settings().ui, 'verbose_tests', False))
+        except Exception as _ve:
+            logger.debug(f"Could not read verbose_tests from app settings: {_ve}")
+
         # Execute tests
         if request.mode == "parallel":
             # Use asyncio.gather for true concurrent async execution
             results = await asyncio.gather(
-                *[_test_suite_runner.executor.run_test(test, Path(test.file_path) if test.file_path else None, verbose=False)
+                *[_test_suite_runner.executor.run_test(
+                    test,
+                    Path(test.file_path) if test.file_path else None,
+                    verbose=verbose,
+                    force_run=request.force_run
+                  )
                   for test in tests_to_run],
                 return_exceptions=False
             )
         else:  # sequential
-            results = await _test_suite_runner.run_tests_sequential(
-                tests_to_run,
-                verbose=False
-            )
+            results = []
+            for test in tests_to_run:
+                r = await _test_suite_runner.executor.run_test(
+                    test,
+                    Path(test.file_path) if test.file_path else None,
+                    verbose=verbose,
+                    force_run=request.force_run
+                )
+                results.append(r)
+                logger.info(f"Test {test.name}: {r.status}")
 
         # Aggregate results
         passed_count = sum(1 for r in results if r.status == "PASSED")
