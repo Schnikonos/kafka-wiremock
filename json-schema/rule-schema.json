@@ -30,22 +30,28 @@
       "properties": {
         "destination": {
           "type": "string",
-          "description": "The Kafka topic or JMS queue/topic name to listen on.",
+          "description": "The Kafka topic, JMS queue/topic name, HTTP URL path pattern (type=http), or omitted for http_response.",
           "minLength": 1,
-          "examples": ["orders.input", "payments.events", "transfers", "ORDERS_INPUT"]
+          "examples": ["orders.input", "payments.events", "ORDERS_INPUT", "/orders/{orderId}"]
         },
         "type": {
           "type": "string",
-          "description": "Input message type - kafka (default) or jms. Determines which listener handles this rule.",
-          "enum": ["kafka", "jms"],
+          "description": "Input message type: kafka (default), jms, or http (inbound HTTP listener).",
+          "enum": ["kafka", "jms", "http"],
           "default": "kafka",
-          "examples": ["kafka", "jms"]
+          "examples": ["kafka", "jms", "http"]
         },
         "connection_ref": {
           "type": "string",
-          "description": "For JMS only: reference to queue manager defined in queue-managers.yaml. Uses default queue manager when omitted.",
+          "description": "JMS queue manager name (type=jms) OR HTTP mock server name (type=http). Uses default when omitted if only one is configured.",
           "minLength": 1,
-          "examples": ["qm_us_east", "qm_eu_west", "qm_dev_local"]
+          "examples": ["qm_us_east", "api-server", "payments-server"]
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method filter (type=http only). '*' matches any method.",
+          "examples": ["GET", "POST", "PUT", "PATCH", "DELETE", "*"],
+          "default": "*"
         },
         "match": {
           "type": "array",
@@ -106,7 +112,7 @@
         "type": {
           "type": "string",
           "description": "Matching strategy to apply.",
-          "enum": ["jsonpath", "exact", "partial", "regex", "header", "key"]
+          "enum": ["jsonpath", "exact", "partial", "regex", "header", "key", "path_param", "query_param"]
         }
       },
       "allOf": [
@@ -145,6 +151,18 @@
             "properties": { "type": { "const": "key" } }
           },
           "then": { "$ref": "#/definitions/keyCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "path_param" } }
+          },
+          "then": { "$ref": "#/definitions/pathParamCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "query_param" } }
+          },
+          "then": { "$ref": "#/definitions/queryParamCondition" }
         }
       ]
     },
@@ -327,10 +345,10 @@
         },
         "type": {
           "type": "string",
-          "description": "Output type - kafka (default), jms, or http.",
-          "enum": ["kafka", "jms", "http"],
+          "description": "Output type: kafka (default), jms, http (outbound call), or http_response (return to HTTP caller).",
+          "enum": ["kafka", "jms", "http", "http_response"],
           "default": "kafka",
-          "examples": ["kafka", "jms", "http"]
+          "examples": ["kafka", "jms", "http", "http_response"]
         },
         "connection_ref": {
           "type": "string",
@@ -426,6 +444,19 @@
         },
         "fault": {
           "$ref": "#/definitions/faultInjection"
+        },
+        "status_code": {
+          "type": "integer",
+          "description": "HTTP response status code (type=http_response only).",
+          "minimum": 100,
+          "maximum": 599,
+          "default": 200,
+          "examples": [200, 201, 400, 404, 500]
+        },
+        "response_content_type": {
+          "type": "string",
+          "description": "Response Content-Type header value (type=http_response only). Defaults to application/json.",
+          "examples": ["application/json", "text/plain", "application/xml"]
         }
       },
       "oneOf": [
@@ -436,8 +467,58 @@
         {
           "required": ["payload_file"],
           "not": { "required": ["payload"] }
+        },
+        {
+          "properties": { "type": { "enum": ["http_response", "http"] } },
+          "not": { "anyOf": [{ "required": ["payload"] }, { "required": ["payload_file"] }] }
         }
       ]
+    },
+    "pathParamCondition": {
+      "type": "object",
+      "description": "Matches an extracted URL path parameter (from {param} patterns in when.destination).",
+      "required": ["type", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "path_param" },
+        "expression": {
+          "type": "string",
+          "description": "Path parameter name (e.g. orderId for /orders/{orderId}).",
+          "minLength": 1,
+          "examples": ["orderId", "userId", "paymentId"]
+        },
+        "value": {
+          "description": "Expected exact value of the path parameter. Mutually exclusive with 'regex'."
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to validate the path parameter value. Mutually exclusive with 'value'.",
+          "examples": ["^ORD-.*", "^[0-9]+$"]
+        }
+      }
+    },
+    "queryParamCondition": {
+      "type": "object",
+      "description": "Matches an HTTP query string parameter.",
+      "required": ["type", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "query_param" },
+        "expression": {
+          "type": "string",
+          "description": "Query parameter name (e.g. page for ?page=2).",
+          "minLength": 1,
+          "examples": ["page", "status", "filter"]
+        },
+        "value": {
+          "description": "Expected exact value of the query parameter. Mutually exclusive with 'regex'."
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to validate the query parameter value. Mutually exclusive with 'value'.",
+          "examples": ["^(active|inactive)$", "^[0-9]+$"]
+        }
+      }
     },
     "faultInjection": {
       "type": "object",

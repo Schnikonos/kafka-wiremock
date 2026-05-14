@@ -81,6 +81,11 @@ services:
         --partitions 2 \
         --replication-factor 1 \
         --config retention.ms=43200000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic payments.processed \
+        --partitions 2 \
+        --replication-factor 1 \
+        --config retention.ms=43200000
       echo "Topics created successfully"
       kafka-topics --bootstrap-server kafka:29092 --list
       '

@@ -1,0 +1,36 @@
+# Rule: Kafka ORDER_CONFIRMED → outbound HTTP call to payment-api mock server
+#
+# When an ORDER_CONFIRMED event arrives on orders.input, this rule calls
+# the payment-api mock server (POST /payments/PAY-{uuid}).
+#
+# In production, the URL would point to the real payment service.
+# In tests, the mock server (or a registered http-stub) intercepts the call.
+#
+# Used by: testSuite/examples/08-http-stub-via-kafka.test.yaml
+
+priority: 11
+name: "kafka-order-to-payment-api"
+
+when:
+  destination: orders.input
+  type: kafka
+  match:
+    - type: jsonpath
+      expression: "$.eventType"
+      value: "ORDER_CONFIRMED"
+
+then:
+  # Outbound HTTP POST to the payment-api mock server
+  # In tests, an http-stub can intercept this call and return a custom response
+  - destination: "http://localhost:8081/payments/PAY-{{$.orderId}}"
+    type: http
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    payload: |
+      {
+        "amount": {{$.amount}},
+        "currency": "{{$.currency}}",
+        "orderId": "{{$.orderId}}"
+      }
+

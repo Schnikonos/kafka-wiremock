@@ -1,0 +1,78 @@
+# Example: HTTP Stub Expectation via Kafka trigger
+#
+# Demonstrates the http-stub feature:
+#   1. Test registers a stub on payment-api BEFORE injecting anything
+#   2. Test injects an ORDER_CONFIRMED Kafka message
+#   3. Rule 07-kafka-to-payment-api.yaml fires:
+#        → calls POST http://localhost:8081/payments/PAY-{orderId}
+#   4. The stub (priority #1 in dispatch) intercepts the call:
+#        → returns HTTP 201 to the rule
+#        → records the call so the test can assert it happened
+#   5. Test verifies: stub was called once with $.amount = 49.99
+#
+# Why use http-stub instead of the real rule?
+#   - Stubs let you control exactly what response the rule's HTTP call receives
+#   - Stubs record the call body so you can assert the rule sent correct data
+#   - No rule needs to exist on the mock server for the path being called
+#
+# Requires:
+#   - config/http-config/mock-servers/payment-api.yaml  (mock server on :8081)
+#   - config/rules/07-kafka-to-payment-api.yaml
+#
+# Note: orders.input Kafka topic must exist for the Kafka injection to succeed.
+# If the topic is missing, the test will time out waiting for the stub to be hit.
+
+name: "http-stub-via-kafka-test"
+priority: 51
+tags: ["http-mock", "http-stub", "example", "integration"]
+timeout_ms: 10000
+
+when:
+  inject:
+    - message_id: "order"
+      destination: "orders.input"
+      payload: |
+        {
+          "orderId": "ORD-STUB-TEST",
+          "amount": 49.99,
+          "currency": "EUR",
+          "customerId": "CUST-001",
+          "eventType": "ORDER_CONFIRMED"
+        }
+
+then:
+  expectations:
+    # Register HTTP stub on payment-api.
+    # When rule 07-kafka-to-payment-api.yaml calls
+    #   POST http://localhost:8081/payments/PAY-ORD-STUB-TEST
+    # this stub intercepts the call (priority #1) and:
+    #   - Records the request body/path params
+    #   - Responds with HTTP 201 (back to the rule's HTTP client)
+    #   - Notifies the test that the call was received
+    - type: http-stub
+      server: payment-api
+      path: /payments/{paymentId}
+      method: POST
+      wait_ms: 8000
+      times: 1
+      match:
+        - type: jsonpath
+          expression: "$.amount"
+          value: 49.99
+        - type: jsonpath
+          expression: "$.currency"
+          value: "EUR"
+        - type: path_param
+          expression: paymentId
+          regex: "^PAY-ORD-STUB-TEST$"
+      response:
+        status_code: 201
+        payload: |
+          {
+            "paymentId": "{{path.paymentId}}",
+            "status": "ACCEPTED",
+            "authCode": "AUTH-999"
+          }
+        headers:
+          Content-Type: application/json
+

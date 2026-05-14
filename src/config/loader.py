@@ -259,8 +259,25 @@ class ConfigLoader:
                         regex=match_item.get('regex'),
                         expression=None
                     )
+                elif condition_type == 'path_param':
+                    condition = Condition(
+                        type='path_param',
+                        expression=match_item.get('expression'),
+                        value=match_item.get('value'),
+                        regex=match_item.get('regex')
+                    )
+                elif condition_type == 'query_param':
+                    condition = Condition(
+                        type='query_param',
+                        expression=match_item.get('expression'),
+                        value=match_item.get('value'),
+                        regex=match_item.get('regex')
+                    )
                 else:
-                    raise ValueError(f"Unknown match type: {condition_type}. Supported: jsonpath, exact, partial, regex, header, key")
+                    raise ValueError(
+                        f"Unknown match type: {condition_type}. "
+                        f"Supported: jsonpath, exact, partial, regex, header, key, path_param, query_param"
+                    )
                 conditions.append(condition)
 
         then_block = rule_data.get('then', [])
@@ -270,14 +287,20 @@ class ConfigLoader:
             raise ValueError("'then' block must contain at least one output")
 
         outputs = []
+        http_response_count = 0
         for then_item in then_block:
-            output_destination = then_item.get('destination')
-            if not output_destination:
-                raise ValueError("'destination' is required in output")
             output_msg_type = then_item.get('type', 'kafka').lower()
-            # HTTP outputs don't require payload (may have no body)
-            if output_msg_type != 'http' and "payload" not in then_item and "payload_file" not in then_item:
+            output_destination = then_item.get('destination', '')
+            # http_response outputs return data to the caller — no external destination needed
+            if output_msg_type != 'http_response' and not output_destination:
+                raise ValueError("'destination' is required in output")
+            # Neither http nor http_response outputs require a payload body
+            if output_msg_type not in ('http', 'http_response') and "payload" not in then_item and "payload_file" not in then_item:
                 raise ValueError("'payload' or 'payload_file' is required in output")
+            if output_msg_type == 'http_response':
+                http_response_count += 1
+                if http_response_count > 1:
+                    raise ValueError("At most one 'http_response' output is allowed per rule")
 
             # Parse optional correlation for output
             correlation = None
@@ -317,6 +340,8 @@ class ConfigLoader:
                 auth_ref=then_item.get('auth_ref'),
                 tls_ref=then_item.get('tls_ref'),
                 http_timeout_ms=int(then_item.get('http_timeout_ms', 10000)),
+                status_code=int(then_item.get('status_code', 200)),
+                response_content_type=then_item.get('response_content_type'),
             )
             outputs.append(output)
 
@@ -327,8 +352,12 @@ class ConfigLoader:
             extract_rules = corr_data.get("extract", [])
             input_correlation = CorrelationInput(extract=extract_rules)
 
-        # Parse input message type from when block (YAML key: 'type')
+        # Parse input message type and method from when block
         input_type = when_block.get('type', 'kafka').lower()
+        raw_method = when_block.get('method', '*')
+        input_method = str(raw_method).upper() if raw_method and raw_method != '*' else '*'
+        # connection_ref on when block: JMS queue manager name OR HTTP mock server name
+        input_connection_ref = when_block.get('connection_ref')
 
         return Rule(
             priority=priority,
@@ -338,7 +367,9 @@ class ConfigLoader:
             rule_name=rule_name,
             correlation=input_correlation,
             skip=skip,
-            input_type=input_type
+            input_type=input_type,
+            input_method=input_method,
+            connection_ref=input_connection_ref,
         )
 
     def _parse_rule_old_format(self, rule_data: Dict[str, Any], filename: str, index: int) -> Rule:

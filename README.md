@@ -398,215 +398,100 @@ host_overrides:                          # first match wins
 |------|---------|
 | `config/http-config/tls.yaml` | TLS profiles and per-host overrides |
 | `config/http-config/auth.yaml` | Auth profiles (basic, bearer, OAuth2, mTLS) |
+| `config/http-config/mock-servers/*.yaml` | Inbound HTTP mock server definitions |
 
 See `example/config/http-config/` for annotated example files.
 
 ---
 
+## HTTP Mock Server (Inbound)
 
+Kafka Wiremock can spin up one or more **inbound HTTP mock servers** — each on its own port — to
+act as a stand-in for downstream HTTP services. A system-under-test or a rule can call these
+servers, and Kafka Wiremock will respond according to configured rules or active test stubs.
 
-Kafka Wiremock now supports IBM MQ for JMS messaging alongside Kafka, enabling:
+### Use cases
 
-### Features
-- **IBM MQ Integration**: Connect to IBM Message Queue systems
-- **Mixed Workloads**: Input from Kafka → Output to JMS (or vice versa)
-- **JMS Configuration Files**: Similar to topic-config, store JMS-specific settings in `config/jms-config/`
-- **Flexible Routing**: Rules can output to Kafka, JMS queues, or both
-- **Message Type Detection**: Specify `msg_type` to route messages appropriately
+- Rule produces a Kafka message **and** expects the consumer to call a REST API → stub the API
+- Integration test verifies the full flow: Kafka → rule → HTTP call → back to Kafka
+- Replace real external services with controllable fakes without changing application code
 
-### Quick Start: IBM MQ with Docker Compose
+### Server configuration
 
-**✅ Recommended: Use Docker Compose with Official IBM MQ Container**
+Create one YAML file per mock server in `config/http-config/mock-servers/`:
 
-The easiest way to get started with IBM MQ is using the included `docker-compose.full.yml` which provides a complete development environment:
+```yaml
+# config/http-config/mock-servers/payment-api.yaml
+name: payment-api
+port: 8081
 
-```bash
-# Start everything (Kafka, Zookeeper, IBM MQ, and Kafka Wiremock)
-docker-compose -f docker-compose.full.yml up -d
+tls:                          # Optional — omit for plain HTTP
+  cert: /certs/server.pem
+  key: /certs/server.key
+  ca: /certs/ca.pem           # Only required for mTLS client verification
 
-# Wait for services to be healthy
-docker-compose -f docker-compose.full.yml ps
+default_response:
+  status_code: 404
+  payload: '{"error": "not found"}'
+  headers:
+    Content-Type: application/json
 
-# Verify IBM MQ is ready
-docker-compose -f docker-compose.full.yml logs ibm-mq | grep "QM1"
+endpoints:                    # Optional path-specific defaults
+  - path: /health
+    method: GET
+    response:
+      status_code: 200
+      payload: '{"status": "healthy"}'
 ```
 
-**What you get automatically:**
-- ✅ Official IBM MQ 9.3 container (QM1 queue manager)
-- ✅ Pre-created test queues (ORDERS_INPUT, ORDERS_OUTPUT, PAYMENTS_INPUT, etc.)
-- ✅ Python app with JMS support (Kafka, ActiveMQ, RabbitMQ)
-- ✅ All test/example queues initialized
-- ✅ Health checks to verify everything is ready
+### Rule-based responses
 
-**Note on IBM MQ Library Support:**
-The Docker image attempts to install `pymqi` for IBM MQ support. If pymqi compilation fails due to missing IBM MQ C libraries, the build will complete anyway with other JMS providers (stomp.py, pika) still available. See [PYMQI_INSTALLATION_GUIDE.md](PYMQI_INSTALLATION_GUIDE.md) for details.
+Write rules with `when.type: http` to match requests and produce dynamic responses:
 
-**Access IBM MQ Admin Console:**
-```
-URL: https://localhost:9443/ibmmq/console/
-Username: admin
-Password: passw0rd
-```
+```yaml
+# config/rules/payment-rule.yaml
+when:
+  type: http
+  connection_ref: payment-api       # references server name above
+  destination: /payments/{paymentId}
+  method: POST
 
-**Verify IBM MQ Queue Configuration:**
-```bash
-# Check queue status
-docker-compose -f docker-compose.full.yml exec ibm-mq dspmq -m QM1
+then:
+  - type: http_response
+    status_code: 201
+    payload: '{"paymentId": "{{path.paymentId}}", "status": "ACCEPTED"}'
 
-# Verify pre-created queues
-docker-compose -f docker-compose.full.yml exec ibm-mq runmqsc -m QM1 << EOF
-DISPLAY QLOCAL(ORDERS_INPUT)
-DISPLAY QLOCAL(ORDERS_OUTPUT)
-EOF
+  - type: kafka                     # side-effect after response
+    destination: payments.events
+    payload: '{"event": "PAYMENT_PROCESSED", "paymentId": "{{path.paymentId}}"}'
 ```
 
-For comprehensive setup guide, troubleshooting, and advanced configuration:
+### Test stub expectations
 
-👉 **See: [IBM_MQ_DOCKER_SETUP.md](IBM_MQ_DOCKER_SETUP.md)**
+Register temporary stubs inside a test to intercept calls and assert request contents:
 
-**pymqi Compilation & Docker Build:**
+```yaml
+then:
+  expectations:
+    - type: http-stub
+      server: payment-api
+      path: /payments/{paymentId}
+      method: POST
+      wait_ms: 5000
+      match:
+        - type: jsonpath
+          expression: "$.amount"
+          value: 99.99
+      response:
+        status_code: 201
+        payload: '{"paymentId": "{{path.paymentId}}", "status": "ACCEPTED"}'
+```
 
-The Docker build gracefully handles pymqi installation:
-- Attempts to install `pymqi==1.12.13` from PyPI (may use pre-built wheels if available)
-- If pymqi compilation fails, continues with other JMS providers (stomp.py, pika)
-- FastAPI, Kafka client, and core functionality always installed
-- Build completes successfully even if pymqi unavailable
-
-For detailed troubleshooting, installation options, and how to enable IBM MQ support:
-
-👉 **See: [PYMQI_INSTALLATION_GUIDE.md](PYMQI_INSTALLATION_GUIDE.md)**
+See [docs/RULES.md — HTTP Listener Rules](docs/RULES.md#http-listener-rules) and
+[docs/TEST_SUITE.md — HTTP Stub Expectations](docs/TEST_SUITE.md#http-stub-expectations) for full
+details.
 
 ---
-
-### Alternative: Manual IBM MQ Setup (Advanced)
-
-If you prefer to use an external IBM MQ server or need custom configuration:
-
-**1. Install IBM MQ Client Library**
-```bash
-# Option A: Use pymqi (open-source, recommended for Docker and most use cases)
-pip install pymqi==1.12.13
-
-# Option B: Use official ibm-mq (requires IBM repository credentials, not recommended)
-pip install ibm-mq --index-url https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqpython/
-```
-
-**2. Configure JMS Connection (Environment Variables)**
-```bash
-export IBM_MQ_BROKER_URL="your-mq-server(1414)"
-export IBM_MQ_CHANNEL="YOUR.SVRCONN"
-export IBM_MQ_QUEUE_MANAGER="YOUR_QM"
-export IBM_MQ_USERNAME="your_user"
-export IBM_MQ_PASSWORD="your_password"
-```
-
-**3. Create JMS Configuration** (`config/jms-config/orders.yaml`)
-```yaml
-destination: YOUR_QUEUE_NAME
-destination_type: queue
-message:
-  format: json
-correlation:
-  extract:
-    - from: header
-      name: X-Correlation-Id
-      priority: 1
-```
-
-**4. Create a Rule with Mixed Input/Output** (`config/rules/jms-example.yaml`)
-```yaml
-priority: 10
-name: "jms-to-kafka-rule"
-when:
-  topic: YOUR_QUEUE_NAME
-  msg_type: jms  # Input from JMS
-  match:
-    - type: jsonpath
-      expression: "$.eventType"
-      value: "ORDER_CREATED"
-then:
-  # Output to Kafka
-  - topic: orders.processed
-    msg_type: kafka
-    payload: |
-      {
-        "orderId": "{{$.orderId}}",
-        "event": "PROCESSED"
-      }
-  # Output to another JMS queue
-  - topic: ORDERS_PROCESSED
-    msg_type: jms
-    payload: |
-      {
-        "orderId": "{{$.orderId}}",
-        "status": "processed"
-      }
-```
-
-**5. Inject/Consume via API**
-```bash
-# Inject to JMS queue
-curl -X POST "http://localhost:8000/api/inject/ORDERS_INPUT?msg_type=jms" \
-  -H "Content-Type: application/json" \
-  -d '{"orderId": "ORD-123", "eventType": "ORDER_CREATED"}'
-
-# Consume from JMS queue
-curl "http://localhost:8000/api/messages/ORDERS_PROCESSED?msg_type=jms&limit=5"
-```
-
-### Configuration Files
-
-| Type | Location | Purpose |
-|------|----------|---------|
-| **JMS Config** | `config/jms-config/*.yaml` | Queue/topic metadata, properties, correlation |
-| **Rules** | `config/rules/*.yaml` | Message matching and routing (supports `msg_type` field) |
-| **Topic Config** | `config/topic-config/*.yaml` | Kafka topic config (unchanged) |
-
-### Rule Structure for Mixed Messages
-
-```yaml
-priority: 10
-when:
-  topic: INPUT_QUEUE_OR_TOPIC
-  msg_type: kafka  # or 'jms' - defaults to 'kafka'
-  match:
-    - type: jsonpath
-      expression: "$.eventType"
-      value: "ORDER_CREATED"
-then:
-  - topic: output.queue.or.topic
-    msg_type: jms  # or 'kafka' - defaults to 'kafka'
-    payload: |
-      {
-        "status": "processed"
-      }
-```
-
-### Supported Message Types
-- `kafka` (default) - Send/receive from Kafka topics
-- `jms` - Send/receive from JMS queues via IBM MQ
-
-### Environment Variables for IBM MQ
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `IBM_MQ_BROKER_URL` | `localhost(1414)` | Broker connection string |
-| `IBM_MQ_CHANNEL` | `DEV.APP.SVRCONN` | Channel name |
-| `IBM_MQ_QUEUE_MANAGER` | `QM1` | Queue manager name |
-| `IBM_MQ_USERNAME` | _(none)_ | Username for authentication |
-| `IBM_MQ_PASSWORD` | _(none)_ | Password for authentication |
-| `IBM_MQ_SSL_KEY_STORE` | _(none)_ | Path to SSL keystore (PEM) |
-| `IBM_MQ_SSL_KEY_STORE_PASSWORD` | _(none)_ | SSL keystore password |
-
-### JMS Connection Pooling (May 2026)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `JMS_POOLING_ENABLED` | `true` | Enable connection pooling for all queue managers |
-| `JMS_POOL_MIN_IDLE` | `1` | Minimum number of idle connections per queue manager |
-| `JMS_POOL_MAX_SIZE` | `5` | Maximum connections per pool |
-| `JMS_POOL_MAX_WAIT_MS` | `5000` | Maximum wait time for connection availability (milliseconds) |
-| `JMS_POOL_AUTO_RECONNECT` | `true` | Enable automatic reconnection on connection failure |
-| `JMS_POOL_RECONNECT_ATTEMPTS` | `3` | Number of reconnection retry attempts |
-| `JMS_POOL_RECONNECT_DELAY_MS` | `1000` | Initial delay between reconnection attempts (milliseconds) |
 
 ## Recent Improvements (May 2026)
 

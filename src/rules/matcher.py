@@ -341,6 +341,106 @@ def flatten_dict(d: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dic
     return dict(items)
 
 
+class PathParamMatcher(Matcher):
+    """Match an extracted path parameter value (from {param} URL patterns)."""
+
+    def match(self, path_params: Any, condition: Any) -> MatchResult:
+        """
+        Match against an extracted path-parameter dict.
+
+        Args:
+            path_params: Dict of extracted path parameters keyed by name.
+            condition: Condition with expression=param_name and value/regex.
+        """
+        try:
+            if not isinstance(path_params, dict):
+                logger.debug("PathParamMatcher: path_params is not a dict")
+                return MatchResult(False)
+
+            param_name = condition.expression if hasattr(condition, 'expression') else None
+            if not param_name:
+                logger.warning("PathParamMatcher requires condition.expression (param name)")
+                return MatchResult(False)
+
+            param_value = path_params.get(param_name)
+            if param_value is None:
+                _vlog(f"PathParamMatcher: param '{param_name}' not found. Available: {list(path_params.keys())}")
+                return MatchResult(False)
+
+            param_str = str(param_value)
+
+            if hasattr(condition, 'value') and condition.value is not None:
+                matched = param_str == str(condition.value)
+                _vlog(f"PathParamMatcher: param={param_name!r} expected={condition.value!r} actual={param_str!r} → {'MATCH' if matched else 'NO MATCH'}")
+                return MatchResult(matched, {f"path.{param_name}": param_str})
+
+            if hasattr(condition, 'regex') and condition.regex:
+                try:
+                    matched = re.search(condition.regex, param_str) is not None
+                    _vlog(f"PathParamMatcher: param={param_name!r} regex={condition.regex!r} actual={param_str!r} → {'MATCH' if matched else 'NO MATCH'}")
+                    return MatchResult(matched, {f"path.{param_name}": param_str})
+                except re.error as e:
+                    logger.warning(f"PathParamMatcher: invalid regex '{condition.regex}': {e}")
+                    return MatchResult(False)
+
+            # No value or regex — just check existence
+            _vlog(f"PathParamMatcher: param={param_name!r} exists (value={param_str!r}) → MATCH")
+            return MatchResult(True, {f"path.{param_name}": param_str})
+        except Exception as e:
+            logger.warning(f"PathParamMatcher error: {e}")
+            return MatchResult(False)
+
+
+class QueryParamMatcher(Matcher):
+    """Match an HTTP query string parameter value."""
+
+    def match(self, query_params: Any, condition: Any) -> MatchResult:
+        """
+        Match against an HTTP query-parameter dict.
+
+        Args:
+            query_params: Dict of query parameters keyed by name.
+            condition: Condition with expression=param_name and value/regex.
+        """
+        try:
+            if not isinstance(query_params, dict):
+                logger.debug("QueryParamMatcher: query_params is not a dict")
+                return MatchResult(False)
+
+            param_name = condition.expression if hasattr(condition, 'expression') else None
+            if not param_name:
+                logger.warning("QueryParamMatcher requires condition.expression (param name)")
+                return MatchResult(False)
+
+            param_value = query_params.get(param_name)
+            if param_value is None:
+                _vlog(f"QueryParamMatcher: param '{param_name}' not found. Available: {list(query_params.keys())}")
+                return MatchResult(False)
+
+            param_str = str(param_value)
+
+            if hasattr(condition, 'value') and condition.value is not None:
+                matched = param_str == str(condition.value)
+                _vlog(f"QueryParamMatcher: param={param_name!r} expected={condition.value!r} actual={param_str!r} → {'MATCH' if matched else 'NO MATCH'}")
+                return MatchResult(matched, {f"query.{param_name}": param_str})
+
+            if hasattr(condition, 'regex') and condition.regex:
+                try:
+                    matched = re.search(condition.regex, param_str) is not None
+                    _vlog(f"QueryParamMatcher: param={param_name!r} regex={condition.regex!r} actual={param_str!r} → {'MATCH' if matched else 'NO MATCH'}")
+                    return MatchResult(matched, {f"query.{param_name}": param_str})
+                except re.error as e:
+                    logger.warning(f"QueryParamMatcher: invalid regex '{condition.regex}': {e}")
+                    return MatchResult(False)
+
+            # No value or regex — just check existence
+            _vlog(f"QueryParamMatcher: param={param_name!r} exists (value={param_str!r}) → MATCH")
+            return MatchResult(True, {f"query.{param_name}": param_str})
+        except Exception as e:
+            logger.warning(f"QueryParamMatcher error: {e}")
+            return MatchResult(False)
+
+
 class MatcherFactory:
     """Factory for creating matcher instances."""
 
@@ -351,6 +451,8 @@ class MatcherFactory:
         'jsonpath': JSONPathMatcher,
         'header': HeaderMatcher,
         'key': KeyMatcher,
+        'path_param': PathParamMatcher,
+        'query_param': QueryParamMatcher,
     }
 
     @staticmethod

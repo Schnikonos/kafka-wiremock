@@ -110,17 +110,17 @@ async def get_test_log(test_id: str) -> Dict[str, Any]:
         matching_logs = [lf for lf in log_files if test_id in lf.name]
 
         # Fallback: search inside each log file for a stored "test_name" that matches exactly.
-        # This handles cases where the YAML filename differs from the test's "name:" field.
+        # This handles cases where the YAML filename differs from the test's "name:" field,
+        # or where the test was renamed after its first run (so the first line of the file
+        # may carry an old test name — we must scan ALL lines).
         if not matching_logs:
-            for lf in log_files:
+            # Sort by modification time, newest first, so we prefer the most-recently-used file
+            for lf in sorted(log_files, key=lambda p: p.stat().st_mtime, reverse=True):
                 try:
-                    with open(lf, "r") as _f:
-                        first_line = _f.readline().strip()
-                    if first_line:
-                        first_run = json.loads(first_line)
-                        if first_run.get("test_name") == test_id:
-                            matching_logs = [lf]
-                            break
+                    runs = _parse_log_file(lf)  # parses all lines; returns newest-first
+                    if any(r.get("test_name") == test_id for r in runs):
+                        matching_logs = [lf]
+                        break
                 except Exception:
                     pass
 
@@ -132,6 +132,10 @@ async def get_test_log(test_id: str) -> Dict[str, Any]:
 
         log_file = matching_logs[0]
         runs = _parse_log_file(log_file)
+
+        # When the log file contains runs from multiple test names (e.g. test was renamed),
+        # filter to only return runs that belong to this test_id.
+        runs = [r for r in runs if r.get("test_name") == test_id or "test_name" not in r]
 
         return {
             "test_id": test_id,

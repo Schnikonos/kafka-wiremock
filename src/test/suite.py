@@ -21,8 +21,12 @@ from ..rules.templater import TemplateRenderer
 from ..custom.placeholders import CustomPlaceholderRegistry
 from ..fault.injector import FaultInjector
 from .logger import TestLogger
-from ..http.executor import HttpExecutor
-
+# Import HttpExecutor and HttpStubCache lazily to avoid circular imports
+# (src/http/__init__.py → executor → test/loader → test/__init__ → suite → http/__init__)
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..http.executor import HttpExecutor
+    from ..http.stub_cache import HttpStub, HttpStubCache
 logger = logging.getLogger(__name__)
 
 
@@ -203,7 +207,8 @@ class TestExecutor:
         message_cache = None,
         listener_engine = None,
         jms_registry = None,  # Optional JMS registry for JMS injection/expectation support
-        http_executor: Optional["HttpExecutor"] = None  # Optional HTTP executor for HTTP requests
+        http_executor: Optional["HttpExecutor"] = None,  # Optional HTTP executor for HTTP requests
+        stub_cache: Optional["HttpStubCache"] = None,  # Optional HTTP stub cache for http-stub expectations
     ):
         """Initialize test executor."""
         self.kafka_client = kafka_client
@@ -214,6 +219,7 @@ class TestExecutor:
         self.listener_engine = listener_engine
         self.jms_registry = jms_registry
         self.http_executor = http_executor  # Optional; HTTP calls skipped if None
+        self.stub_cache = stub_cache        # Optional; http-stub expectations skipped if None
 
     async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None, verbose: bool = False, force_run: bool = False) -> TestResult:
         """Execute a single test."""
@@ -245,6 +251,11 @@ class TestExecutor:
                 result.status = "SKIPPED"
                 result.elapsed_ms = int((time.time() - start_time) * 1000)
                 return result
+
+            # Register HTTP stub expectations (type=http-stub) BEFORE injections fire
+            # so the mock server can respond to any calls made during the when phase.
+            if self.stub_cache:
+                self._register_http_stubs(test)
 
             # Phase 1: Execute "when"
             when_result = await self._execute_when(test, test_logger, verbose=verbose)
@@ -288,6 +299,11 @@ class TestExecutor:
             result.status = "FAILED"
             result.errors.append(f"Test execution error: {str(e)}")
 
+        finally:
+            # Always clean up HTTP stubs so they don't bleed into other tests
+            if self.stub_cache:
+                self.stub_cache.cleanup_test(test.name)
+
         result.elapsed_ms = int((time.time() - start_time) * 1000)
 
         # Write log file
@@ -295,6 +311,49 @@ class TestExecutor:
             test_logger.write_log_file(test.name, result.status, result.elapsed_ms, result.errors)
 
         return result
+
+    def _register_http_stubs(self, test: TestDefinition) -> None:
+        """
+        Scan test.then.items for type=http-stub expectations and register
+        them in the stub cache so the mock server can respond before the
+        when-phase injections even run.
+        """
+        import uuid as _uuid
+        from ..http.stub_cache import HttpStub  # direct module import avoids circular
+        from .loader import HttpStubResponse as _HttpStubResponse
+        for item in test.then.items:
+            if not isinstance(item, TestExpectation):
+                continue
+            if item.msg_type != "http-stub":
+                continue
+            if not item.path:
+                logger.warning(
+                    f"Test '{test.name}': http-stub expectation missing 'path' — skipping registration"
+                )
+                continue
+            # Determine server name (required when multiple servers exist)
+            server_name = item.server or ""
+            resp = item.response or _HttpStubResponse()
+            stub = HttpStub(
+                stub_id=f"{test.name}_{_uuid.uuid4().hex[:8]}",
+                test_id=test.name,
+                server_name=server_name,
+                path_pattern=item.path,
+                method=item.method or "*",
+                match_conditions=item.match or [],
+                response_status=resp.status_code,
+                response_payload=resp.payload,
+                response_headers=dict(resp.headers or {}),
+                response_content_type=resp.content_type,
+                expected_times=item.times,
+            )
+            # Store stub_id back on the expectation so _collect_expectation_messages can find it
+            item._stub_id = stub.stub_id  # type: ignore[attr-defined]
+            self.stub_cache.register(test.name, stub)
+            logger.debug(
+                f"Registered HTTP stub '{stub.stub_id}' for test '{test.name}': "
+                f"{stub.method} {stub.path_pattern}"
+            )
 
     async def _execute_when(self, test: TestDefinition, test_logger: Optional[TestLogger] = None, verbose: bool = False) -> WhenResult:
         """Execute 'when' phase: injections and scripts, sequential."""
@@ -611,6 +670,67 @@ class TestExecutor:
             # because the listener only listens to INPUT topics (from rules),
             # not OUTPUT topics. The test will consume directly from Kafka via consume_latest()
             # which works regardless of listener subscription.
+
+            # --- HTTP stub expectation ---
+            # For type=http-stub, wait for the stub to have received its expected calls.
+            if expectation.msg_type == "http-stub":
+                stub_id = getattr(expectation, '_stub_id', None)
+                if not stub_id or not self.stub_cache:
+                    exp_result.status = "NO_MATCH"
+                    exp_result.error = "HTTP stub not registered (stub_cache unavailable or stub_id missing)"
+                    exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                    return exp_result
+
+                # Block until expected_times calls arrive or timeout
+                fulfilled = self.stub_cache.wait_for_stub(
+                    stub_id=stub_id,
+                    timeout_ms=expectation.wait_ms,
+                )
+                stub = self.stub_cache.get_stub(stub_id)
+                actual_count = len(stub.calls) if stub else 0
+                exp_result.received = actual_count
+                exp_result.expected = expectation.times
+                elapsed = int((time.time() - start_time) * 1000)
+                exp_result.elapsed_ms = elapsed
+
+                if not fulfilled or actual_count < expectation.times:
+                    exp_result.status = "NO_MATCH"
+                    exp_result.error = (
+                        f"HTTP stub '{expectation.path}' expected {expectation.times} call(s), "
+                        f"got {actual_count} within {expectation.wait_ms}ms"
+                    )
+                    return exp_result
+
+                # Optionally evaluate match conditions against the recorded calls
+                if expectation.match and stub:
+                    for call in stub.calls:
+                        call_body_json = call.body_json
+                        for condition in expectation.match:
+                            try:
+                                matcher = self.matcher_factory.create(condition.type)
+                                if condition.type == 'jsonpath':
+                                    mc = {'path': condition.expression, 'value': condition.value, 'regex': condition.regex}
+                                    result_m = matcher.match(call_body_json or {}, mc)
+                                elif condition.type == 'header':
+                                    result_m = matcher.match(call.headers, condition)
+                                elif condition.type == 'path_param':
+                                    result_m = matcher.match(call.path_params, condition)
+                                elif condition.type == 'query_param':
+                                    result_m = matcher.match(call.query_params, condition)
+                                else:
+                                    result_m = matcher.match(call.body, condition.value or condition.regex)
+                                if not result_m.matched:
+                                    exp_result.status = "NO_MATCH"
+                                    exp_result.error = (
+                                        f"HTTP stub condition {condition.type} not satisfied "
+                                        f"in call to '{call.path}'"
+                                    )
+                                    return exp_result
+                            except Exception as e:
+                                logger.warning(f"Stub condition eval error: {e}")
+
+                exp_result.status = "MATCHED"
+                return exp_result
 
             # --- HTTP expectation ---
             # For type=http, validate the response from a previous HTTP injection (source_id).
@@ -1123,6 +1243,7 @@ class TestSuiteRunner:
         listener_engine = None,
         jms_registry = None,          # Optional JMS registry for JMS injection/expectation support
         http_executor = None,         # Optional HttpExecutor for HTTP injection/expectation support
+        stub_cache: Optional["HttpStubCache"] = None,  # Optional HTTP stub cache
     ):
         """Initialize test suite runner."""
         self.kafka_client = kafka_client
@@ -1136,6 +1257,7 @@ class TestSuiteRunner:
             listener_engine=listener_engine,
             jms_registry=jms_registry,
             http_executor=http_executor,
+            stub_cache=stub_cache,
         )
 
     async def run_tests_sequential(self, tests: List[TestDefinition], verbose: bool = False) -> List[TestResult]:

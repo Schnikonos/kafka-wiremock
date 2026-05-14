@@ -1,0 +1,58 @@
+# Rule: Inbound HTTP request to the payment-api mock server
+#
+# When the payment-api mock server receives a POST /payments/{paymentId},
+# this rule matches, returns an HTTP 201 response, and produces a Kafka
+# event as a side-effect AFTER the response is sent.
+#
+# Requires: config/http-config/mock-servers/payment-api.yaml
+
+priority: 10
+name: "http-mock-payment-processor"
+
+when:
+  type: http
+  connection_ref: payment-api           # Mock server name from mock-servers/*.yaml
+  destination: /payments/{paymentId}    # {param} is extracted to path.paymentId
+  method: POST
+  match:
+    - type: jsonpath
+      expression: "$.amount"
+      regex: "^[0-9]+(\\.[0-9]{1,2})?$"
+    - type: path_param
+      expression: paymentId
+      regex: "^PAY-.*"
+
+then:
+  # Synchronous: runs BEFORE the HTTP response is returned
+  # (nothing here in this example)
+
+  # Returns the HTTP response to the caller
+  - type: http_response
+    status_code: 201
+    response_content_type: application/json
+    headers:
+      X-Payment-ID: "{{path.paymentId}}"
+      X-Request-ID: "{{uuid}}"
+    payload: |
+      {
+        "paymentId": "{{path.paymentId}}",
+        "amount": {{$.amount}},
+        "currency": "{{$.currency}}",
+        "status": "ACCEPTED",
+        "transactionId": "TXN-{{uuid}}",
+        "processedAt": "{{now}}"
+      }
+
+  # Asynchronous: runs AFTER the HTTP response is sent
+  # (context is captured at response time — safe to reference path.*, query.*, etc.)
+  - type: kafka
+    destination: payments.processed
+    payload: |
+      {
+        "event": "PAYMENT_PROCESSED",
+        "paymentId": "{{path.paymentId}}",
+        "amount": {{$.amount}},
+        "currency": "{{$.currency}}",
+        "processedAt": "{{now}}"
+      }
+

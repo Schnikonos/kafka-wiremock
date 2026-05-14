@@ -70,16 +70,32 @@ class TestScript:
 
 
 @dataclass
+class HttpStubResponse:
+    """HTTP response definition for a type=http-stub expectation."""
+    status_code: int = 200
+    payload: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+    content_type: str = "application/json"
+
+
+@dataclass
 class TestExpectation:
     """An expected message to receive during test validation (then phase)."""
-    destination: str = ""              # Kafka topic, JMS queue (formerly 'topic'). Empty for type=http
+    destination: str = ""              # Kafka topic, JMS queue (formerly 'topic'). Empty for type=http/http-stub
     wait_ms: int = 2000
     match: List[Condition] = field(default_factory=list)
     match_file: Optional[str] = None
     correlate: Optional[TestCorrelation] = None
-    msg_type: str = "kafka"            # YAML key: 'type'. Values: kafka | jms | http
+    msg_type: str = "kafka"            # YAML key: 'type'. Values: kafka | jms | http | http-stub
     connection_ref: Optional[str] = None  # JMS queue manager ref (formerly queue_manager_ref)
     source_id: Optional[str] = None    # For type=http: references the message_id of the HTTP injection
+
+    # HTTP stub fields (type=http-stub only)
+    server: Optional[str] = None       # Mock server name (from http-config/mock-servers/)
+    path: Optional[str] = None         # URL path pattern, e.g. "/orders/{orderId}"
+    method: str = "*"                  # HTTP method filter ("*" = any)
+    response: Optional[HttpStubResponse] = None  # Response to return when stub is called
+    times: int = 1                     # Expected number of calls
 
     # Backward compatibility aliases
     @property
@@ -159,6 +175,18 @@ class TestYamlParser:
 
 class TestValidator:
     """Validates test definitions."""
+
+    @staticmethod
+    def _parse_stub_response(response_dict: Optional[Dict[str, Any]]) -> Optional['HttpStubResponse']:
+        """Parse optional HTTP stub response configuration."""
+        if not response_dict:
+            return None
+        return HttpStubResponse(
+            status_code=int(response_dict.get('status_code', 200)),
+            payload=response_dict.get('payload'),
+            headers=response_dict.get('headers') or {},
+            content_type=response_dict.get('content_type', 'application/json'),
+        )
 
     @staticmethod
     def validate_test_definition(test_dict: Dict[str, Any], file_path: str = "unknown") -> "TestDefinition":
@@ -295,8 +323,9 @@ class TestValidator:
                 items.append(TestScript(script="", script_file=str(item_dict["script_file"])))
             else:
                 msg_type = str(item_dict.get("type", "kafka")).lower()
-                # For http expectations, destination is optional (responses are linked by source_id)
-                if msg_type != "http" and "destination" not in item_dict:
+                # For http/http-stub expectations, destination is optional
+                # (http: responses linked by source_id; http-stub: server+path used instead)
+                if msg_type not in ("http", "http-stub") and "destination" not in item_dict:
                     raise ValueError(f"Expectation at index {idx} missing 'destination'")
 
                 # Parse match conditions
@@ -338,6 +367,12 @@ class TestValidator:
                     msg_type=msg_type,
                     connection_ref=item_dict.get("connection_ref"),
                     source_id=item_dict.get("source_id"),
+                    # HTTP stub fields (type=http-stub)
+                    server=item_dict.get("server"),
+                    path=item_dict.get("path"),
+                    method=str(item_dict.get("method", "*")).upper() if item_dict.get("method") else "*",
+                    times=int(item_dict.get("times", 1)),
+                    response=TestValidator._parse_stub_response(item_dict.get("response")),
                 )
                 items.append(expectation)
 
