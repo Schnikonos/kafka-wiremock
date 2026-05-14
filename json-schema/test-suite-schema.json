@@ -85,8 +85,8 @@
   "definitions": {
     "injectionMessage": {
       "type": "object",
-      "description": "A message to inject into a Kafka topic.",
-      "required": ["message_id", "topic"],
+      "description": "A message/request to inject: Kafka, JMS, or HTTP.",
+      "required": ["message_id", "destination"],
       "additionalProperties": false,
       "properties": {
         "message_id": {
@@ -95,24 +95,51 @@
           "minLength": 1,
           "examples": ["order1", "order", "notification", "payment"]
         },
-        "topic": {
+        "destination": {
           "type": "string",
-          "description": "Kafka topic or JMS queue/topic name to inject the message into.",
+          "description": "Kafka topic, JMS queue/topic name, or HTTP(S) URL depending on 'type'.",
           "minLength": 1,
-          "examples": ["orders.input", "payments.input", "notifications.input", "ORDERS_QUEUE"]
+          "examples": ["orders.input", "ORDERS_QUEUE", "https://api.example.com/orders"]
         },
-        "msg_type": {
+        "type": {
           "type": "string",
-          "description": "Message type - kafka (default) or jms. Specifies destination.",
-          "enum": ["kafka", "jms"],
+          "description": "Destination type - kafka (default), jms, or http.",
+          "enum": ["kafka", "jms", "http"],
           "default": "kafka",
-          "examples": ["kafka", "jms"]
+          "examples": ["kafka", "jms", "http"]
         },
-        "queue_manager_ref": {
+        "connection_ref": {
           "type": "string",
-          "description": "Reference to queue manager (only for jms msg_type). Name from queue-managers.yaml.",
+          "description": "Reference to queue manager (only for type=jms). Name from queue-managers.yaml.",
           "minLength": 1,
           "examples": ["qm_us_east", "qm_eu_west"]
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method (only for type=http). Defaults to POST.",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+          "default": "POST"
+        },
+        "query_params": {
+          "type": "object",
+          "description": "HTTP query parameters (only for type=http). Values support template placeholders.",
+          "additionalProperties": { "type": "string" }
+        },
+        "auth_ref": {
+          "type": "string",
+          "description": "Auth profile name from config/http-config/auth.yaml.",
+          "examples": ["api_basic", "bearer_oauth"]
+        },
+        "tls_ref": {
+          "type": "string",
+          "description": "TLS profile name from config/http-config/tls.yaml.",
+          "examples": ["internal", "corp_ca"]
+        },
+        "http_timeout_ms": {
+          "type": "integer",
+          "description": "HTTP request timeout in milliseconds (only for type=http).",
+          "minimum": 0,
+          "default": 10000
         },
         "payload": {
           "type": "string",
@@ -177,26 +204,31 @@
     },
     "expectation": {
       "type": "object",
-      "description": "An expected message to be produced and validated.",
-      "required": ["topic"],
+      "description": "An expected message or HTTP response to validate.",
       "additionalProperties": false,
       "properties": {
-        "topic": {
+        "destination": {
           "type": "string",
-          "description": "Kafka topic or JMS queue/topic name to consume messages from.",
+          "description": "Kafka topic or JMS queue/topic name to consume messages from. Not required for type=http (use source_id instead).",
           "minLength": 1,
-          "examples": ["payments.input", "orders.processed", "notifications.output", "ORDERS_PROCESSED"]
+          "examples": ["payments.input", "orders.processed", "ORDERS_PROCESSED"]
         },
-        "msg_type": {
+        "type": {
           "type": "string",
-          "description": "Message type - kafka (default) or jms. Specifies which system to read from.",
-          "enum": ["kafka", "jms"],
+          "description": "Message type - kafka (default), jms, or http. For http, the response of a previous injection is validated.",
+          "enum": ["kafka", "jms", "http"],
           "default": "kafka",
-          "examples": ["kafka", "jms"]
+          "examples": ["kafka", "jms", "http"]
         },
-        "queue_manager_ref": {
+        "source_id": {
           "type": "string",
-          "description": "For JMS only: reference to queue manager defined in queue-managers.yaml.",
+          "description": "For type=http: the message_id of the HTTP injection whose response to validate.",
+          "minLength": 1,
+          "examples": ["order1", "api_call"]
+        },
+        "connection_ref": {
+          "type": "string",
+          "description": "For type=jms: reference to queue manager defined in queue-managers.yaml.",
           "minLength": 1,
           "examples": ["qm_us_east", "qm_eu_west", "qm_dev_local"]
         },
@@ -278,7 +310,7 @@
           "examples": ["conditions/payment-validation.yaml", "../shared/status-checks.yaml"]
         }
       },
-      "required": ["topic"],
+      "required": ["destination"],
       "not": {
         "required": ["match", "match_file"]
       }
@@ -312,13 +344,13 @@
     },
     "matchCondition": {
       "type": "object",
-      "description": "A validation condition for expected messages (same as rule matching).",
+      "description": "A validation condition for expected messages or HTTP responses.",
       "required": ["type"],
       "properties": {
         "type": {
           "type": "string",
           "description": "Matching strategy to apply.",
-          "enum": ["jsonpath", "exact", "partial", "regex", "header", "key"]
+          "enum": ["jsonpath", "exact", "partial", "regex", "header", "key", "status_code", "response_header"]
         }
       },
       "allOf": [
@@ -357,8 +389,63 @@
             "properties": { "type": { "const": "key" } }
           },
           "then": { "$ref": "#/definitions/keyCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "status_code" } }
+          },
+          "then": { "$ref": "#/definitions/statusCodeCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "response_header" } }
+          },
+          "then": { "$ref": "#/definitions/responseHeaderCondition" }
         }
       ]
+    },
+    "statusCodeCondition": {
+      "type": "object",
+      "description": "Checks the HTTP response status code (for type=http expectations only).",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "status_code" },
+        "value": {
+          "type": "integer",
+          "description": "Expected HTTP status code.",
+          "examples": [200, 201, 400, 404, 500]
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regex to match against the status code string, e.g. '2[0-9]{2}' for any 2xx.",
+          "examples": ["2[0-9]{2}", "4[0-9]{2}"]
+        }
+      }
+    },
+    "responseHeaderCondition": {
+      "type": "object",
+      "description": "Checks an HTTP response header value (for type=http expectations only).",
+      "required": ["type", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "response_header" },
+        "expression": {
+          "type": "string",
+          "description": "Response header name (case-insensitive).",
+          "examples": ["content-type", "x-request-id", "location"]
+        },
+        "value": {
+          "type": "string",
+          "description": "Expected header value (exact match).",
+          "examples": ["application/json", "text/plain"]
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regex to match against the header value.",
+          "examples": ["application/.*json", "Bearer .+"]
+        }
+      }
     },
     "jsonpathCondition": {
       "type": "object",
@@ -589,7 +676,7 @@
         "inject": [
           {
             "message_id": "order1",
-            "topic": "orders.input",
+            "destination": "orders.input",
             "payload": "{\"orderId\": \"{{testId}}-{{uuid}}\", \"customerId\": \"CUST-123\", \"amount\": 99.99, \"status\": \"NEW\"}",
             "delay_ms": 0
           }
@@ -598,7 +685,7 @@
       "then": {
         "expectations": [
           {
-            "topic": "orders.processed",
+            "destination": "orders.processed",
             "correlate": {
               "message_id": "order1",
               "source": { "jsonpath": "$.orderId" },
@@ -626,13 +713,13 @@
         "inject": [
           {
             "message_id": "order",
-            "topic": "orders.input",
+            "destination": "orders.input",
             "payload": "{\"orderId\": \"ORD-{{testId}}-{{uuid}}\", \"customerId\": \"CUST-456\", \"amount\": 150.50, \"currency\": \"USD\", \"status\": \"CREATED\"}",
             "delay_ms": 100
           },
           {
             "message_id": "notification",
-            "topic": "notifications.input",
+            "destination": "notifications.input",
             "payload": "{\"type\": \"order_created\", \"orderId\": \"ORD-{{testId}}-{{uuid}}\", \"timestamp\": \"{{now}}\"}"
           }
         ]
@@ -640,7 +727,7 @@
       "then": {
         "expectations": [
           {
-            "topic": "payments.input",
+            "destination": "payments.input",
             "correlate": {
               "message_id": "order",
               "source": { "jsonpath": "$.orderId" },
@@ -661,7 +748,7 @@
             ]
           },
           {
-            "topic": "notifications.output",
+            "destination": "notifications.output",
             "correlate": {
               "message_id": "notification",
               "source": { "jsonpath": "$.orderId" },
@@ -682,9 +769,9 @@
         "inject": [
           {
             "message_id": "jms-order",
-            "topic": "ORDERS_INPUT",
-            "msg_type": "jms",
-            "queue_manager_ref": "qm_dev_local",
+            "destination": "ORDERS_INPUT",
+            "type": "jms",
+            "connection_ref": "qm_dev_local",
             "payload": "{\"orderId\": \"ORD-{{testId}}-{{uuid}}\", \"customerId\": \"CUST-123\", \"amount\": 99.99, \"eventType\": \"ORDER_CREATED\"}",
             "delay_ms": 100
           }
@@ -693,8 +780,8 @@
       "then": {
         "expectations": [
           {
-            "topic": "orders.processed",
-            "msg_type": "kafka",
+            "destination": "orders.processed",
+            "type": "kafka",
             "correlate": {
               "message_id": "jms-order",
               "source": { "jsonpath": "$.orderId" },
@@ -710,9 +797,9 @@
             ]
           },
           {
-            "topic": "ORDERS_PROCESSED",
-            "msg_type": "jms",
-            "queue_manager_ref": "qm_dev_local",
+            "destination": "ORDERS_PROCESSED",
+            "type": "jms",
+            "connection_ref": "qm_dev_local",
             "wait_ms": 5000,
             "match": [
               {

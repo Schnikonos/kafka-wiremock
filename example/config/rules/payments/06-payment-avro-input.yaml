@@ -3,14 +3,14 @@
 priority: 10
 
 when:
-  topic: payments.avro           # Listen to AVRO messages
+  destination: payments.avro           # Listen to AVRO messages
   match:
     - type: jsonpath
       expression: "$.status"
       value: "CONFIRMED"         # Match on decoded AVRO content
 
 then:
-  - topic: audit.events
+  - destination: audit.events
     delay_ms: 50
     headers:
       X-Payment-ID: "{{$.paymentId}}"
@@ -24,7 +24,7 @@ then:
         "auditedAt": "{{now}}"
       }
 
-  - topic: notifications.confirmed
+  - destination: notifications.confirmed
     payload: |
       {
         "type": "PAYMENT_CONFIRMED",

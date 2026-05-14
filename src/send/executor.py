@@ -51,13 +51,15 @@ class SendExecutor:
         kafka_client: KafkaClientWrapper,
         custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None,
         send_dir: str = "/send",
-        jms_registry=None  # NEW: Optional JMS registry for JMS support
+        jms_registry=None,        # Optional JMS registry for JMS support
+        http_executor=None,       # Optional HttpExecutor for HTTP sends
     ):
         """Initialize send executor."""
         self.kafka_client = kafka_client
         self.custom_placeholder_registry = custom_placeholder_registry or CustomPlaceholderRegistry()
         self.send_dir = send_dir
-        self.jms_registry = jms_registry  # NEW
+        self.jms_registry = jms_registry
+        self.http_executor = http_executor  # Optional; HTTP sends skipped if None
 
     async def run_send(self, send: SendDefinition, verbose: bool = False) -> SendResult:
         """Execute a single send definition."""
@@ -122,7 +124,7 @@ class SendExecutor:
                         template_context.update(context)
 
                         # Render and inject
-                        rendered_payload = TemplateRenderer.render(item.payload, template_context)
+                        rendered_payload = TemplateRenderer.render(item.payload, template_context) if item.payload else None
                         rendered_headers = None
                         if item.headers:
                             rendered_headers = {
@@ -136,7 +138,7 @@ class SendExecutor:
                             rendered_key = TemplateRenderer.render(item.key, template_context)
 
                         try:
-                            payload_obj = json.loads(rendered_payload)
+                            payload_obj = json.loads(rendered_payload) if rendered_payload else None
                         except json.JSONDecodeError:
                             payload_obj = rendered_payload
 
@@ -161,7 +163,29 @@ class SendExecutor:
                                 rendered_key = FaultInjector.apply_messagekey_poison_pill(rendered_key)
 
                         # Route to appropriate client based on message type
-                        if item.msg_type == "jms":
+                        if item.msg_type == "http":
+                            if not self.http_executor:
+                                raise Exception(f"HTTP executor not initialized, cannot call {item.destination}")
+                            rendered_url = TemplateRenderer.render(item.destination, template_context)
+                            rendered_query = None
+                            if item.query_params:
+                                rendered_query = {k: TemplateRenderer.render(v, template_context) for k, v in item.query_params.items()}
+                            http_result = await self.http_executor.execute(
+                                url=rendered_url,
+                                method=item.method,
+                                payload=rendered_payload if item.payload else None,
+                                headers=rendered_headers,
+                                query_params=rendered_query,
+                                auth_ref=item.auth_ref,
+                                tls_ref=item.tls_ref,
+                                timeout_ms=item.http_timeout_ms,
+                                message_id=item.message_id,
+                            )
+                            logger.info(
+                                f"HTTP {item.method} {rendered_url} → {http_result.status_code} "
+                                f"(message_id={item.message_id})"
+                            )
+                        elif item.msg_type == "jms":
                             # NEW: Handle JMS injection
                             if not self.jms_registry or self.jms_registry.is_empty():
                                 logger.error(f"JMS client not initialized, cannot inject to {item.topic}")
@@ -187,8 +211,8 @@ class SendExecutor:
                                 key=rendered_key
                             )
 
-                        # Handle message duplication if configured
-                        if item.fault and FaultInjector.should_duplicate(item.fault):
+                        # Handle message duplication if configured (not for HTTP)
+                        if item.msg_type != "http" and item.fault and FaultInjector.should_duplicate(item.fault):
                             logger.info(f"Duplicating send injection message to {item.topic} (fault injection)")
                             if item.msg_type == "jms":
                                 # Duplicate JMS message

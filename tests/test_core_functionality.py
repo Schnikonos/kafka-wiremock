@@ -137,16 +137,16 @@ class TestConfigLoaderBasic(unittest.TestCase):
             rule_file.write_text('''
 priority: 10
 when:
-  topic: test
+  destination: test
 then:
-  - topic: output
+  - destination: output
     payload: '{}'
 ''')
 
             loader = ConfigLoader(tmpdir, reload_interval=0)
             self.assertEqual(len(loader.rules), 1)
             self.assertEqual(loader.rules[0].priority, 10)
-            self.assertEqual(loader.rules[0].input_topic, 'test')
+            self.assertEqual(loader.rules[0].input_destination, 'test')
 
     def test_load_wildcard_rule(self):
         """Test loading wildcard rule (no conditions)."""
@@ -155,9 +155,9 @@ then:
             rule_file.write_text('''
 priority: 99
 when:
-  topic: catch-all
+  destination: catch-all
 then:
-  - topic: archive
+  - destination: archive
     payload: '{}'
 ''')
 
@@ -173,9 +173,9 @@ then:
                 rule_file.write_text(f'''
 priority: {i}
 when:
-  topic: topic-{i}
+  destination: topic-{i}
 then:
-  - topic: out
+  - destination: out
     payload: '{{}}'
 ''')
 
@@ -195,9 +195,9 @@ then:
             rule_file.write_text('''
 priority: 1
 when:
-  topic: new
+  destination: new
 then:
-  - topic: out
+  - destination: out
     payload: '{}'
 ''')
 
@@ -212,9 +212,9 @@ then:
             rule_file.write_text('''
 priority: 1
 when:
-  topic: test
+  destination: test
 then:
-  - topic: out
+  - destination: out
     payload: '{}'
 ''')
 
@@ -236,9 +236,9 @@ then:
                 rule_file.write_text(f'''
 priority: {i}
 when:
-  topic: orders
+  destination: orders
 then:
-  - topic: out
+  - destination: out
     payload: '{{}}'
 ''')
 
@@ -260,7 +260,7 @@ class TestComplexScenarios(unittest.TestCase):
 priority: 10
 name: process-order
 when:
-  topic: orders
+  destination: orders
   match:
     - type: jsonpath
       expression: "$.status"
@@ -269,12 +269,12 @@ when:
       expression: "$.amount"
       regex: "^[0-9]+$"
 then:
-  - topic: payments
+  - destination: payments
     delay_ms: 100
     headers:
       X-OrderId: "{{orderId}}"
     payload: '{"amount": "{{amount}}"}'
-  - topic: notifications
+  - destination: notifications
     payload: '{"msg": "Order received"}'
 ''')
 
@@ -287,12 +287,12 @@ then:
             self.assertEqual(len(rule.outputs), 2)
 
             # Check first output
-            self.assertEqual(rule.outputs[0].topic, 'payments')
+            self.assertEqual(rule.outputs[0].destination, 'payments')
             self.assertEqual(rule.outputs[0].delay_ms, 100)
             self.assertIn('X-OrderId', rule.outputs[0].headers)
 
             # Check second output
-            self.assertEqual(rule.outputs[1].topic, 'notifications')
+            self.assertEqual(rule.outputs[1].destination, 'notifications')
 
     def test_message_matching_with_extraction(self):
         """Test message matching with value extraction."""
@@ -329,18 +329,18 @@ then:
             (Path(tmpdir) / "orders" / "01.yaml").write_text('''
 priority: 10
 when:
-  topic: orders
+  destination: orders
 then:
-  - topic: out
+  - destination: out
     payload: '{}'
 ''')
 
             (Path(tmpdir) / "payments" / "01.yaml").write_text('''
 priority: 20
 when:
-  topic: payments
+  destination: payments
 then:
-  - topic: out
+  - destination: out
     payload: '{}'
 ''')
 
@@ -433,7 +433,7 @@ class TestConfigLoaderValidation(unittest.TestCase):
             rule_file.write_text('''
 priority: 1
 when:
-  topic: test
+  destination: test
   match:
     - type: exact
       value: "exact-match"
@@ -442,7 +442,7 @@ when:
     - type: regex
       regex: "[0-9]+"
 then:
-  - topic: out
+  - destination: out
     payload: '{}'
 ''')
 
@@ -462,9 +462,9 @@ then:
                 rule_file.write_text(f'''
 priority: {priority}
 when:
-  topic: test
+  destination: test
 then:
-  - topic: out
+  - destination: out
     payload: '{{}}'
 ''')
 
@@ -483,13 +483,13 @@ then:
             rule_file.write_text('''
 priority: 1
 when:
-  topic: test
+  destination: test
 then:
-  - topic: out1
+  - destination: out1
     payload: '{"msg": 1}'
     headers:
       X-Header1: "value1"
-  - topic: out2
+  - destination: out2
     payload: '{"msg": 2}'
     headers:
       X-Header2: "value2"
@@ -511,9 +511,9 @@ then:
             rule_file.write_text('''
 priority: 1
 when:
-  topic: test
+  destination: test
 then:
-  - topic: avro-out
+  - destination: avro-out
     payload: '{"data": "value"}'
     schema_id: 42
 ''')
@@ -530,9 +530,9 @@ then:
             rule_file.write_text('''
 priority: 1
 when:
-  topic: test
+  destination: test
 then:
-  - topic: out
+  - destination: out
     payload: '{}'
     delay_ms: 500
 ''')
@@ -559,9 +559,9 @@ class TestConfigLoaderEdgeCases(unittest.TestCase):
             rule_file.write_text('''
 priority: 1
 when:
-  topic: test
+  destination: test
 then:
-  - topic: out
+  - destination: out
     payload: '{}'
 ''')
 
@@ -584,9 +584,9 @@ then:
             rule_file.write_text('''
 priority: 1
 when:
-  topic: test
+  destination: test
 then:
-  - topic: out1
+  - destination: out1
     payload: '{"v": 1}'
 ''')
 
@@ -597,9 +597,9 @@ then:
             rule_file.write_text('''
 priority: 2
 when:
-  topic: test2
+  destination: test2
 then:
-  - topic: out2
+  - destination: out2
     payload: '{"v": 2}'
 ''')
 
@@ -608,7 +608,7 @@ then:
 
             # Verify changes were loaded
             self.assertEqual(loader.rules[0].priority, 2)
-            self.assertEqual(loader.rules[0].input_topic, 'test2')
+            self.assertEqual(loader.rules[0].input_destination, 'test2')
 
 
 class TestMatcherComplexCases(unittest.TestCase):
@@ -622,9 +622,9 @@ class TestMatcherComplexCases(unittest.TestCase):
                 rule_file.write_text(f'''
 priority: {i * 10}
 when:
-  topic: shared
+  destination: shared
 then:
-  - topic: out
+  - destination: out
     payload: '{{"order": {i}}}'
 ''')
 
@@ -789,9 +789,9 @@ class TestConfigLoaderAdvanced(unittest.TestCase):
                 f.write_text(f'''
 priority: {i}
 when:
-  topic: test
+  destination: test
 then:
-  - topic: out
+  - destination: out
     payload: '{{}}'
 ''')
 
@@ -810,14 +810,14 @@ then:
             f.write_text('''
 priority: 1
 when:
-  topic: test
+  destination: test
   match:
     - type: jsonpath
       expression: "$.status"
       value: "ACTIVE"
       regex: "[A-Z]+"
 then:
-  - topic: out
+  - destination: out
     payload: '{}'
 ''')
 

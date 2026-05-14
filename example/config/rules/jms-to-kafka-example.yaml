@@ -3,8 +3,8 @@ name: "jms-to-kafka-example"
 
 # Input from JMS queue
 when:
-  topic: ORDERS_INPUT
-  msg_type: jms  # This is a JMS message
+  destination: ORDERS_INPUT
+  type: jms  # This is a JMS message
   match:
     - type: jsonpath
       expression: "$.eventType"
@@ -13,8 +13,8 @@ when:
 # Output to both Kafka and JMS
 then:
   # Output 1: Send to Kafka topic
-  - topic: orders.processed
-    msg_type: kafka  # Output to Kafka (explicit, but default)
+  - destination: orders.processed
+    type: kafka  # Output to Kafka (explicit, but default)
     payload: |
       {
         "orderId": "{{$.orderId}}",
@@ -24,8 +24,8 @@ then:
       }
 
   # Output 2: Send to another JMS queue
-  - topic: ORDERS_PROCESSED
-    msg_type: jms  # Output to JMS queue
+  - destination: ORDERS_PROCESSED
+    type: jms  # Output to JMS queue
     payload: |
       {
         "orderId": "{{$.orderId}}",

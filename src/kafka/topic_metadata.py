@@ -141,7 +141,7 @@ class TopicMetadataManager:
             # Get input topic from 'when' block
             when_block = rule_data.get('when', {})
             if isinstance(when_block, dict):
-                input_topic = when_block.get('topic')
+                input_topic = when_block.get('destination')
                 if input_topic:
                     # Check if topic metadata is specified in when block
                     message_type = when_block.get('message_type', 'json')
@@ -163,7 +163,7 @@ class TopicMetadataManager:
 
             for output_item in then_block:
                 if isinstance(output_item, dict):
-                    output_topic = output_item.get('topic')
+                    output_topic = output_item.get('destination')
                     if output_topic:
                         # Check for message type metadata in output
                         message_type = output_item.get('message_type', 'json')
@@ -193,7 +193,7 @@ class TopicMetadataManager:
 
                 for injection in injections:
                     if isinstance(injection, dict):
-                        topic = injection.get('topic')
+                        topic = injection.get('destination')
                         if topic:
                             message_type = injection.get('message_type', 'json')
                             schema_id = injection.get('schema_id')
@@ -213,7 +213,7 @@ class TopicMetadataManager:
 
                 for expectation in expectations:
                     if isinstance(expectation, dict):
-                        topic = expectation.get('topic')
+                        topic = expectation.get('destination')
                         if topic:
                             message_type = expectation.get('message_type', 'json')
                             if topic not in topics_dict:

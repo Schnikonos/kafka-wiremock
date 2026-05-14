@@ -44,6 +44,9 @@ import { AppSettingsDialogComponent } from '../../features/settings/app-settings
       <button mat-icon-button (click)="openSettings()" matTooltip="Application Settings">
         <mat-icon>settings</mat-icon>
       </button>
+      <a mat-icon-button href="https://github.com/Schnikonos/kafka-wiremock" target="_blank" rel="noopener noreferrer" matTooltip="Open documentation on GitHub">
+        <mat-icon>help_outline</mat-icon>
+      </a>
       <span *ngIf="healthStatus?.status === 'UNAVAILABLE'"
             class="backend-unavailable"
             matTooltip="Backend server is not available">

@@ -7,7 +7,7 @@ timeout_ms: 5000
 when:
   inject:
     - message_id: "order1"
-      topic: "users.commands"
+      destination: "users.commands"
       headers:
         my-test-header: "HeaderValue123"
       key: "myMessageKey"
@@ -26,13 +26,13 @@ when:
 
 then:
   expectations:
-    - topic: "users.events"
+    - destination: "users.events"
       wait_ms: 2000
       correlate:
         message_id: "order1"
       match:
         - type: key
-          value: "myMessageKey1"
+          value: "myMessageKey"
         - type: header
           expression: "my-header"
           value: "MyCustomHeader"

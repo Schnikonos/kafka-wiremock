@@ -6,7 +6,7 @@ timeout_ms: 5000
 
 inject:
   - message_id: "user-reg"
-    topic: "users.commands"
+    destination: "users.commands"
     payload: |
       {
         "userId": "{{uuid}}",
@@ -17,7 +17,7 @@ inject:
     delay_ms: 100
   
   - message_id: "order-cmd"
-    topic: "orders.commands"
+    destination: "orders.commands"
     payload: |
       {
         "orderId": "{{uuid}}",

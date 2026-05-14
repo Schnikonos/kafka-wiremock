@@ -1,0 +1,145 @@
+# Test: Validate HTTP and HTTPS/mTLS calls against the three dummy-app targets.
+#
+# Targets (Docker service names — resolved inside the container network):
+#   dummy-app-http:8080       → plain HTTP      (no client cert)
+#   dummy-app-https-t1:8080   → HTTPS + mTLS    (client cert c1, signed by CA1 / truststore t1)
+#   dummy-app-https-t2:8080   → HTTPS + mTLS    (client cert c2, signed by CA2 / truststore t2)
+#
+# TLS profiles are resolved automatically from config/http-config/tls.yaml:
+#   dummy-app-http       → no_cert  profile  (host override)
+#   dummy-app-https-t1   → default  profile  (verify=false, client cert c1)
+#   dummy-app-https-t2   → cert_c2  profile  (host override)
+#
+# See example/send/examples/06-http-tls-smoke.send.yaml for the send-only version.
+priority: 60
+name: "http-tls-test"
+tags: ["http", "tls", "mtls", "example"]
+timeout_ms: 15000
+
+when:
+  inject:
+    # ── dummy-app-http: plain HTTP ──────────────────────────────────────────
+    - message_id: "get_http"
+      destination: "http://dummy-app-http:8080/hello"
+      type: http
+      method: GET
+
+    - message_id: "post_http"
+      destination: "http://dummy-app-http:8080/echo"
+      type: http
+      method: POST
+      headers:
+        Content-Type: "application/json"
+      payload: |
+        {"test": "plain-http", "id": "{{testId}}"}
+
+    # ── dummy-app-https-t1: HTTPS + mTLS (client cert c1, truststore t1) ───
+    - message_id: "get_https_t1"
+      destination: "https://dummy-app-https-t1:8080/hello"
+      type: http
+      method: GET
+
+    - message_id: "post_https_t1"
+      destination: "https://dummy-app-https-t1:8080/echo"
+      type: http
+      method: POST
+      headers:
+        Content-Type: "application/json"
+      payload: |
+        {"test": "mtls-c1", "id": "{{testId}}"}
+
+    # ── dummy-app-https-t2: HTTPS + mTLS (client cert c2, truststore t2) ───
+    - message_id: "get_https_t2"
+      destination: "https://dummy-app-https-t2:8080/hello"
+      type: http
+      method: GET
+
+    - message_id: "post_https_t2"
+      destination: "https://dummy-app-https-t2:8080/echo"
+      type: http
+      method: POST
+      headers:
+        Content-Type: "application/json"
+      payload: |
+        {"test": "mtls-c2", "id": "{{testId}}"}
+
+then:
+  expectations:
+    # ── GET /hello on dummy-app-http ────────────────────────────────────────
+    - type: http
+      source_id: "get_http"
+      match:
+        - type: status_code
+          value: 200
+        - type: response_header
+          expression: "content-type"
+          regex: "application/.*json"
+        - type: jsonpath
+          expression: "$.message"
+          value: "hello"
+        - type: jsonpath
+          expression: "$.mode"
+          value: "http"
+
+    # ── POST /echo on dummy-app-http ────────────────────────────────────────
+    - type: http
+      source_id: "post_http"
+      match:
+        - type: status_code
+          value: 200
+        - type: jsonpath
+          expression: "$.echoed.test"
+          value: "plain-http"
+
+    # ── GET /hello on dummy-app-https-t1 (mTLS c1) ──────────────────────────
+    - type: http
+      source_id: "get_https_t1"
+      match:
+        - type: status_code
+          value: 200
+        - type: response_header
+          expression: "content-type"
+          regex: "application/.*json"
+        - type: jsonpath
+          expression: "$.message"
+          value: "hello"
+        - type: jsonpath
+          expression: "$.mode"
+          value: "https"
+
+    # ── POST /echo on dummy-app-https-t1 (mTLS c1) ──────────────────────────
+    - type: http
+      source_id: "post_https_t1"
+      match:
+        - type: status_code
+          value: 200
+        - type: jsonpath
+          expression: "$.echoed.test"
+          value: "mtls-c1"
+
+    # ── GET /hello on dummy-app-https-t2 (mTLS c2) ──────────────────────────
+    - type: http
+      source_id: "get_https_t2"
+      match:
+        - type: status_code
+          value: 200
+        - type: response_header
+          expression: "content-type"
+          regex: "application/.*json"
+        - type: jsonpath
+          expression: "$.message"
+          value: "hello"
+        - type: jsonpath
+          expression: "$.mode"
+          value: "https"
+
+    # ── POST /echo on dummy-app-https-t2 (mTLS c2) ──────────────────────────
+    - type: http
+      source_id: "post_https_t2"
+      match:
+        - type: status_code
+          value: 200
+        - type: jsonpath
+          expression: "$.echoed.test"
+          value: "mtls-c2"
+

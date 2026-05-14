@@ -1,0 +1,47 @@
+# Authentication configuration for outbound HTTP(S) calls.
+#
+# Config file: config/http-config/auth.yaml
+#
+# Password env-var convention:
+#   Profile "my_api"      -> env var  HTTP_AUTH_MY_API_PASSWORD
+#   Profile "oauth-flow"  -> env var  HTTP_AUTH_OAUTH_FLOW_PASSWORD
+#   (profile name uppercased, non-alphanum replaced with _)
+profiles:
+  # Basic auth: username from config, password from env var.
+  orders_api:
+    type: basic
+    username: kafka-wiremock
+    # password loaded from: HTTP_AUTH_ORDERS_API_PASSWORD
+  # Static bearer token (inline).
+  internal_service:
+    type: bearer
+    token: "my-static-internal-token"
+  # Bearer token from an environment variable.
+  partner_api:
+    type: bearer
+    token_env: PARTNER_API_TOKEN      # env var holding the token
+  # OAuth2 client-credentials: call auth endpoint, extract token, cache it.
+  oauth_prod:
+    type: token_fetch
+    token_url: "https://auth.example.com/oauth/token"
+    method: POST
+    body: '{"grant_type":"client_credentials","client_id":"{{username}}","client_secret":"{{password}}"}'
+    username: my-client-id
+    # client_secret loaded from: HTTP_AUTH_OAUTH_PROD_PASSWORD
+    token_response_path: "$.access_token"
+    token_cache_ttl_s: 3600           # Cache token for 1 hour
+  # mTLS certificate-based authentication (no extra header; cert set via tls_ref).
+  internal_mtls:
+    type: certificate
+    tls_profile: mtls_internal        # must exist in tls.yaml profiles
+# Host-based overrides: matched top-to-bottom, first match wins.
+# Supports exact host, glob patterns (fnmatch), and optional port/port-range.
+host_overrides:
+  "orders-api.internal.corp.com":
+    profile: orders_api
+  "partner-api.example.com":
+    profile: partner_api
+  "*.internal.corp.com":
+    profile: internal_mtls
+  "auth-required.example.com:8443-8449":
+    profile: oauth_prod

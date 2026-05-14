@@ -108,6 +108,14 @@ export class ConfigViewComponent implements OnInit {
     this.loadAllConfigurations();
   }
 
+  downloadSchemas(): void {
+    const link = document.createElement('a');
+    link.href = '/schemas.zip';
+    link.download = 'kafka-wiremock-schemas.zip';
+    link.click();
+    this.snackBar.success('JSON Schemas download started');
+  }
+
   downloadAsJson(): void {
     const config = {
       topics: this.topicConfig,

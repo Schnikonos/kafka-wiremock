@@ -1,13 +1,13 @@
 priority: 10
 name: "test-rule"
 when:
-  topic: users.commands
+  destination: users.commands
   match:
     - type: jsonpath
       expression: "$.eventType"
       value: "USER_CREATED"
 then:
-  - topic: users.events
+  - destination: users.events
     payload: |
       {
         "userId": "{{$.userId}}",

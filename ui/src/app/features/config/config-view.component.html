@@ -3,6 +3,9 @@
     <mat-icon class="toolbar-icon">settings</mat-icon>
     <span>Configuration Management</span>
     <span class="spacer"></span>
+    <button mat-icon-button (click)="downloadSchemas()" matTooltip="Download JSON Schemas (ZIP)" matTooltipPosition="left">
+      <mat-icon>schema</mat-icon>
+    </button>
     <button mat-icon-button (click)="downloadAsJson()" matTooltip="Download Config as JSON" matTooltipPosition="left">
       <mat-icon>download</mat-icon>
     </button>

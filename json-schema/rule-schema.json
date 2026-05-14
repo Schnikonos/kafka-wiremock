@@ -25,23 +25,23 @@
     "when": {
       "type": "object",
       "description": "Defines which incoming messages (Kafka or JMS) this rule matches.",
-      "required": ["topic"],
+      "required": ["destination"],
       "additionalProperties": false,
       "properties": {
-        "topic": {
+        "destination": {
           "type": "string",
           "description": "The Kafka topic or JMS queue/topic name to listen on.",
           "minLength": 1,
           "examples": ["orders.input", "payments.events", "transfers", "ORDERS_INPUT"]
         },
-        "msg_type": {
+        "type": {
           "type": "string",
           "description": "Input message type - kafka (default) or jms. Determines which listener handles this rule.",
           "enum": ["kafka", "jms"],
           "default": "kafka",
           "examples": ["kafka", "jms"]
         },
-        "queue_manager_ref": {
+        "connection_ref": {
           "type": "string",
           "description": "For JMS only: reference to queue manager defined in queue-managers.yaml. Uses default queue manager when omitted.",
           "minLength": 1,
@@ -315,28 +315,57 @@
     },
     "output": {
       "type": "object",
-      "description": "A single Kafka message to produce when the rule matches.",
-      "required": ["topic"],
+      "description": "A single output action when the rule matches (Kafka message, JMS message, or HTTP call).",
+      "required": ["destination"],
       "additionalProperties": false,
       "properties": {
-        "topic": {
+        "destination": {
           "type": "string",
-          "description": "Kafka topic or JMS queue/topic name to publish the output message to.",
+          "description": "Kafka topic name, JMS queue/topic name, or HTTP(S) URL depending on 'type'.",
           "minLength": 1,
-          "examples": ["payments.input", "shipments.output", "dlq.archive", "ORDERS_QUEUE"]
+          "examples": ["payments.input", "shipments.output", "ORDERS_QUEUE", "https://api.example.com/notify"]
         },
-        "msg_type": {
+        "type": {
           "type": "string",
-          "description": "Message type - kafka (default) or jms. Specifies output message destination.",
-          "enum": ["kafka", "jms"],
+          "description": "Output type - kafka (default), jms, or http.",
+          "enum": ["kafka", "jms", "http"],
           "default": "kafka",
-          "examples": ["kafka", "jms"]
+          "examples": ["kafka", "jms", "http"]
         },
-        "queue_manager_ref": {
+        "connection_ref": {
           "type": "string",
-          "description": "Reference to queue manager (only for jms msg_type). Name from queue-managers.yaml.",
+          "description": "Reference to queue manager (only for type=jms). Name from queue-managers.yaml.",
           "minLength": 1,
           "examples": ["qm_us_east", "qm_eu_west"]
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method (only for type=http). Defaults to POST.",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+          "default": "POST",
+          "examples": ["POST", "PUT", "GET"]
+        },
+        "query_params": {
+          "type": "object",
+          "description": "HTTP query parameters (only for type=http). Values support template placeholders.",
+          "additionalProperties": { "type": "string" }
+        },
+        "auth_ref": {
+          "type": "string",
+          "description": "Auth profile name from config/http-config/auth.yaml (overrides host-based auto-selection).",
+          "examples": ["api_basic", "bearer_oauth", "internal_cert"]
+        },
+        "tls_ref": {
+          "type": "string",
+          "description": "TLS profile name from config/http-config/tls.yaml (overrides host-based auto-selection).",
+          "examples": ["internal", "corp_ca"]
+        },
+        "http_timeout_ms": {
+          "type": "integer",
+          "description": "HTTP request timeout in milliseconds (only for type=http).",
+          "minimum": 0,
+          "default": 10000,
+          "examples": [5000, 10000, 30000]
         },
         "payload": {
           "type": "string",
@@ -468,7 +497,7 @@
       "priority": 10,
       "name": "process-order",
       "when": {
-        "topic": "orders.input",
+        "destination": "orders.input",
         "match": [
           {
             "type": "jsonpath",
@@ -479,7 +508,7 @@
       },
       "then": [
         {
-          "topic": "payments.input",
+          "destination": "payments.input",
           "delay_ms": 200,
           "headers": {
             "X-Order-ID": "{{$.orderId}}"
@@ -492,11 +521,11 @@
       "priority": 999,
       "name": "catch-all",
       "when": {
-        "topic": "dlq"
+        "destination": "dlq"
       },
       "then": [
         {
-          "topic": "dlq.archive",
+          "destination": "dlq.archive",
           "payload": "{\"archived\": true, \"archivedAt\": \"{{now}}\"}"
         }
       ]

@@ -1,0 +1,80 @@
+# TLS / mTLS configuration for outbound HTTP(S) calls.
+#
+# Config is loaded from  config/http-config/tls.yaml
+# and hot-reloaded every ~30 s.
+#
+# Matching priority for host_overrides (top-to-bottom, first match wins):
+#   1. Exact "host:port"             2. Exact "host"
+#   3. Port-range "host:start-end"   4. Glob "host_pattern:port"
+#   5. Glob "host_pattern"           6. Default profile
+#
+# ─── Default ────────────────────────────────────────────────────────────────
+# Used when no host_override matches.
+# Sends client certificate c1 (accepted by dummy-app-https-t1 on port 9082).
+default:
+  verify: false                      # skip server-cert verification in tests
+  client_cert: /certs/c1.pem        # mTLS client certificate (signed by CA1)
+  client_key:  /certs/c1.key
+
+# ─── Named profiles ─────────────────────────────────────────────────────────
+profiles:
+  # Plain call — no client certificate, no server verification
+  no_cert:
+    verify: false
+
+  # Client certificate c2 (signed by CA2 — accepted by dummy-app-https-t2)
+  cert_c2:
+    verify: false
+    client_cert: /certs/c2.pem
+    client_key:  /certs/c2.key
+
+  # Legacy examples kept for reference
+  no_verify:
+    verify: false
+
+  corp_ca:
+    verify: /certs/corp-ca-bundle.pem
+
+  mtls_internal:
+    verify: /certs/internal-ca.pem
+    client_cert: /certs/kafka-wiremock-client.pem
+    client_key:  /certs/kafka-wiremock-client.key
+    client_key_password_env: MTLS_CLIENT_KEY_PASSWORD
+
+# ─── Host overrides (first match wins) ──────────────────────────────────────
+host_overrides:
+
+  # ── Dummy-app test targets (Docker service names, internal port 8080) ──────
+  # dummy-app-http — plain HTTP; no client cert required
+  "dummy-app-http":
+    profile: no_cert
+
+  # dummy-app-https-t1 — mTLS with truststore t1; default profile sends c1.
+  # No explicit entry needed: falls through to the default profile above.
+
+  # dummy-app-https-t2 — mTLS with truststore t2; must present client cert c2
+  "dummy-app-https-t2":
+    profile: cert_c2
+
+  # ── Same targets via localhost (for running tests outside Docker) ──────────
+  "localhost:9081":
+    profile: no_cert
+
+  # localhost:9082 — falls through to default (c1)
+
+  "localhost:9083":
+    profile: cert_c2
+
+  # General port-range example: any localhost:9088–9098 also uses cert c2
+  "localhost:9088-9098":
+    profile: cert_c2
+
+  # ── Legacy / example overrides ────────────────────────────────────────────
+  "*.internal.corp.com":
+    profile: mtls_internal
+
+  "partner-api.example.com:8440-8449":
+    profile: corp_ca
+
+  "legacy-mock.example.com":
+    verify: false

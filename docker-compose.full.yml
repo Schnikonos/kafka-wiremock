@@ -109,6 +109,77 @@ services:
     networks:
       - wiremock-network
 
+  # ── Dummy API targets for HTTP/HTTPS testing ──────────────────────────────
+  dummy-app-http:
+    build:
+      context: ./test-dummy-app
+      dockerfile: Dockerfile
+    ports:
+      - "9081:8080"
+    environment:
+      PORT: "8080"
+      MODE: "http"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - wiremock-network
+
+  dummy-app-https-t1:
+    build:
+      context: ./test-dummy-app
+      dockerfile: Dockerfile
+    ports:
+      - "9082:8080"
+    environment:
+      PORT: "8080"
+      MODE: "https"
+      SSL_CERTFILE: "/certs/server-t1.pem"
+      SSL_KEYFILE:  "/certs/server-t1.key"
+      SSL_CA_CERTS:             "/certs/ca1.pem"
+      SSL_REQUIRE_CLIENT_CERT:  "true"
+    volumes:
+      - ./test-dummy-app/certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,ssl; ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; ctx.load_cert_chain('/certs/c1.pem','/certs/c1.key'); urllib.request.urlopen('https://localhost:8080/health', context=ctx)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - wiremock-network
+
+  dummy-app-https-t2:
+    build:
+      context: ./test-dummy-app
+      dockerfile: Dockerfile
+    ports:
+      - "9083:8080"
+    environment:
+      PORT: "8080"
+      MODE: "https"
+      SSL_CERTFILE: "/certs/server-t2.pem"
+      SSL_KEYFILE:  "/certs/server-t2.key"
+      SSL_CA_CERTS:             "/certs/ca2.pem"
+      SSL_REQUIRE_CLIENT_CERT:  "true"
+    volumes:
+      - ./test-dummy-app/certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,ssl; ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; ctx.load_cert_chain('/certs/c2.pem','/certs/c2.key'); urllib.request.urlopen('https://localhost:8080/health', context=ctx)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - wiremock-network
+
+  # ── kafka-wiremock ──────────────────────────────────────────────────────────
   kafka-wiremock:
     build:
       context: .
@@ -119,6 +190,12 @@ services:
       kafka-topics-init:
         condition: service_completed_successfully
       ibm-mq:
+        condition: service_healthy
+      dummy-app-http:
+        condition: service_healthy
+      dummy-app-https-t1:
+        condition: service_healthy
+      dummy-app-https-t2:
         condition: service_healthy
     ports:
       - "8001:8000"
@@ -139,6 +216,8 @@ services:
       - ./example/testSuite:/testSuite
       - ./example/send:/send
       - ./example/logs:/var/log/wiremock
+      # Client certificates for outbound mTLS calls to dummy-app targets
+      - ./test-dummy-app/certs:/certs:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s

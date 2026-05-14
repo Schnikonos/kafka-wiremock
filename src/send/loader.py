@@ -127,14 +127,15 @@ class SendValidator:
                 # It's an injection
                 if "message_id" not in item_dict:
                     raise ValueError(f"Injection at index {idx} missing 'message_id'")
-                if "topic" not in item_dict:
-                    raise ValueError(f"Injection at index {idx} missing 'topic'")
-                if "payload" not in item_dict and "payload_file" not in item_dict:
+                if "destination" not in item_dict:
+                    raise ValueError(f"Injection at index {idx} missing 'destination'")
+                msg_type = str(item_dict.get("type", "kafka")).lower()
+                if msg_type != "http" and "payload" not in item_dict and "payload_file" not in item_dict:
                     raise ValueError(f"Injection at index {idx} missing 'payload' or 'payload_file'")
 
                 injection = TestInjection(
                     message_id=str(item_dict["message_id"]),
-                    topic=str(item_dict["topic"]),
+                    destination=str(item_dict["destination"]),
                     payload=str(item_dict["payload"]) if "payload" in item_dict else None,
                     payload_file=item_dict.get("payload_file"),
                     headers=item_dict.get("headers"),
@@ -142,8 +143,13 @@ class SendValidator:
                     delay_ms=int(item_dict.get("delay_ms", 0)),
                     correlation_id=item_dict.get("correlation_id"),
                     fault=TestYamlParser._parse_fault(item_dict.get("fault")),
-                    msg_type=str(item_dict.get("msg_type", "kafka")).lower(),
-                    queue_manager_ref=item_dict.get("queue_manager_ref")
+                    msg_type=msg_type,
+                    connection_ref=item_dict.get("connection_ref"),
+                    method=str(item_dict.get("method", "POST")).upper(),
+                    query_params=item_dict.get("query_params"),
+                    auth_ref=item_dict.get("auth_ref"),
+                    tls_ref=item_dict.get("tls_ref"),
+                    http_timeout_ms=int(item_dict.get("http_timeout_ms", 10000)),
                 )
                 items.append(injection)
 

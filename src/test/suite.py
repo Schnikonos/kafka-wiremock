@@ -14,13 +14,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from jsonpath_ng import parse as jsonpath_parse
 from jsonpath_ng.exceptions import JSONPathError
 
-from .loader import TestDefinition, TestInjection, TestExpectation, TestScript
+from .loader import TestDefinition, TestInjection, TestExpectation, TestScript, HttpInjectionResult
 from ..kafka.client import KafkaClientWrapper
 from ..rules.matcher import MatcherFactory
 from ..rules.templater import TemplateRenderer
 from ..custom.placeholders import CustomPlaceholderRegistry
 from ..fault.injector import FaultInjector
 from .logger import TestLogger
+from ..http.executor import HttpExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,7 @@ class WhenResult:
     injected: List[Dict[str, Any]] = field(default_factory=list)
     faulted_injections: List[str] = field(default_factory=list)  # message_ids with faults (and check_result=False)
     script_error: Optional[str] = None
+    http_results: Dict[str, Any] = field(default_factory=dict)  # message_id → HttpInjectionResult
 
 
 @dataclass
@@ -200,16 +202,18 @@ class TestExecutor:
         test_suite_dir: str = "/testSuite",
         message_cache = None,
         listener_engine = None,
-        jms_registry = None  # Optional JMS registry for JMS injection/expectation support
+        jms_registry = None,  # Optional JMS registry for JMS injection/expectation support
+        http_executor: Optional["HttpExecutor"] = None  # Optional HTTP executor for HTTP requests
     ):
         """Initialize test executor."""
         self.kafka_client = kafka_client
         self.custom_placeholder_registry = custom_placeholder_registry or CustomPlaceholderRegistry()
         self.matcher_factory = MatcherFactory()
         self.test_suite_dir = test_suite_dir
-        self.message_cache = message_cache  # Optional cache for test message queries
-        self.listener_engine = listener_engine  # Optional listener engine for ensuring topics are ready
-        self.jms_registry = jms_registry  # Optional JMS registry for JMS support
+        self.message_cache = message_cache
+        self.listener_engine = listener_engine
+        self.jms_registry = jms_registry
+        self.http_executor = http_executor  # Optional; HTTP calls skipped if None
 
     async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None, verbose: bool = False, force_run: bool = False) -> TestResult:
         """Execute a single test."""
@@ -323,7 +327,7 @@ class TestExecutor:
                         template_context.update(context)
 
                         # Render and inject
-                        rendered_payload = TemplateRenderer.render(item.payload, template_context)
+                        rendered_payload = TemplateRenderer.render(item.payload, template_context) if item.payload else None
                         rendered_headers = None
                         if item.headers:
                             rendered_headers = {
@@ -337,7 +341,7 @@ class TestExecutor:
                             rendered_key = TemplateRenderer.render(item.key, template_context)
 
                         try:
-                            payload_obj = json.loads(rendered_payload)
+                            payload_obj = json.loads(rendered_payload) if rendered_payload else None
                         except json.JSONDecodeError:
                             payload_obj = rendered_payload
 
@@ -365,36 +369,57 @@ class TestExecutor:
                                 rendered_key = FaultInjector.apply_messagekey_poison_pill(rendered_key)
 
                         # Route to appropriate client based on message type
-                        if item.msg_type == "jms":
+                        if item.msg_type == "http":
+                            if not self.http_executor:
+                                raise Exception(f"HTTP executor not initialized, cannot call {item.destination}")
+                            rendered_url = TemplateRenderer.render(item.destination, template_context)
+                            rendered_query = None
+                            if item.query_params:
+                                rendered_query = {k: TemplateRenderer.render(v, template_context) for k, v in item.query_params.items()}
+                            http_result = await self.http_executor.execute(
+                                url=rendered_url,
+                                method=item.method,
+                                payload=rendered_payload if item.payload else None,
+                                headers=rendered_headers,
+                                query_params=rendered_query,
+                                auth_ref=item.auth_ref,
+                                tls_ref=item.tls_ref,
+                                timeout_ms=item.http_timeout_ms,
+                                message_id=item.message_id,
+                            )
+                            # Store HTTP result for use in then-phase expectations
+                            result.http_results[item.message_id] = http_result
+                            logger.info(f"HTTP {item.method} {rendered_url} → {http_result.status_code} (message_id={item.message_id})")
+                        elif item.msg_type == "jms":
                             if not self.jms_registry or self.jms_registry.is_empty():
-                                raise Exception(f"JMS client not initialized, cannot inject to {item.topic}")
-                            jms_client = self.jms_registry.get_client(item.queue_manager_ref)
+                                raise Exception(f"JMS client not initialized, cannot inject to {item.destination}")
+                            jms_client = self.jms_registry.get_client(item.connection_ref)
                             jms_client.put_message(
-                                destination=item.topic,
+                                destination=item.destination,
                                 payload=json.dumps(payload_obj) if isinstance(payload_obj, dict) else str(payload_obj),
                                 headers=rendered_headers,
                             )
                         else:
                             self.kafka_client.produce(
-                                topic=item.topic,
+                                topic=item.destination,
                                 message=payload_obj,
                                 headers=rendered_headers,
                                 key=rendered_key
                             )
 
-                        # Handle message duplication if configured
-                        if item.fault and FaultInjector.should_duplicate(item.fault):
-                            logger.info(f"Duplicating test injection message to {item.topic} (fault injection)")
+                        # Handle message duplication if configured (not for HTTP)
+                        if item.msg_type != "http" and item.fault and FaultInjector.should_duplicate(item.fault):
+                            logger.info(f"Duplicating test injection message to {item.destination} (fault injection)")
                             if item.msg_type == "jms":
-                                jms_client = self.jms_registry.get_client(item.queue_manager_ref)
+                                jms_client = self.jms_registry.get_client(item.connection_ref)
                                 jms_client.put_message(
-                                    destination=item.topic,
+                                    destination=item.destination,
                                     payload=json.dumps(payload_obj) if isinstance(payload_obj, dict) else str(payload_obj),
                                     headers=rendered_headers,
                                 )
                             else:
                                 self.kafka_client.produce(
-                                    topic=item.topic,
+                                    topic=item.destination,
                                     message=payload_obj,
                                     headers=rendered_headers,
                                     key=rendered_key
@@ -402,7 +427,7 @@ class TestExecutor:
 
                         injected_msg = InjectedMessage(
                             message_id=item.message_id,
-                            topic=item.topic,
+                            topic=item.destination,
                             payload=payload_obj,
                             headers=rendered_headers,
                             timestamp=int(time.time() * 1000),
@@ -411,7 +436,6 @@ class TestExecutor:
                         injected_messages.append(injected_msg)
 
                         # Track if this injection had fault with check_result=False
-                        # (if check_result=True, we still want to validate)
                         if item.fault and not item.fault.check_result:
                             result.faulted_injections.append(item.message_id)
                             logger.info(f"Marked injection {item.message_id} as faulted (check_result=False)")
@@ -419,7 +443,7 @@ class TestExecutor:
                         # Log sent message
                         if test_logger:
                             test_logger.log_sent_message(
-                                topic=item.topic,
+                                topic=item.destination,
                                 payload=payload_obj,
                                 message_id=item.message_id,
                                 headers=rendered_headers,
@@ -427,7 +451,7 @@ class TestExecutor:
                             )
 
                         _vtest(verbose, (
-                            f"test={test.name!r} INJECT→ topic={item.topic!r} "
+                            f"test={test.name!r} INJECT→ destination={item.destination!r} type={item.msg_type!r} "
                             f"message_id={item.message_id!r} key={rendered_key!r} "
                             f"headers={rendered_headers} payload={json.dumps(payload_obj, default=str)[:500]}"
                         ))
@@ -588,6 +612,71 @@ class TestExecutor:
             # not OUTPUT topics. The test will consume directly from Kafka via consume_latest()
             # which works regardless of listener subscription.
 
+            # --- HTTP expectation ---
+            # For type=http, validate the response from a previous HTTP injection (source_id).
+            if expectation.msg_type == "http":
+                http_result = when_result.http_results.get(expectation.source_id) if expectation.source_id else None
+                if http_result is None:
+                    exp_result.status = "NO_MATCH"
+                    exp_result.error = f"No HTTP result found for source_id={expectation.source_id!r}"
+                    exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                    return exp_result
+
+                # Build a message-like dict from the HTTP response for condition matching
+                http_msg = {
+                    "value": http_result.body_json if http_result.body_json is not None else http_result.body,
+                    "status_code": http_result.status_code,
+                    "headers": http_result.response_headers,
+                }
+                matched = True
+                for condition in expectation.match:
+                    if condition.type == "status_code":
+                        expected_code = int(condition.value) if condition.value is not None else None
+                        if expected_code is not None and http_result.status_code != expected_code:
+                            matched = False
+                            break
+                        if condition.regex:
+                            import re
+                            if not re.match(condition.regex, str(http_result.status_code)):
+                                matched = False
+                                break
+                    elif condition.type == "response_header":
+                        # condition.expression = header name
+                        header_val = http_result.response_headers.get(condition.expression, "")
+                        if condition.value is not None and str(header_val) != str(condition.value):
+                            matched = False
+                            break
+                        if condition.regex:
+                            import re
+                            if not re.search(condition.regex, str(header_val)):
+                                matched = False
+                                break
+                    else:
+                        # Use standard matcher for jsonpath/exact/partial/regex on response body
+                        matcher = self.matcher_factory.create(condition.type)
+                        body = http_msg["value"]
+                        if condition.type == 'jsonpath':
+                            matcher_condition = {
+                                'path': condition.expression,
+                                'value': condition.value,
+                                'regex': condition.regex,
+                            }
+                        else:
+                            matcher_condition = condition
+                        if not matcher.match(body, matcher_condition).matched:
+                            matched = False
+                            break
+
+                if matched:
+                    exp_result.status = "MATCHED"
+                    exp_result.received = 1
+                    exp_result.received_messages = [http_msg]
+                else:
+                    exp_result.status = "NO_MATCH"
+                    exp_result.error = "HTTP response did not match conditions"
+                exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                return exp_result
+
             # --- JMS expectation ---
             # Prefer reading from message_cache (populated by JMSListenerEngine) to
             # avoid concurrent MQGET calls on the shared IBM MQ hConn that trigger
@@ -607,9 +696,9 @@ class TestExecutor:
                         exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
                         return exp_result
 
-                    jms_client = self.jms_registry.get_client(expectation.queue_manager_ref)
+                    jms_client = self.jms_registry.get_client(expectation.connection_ref)
                     jms_messages = jms_client.consume(
-                        destination=expectation.topic,
+                        destination=expectation.destination,
                         limit=100,
                         timeout_ms=expectation.wait_ms
                     )
@@ -1022,7 +1111,8 @@ class TestSuiteRunner:
         test_suite_dir: str = "/testSuite",
         message_cache = None,
         listener_engine = None,
-        jms_registry = None  # Optional JMS registry for JMS injection/expectation support
+        jms_registry = None,          # Optional JMS registry for JMS injection/expectation support
+        http_executor = None,         # Optional HttpExecutor for HTTP injection/expectation support
     ):
         """Initialize test suite runner."""
         self.kafka_client = kafka_client
@@ -1034,7 +1124,8 @@ class TestSuiteRunner:
             test_suite_dir,
             message_cache=message_cache,
             listener_engine=listener_engine,
-            jms_registry=jms_registry
+            jms_registry=jms_registry,
+            http_executor=http_executor,
         )
 
     async def run_tests_sequential(self, tests: List[TestDefinition], verbose: bool = False) -> List[TestResult]:

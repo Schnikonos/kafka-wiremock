@@ -2,7 +2,7 @@
 priority: 5
 
 when:
-  topic: users.commands
+  destination: users.commands
   match:
     - type: key
       value: "myMessageKey"
@@ -14,7 +14,7 @@ when:
       value: "REGISTER"
 
 then:
-  - topic: users.events
+  - destination: users.events
     headers:
       my-header: "MyCustomHeader"
       my-other-header: "{{header.my-test-header}}"

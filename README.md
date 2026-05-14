@@ -7,7 +7,8 @@ Event-driven Kafka and JMS mock container for testing, similar to Pact for APIs.
 ## Key Features
 
 - ✅ **Kafka & JMS Support**: Use with Kafka topics and IBM MQ queues simultaneously
-- ✅ **Mixed Message Flows**: Input from Kafka → Output to JMS (or vice versa)
+- ✅ **HTTP(S) Support**: Call REST APIs as rule outputs, test injections, and sends
+- ✅ **Mixed Message Flows**: Input from Kafka → Output to JMS or HTTP (or vice versa)
 - ✅ **Multiple Matching Strategies**: JSONPath, Regex, Exact, Partial matching
 - ✅ **Rich Templating**: UUID, timestamps, random data, JSONPath extraction
 - ✅ **Custom Placeholders**: User-defined functions with ordered pipeline execution
@@ -234,7 +235,175 @@ export IBM_MQ_CHANNEL="PROD.SVRCONN"
 | - **Recent Executions**: View all test runs with statistics
 | - **Pass Rate Trend**: Visual comparison of execution quality over time
 
-## JMS Support (May 2026)
+## HTTP(S) Support (May 2026)
+
+Kafka Wiremock now supports outbound HTTP(S) calls as a first-class destination type alongside Kafka and JMS.
+
+### Overview
+
+| Feature | Kafka | JMS | HTTP |
+|---------|-------|-----|------|
+| Rule output (`then`) | ✅ | ✅ | ✅ |
+| Test injection (`when`) | ✅ | ✅ | ✅ |
+| Test expectation (`then`) | ✅ | ✅ | ✅ Response validation |
+| Send injection | ✅ | ✅ | ✅ |
+| TLS/mTLS | — | — | ✅ Per-host or per-profile |
+| Auth (Basic/Bearer/OAuth2/mTLS) | — | — | ✅ |
+
+### YAML Syntax
+
+The `when`/`then` blocks now use `destination` + `type` instead of the old `topic` + `msg_type`:
+
+```yaml
+# Rule: Kafka input → HTTP output
+priority: 20
+name: "order-webhook"
+
+when:
+  destination: orders.events   # Kafka topic, JMS queue, or (future) HTTP webhook path
+  type: kafka                  # kafka | jms
+  match:
+    - type: jsonpath
+      expression: "$.status"
+      value: "CONFIRMED"
+
+then:
+  - destination: "https://webhook.partner.example.com/orders"
+    type: http
+    method: POST               # GET | POST | PUT | PATCH | DELETE
+    auth_ref: partner_api      # optional: auth profile from config/http-config/auth.yaml
+    tls_ref: corp_ca           # optional: TLS profile from config/http-config/tls.yaml
+    http_timeout_ms: 5000
+    headers:
+      Content-Type: "application/json"
+    payload: |
+      {"orderId": "{{$.orderId}}", "status": "{{$.status}}"}
+
+  - destination: orders.notified
+    type: kafka
+    payload: '{"orderId": "{{$.orderId}}", "webhookCalled": true}'
+```
+
+### HTTP in testSuite
+
+```yaml
+when:
+  inject:
+    - message_id: "create_order"
+      destination: "https://api.example.com/orders"
+      type: http
+      method: POST
+      auth_ref: orders_api
+      payload: '{"customerId": "CUST-001", "amount": 99.99}'
+
+then:
+  expectations:
+    - type: http
+      source_id: "create_order"    # links to the injection's message_id
+      match:
+        - type: status_code
+          value: 201
+        - type: response_header
+          expression: "content-type"
+          regex: "application/.*json"
+        - type: jsonpath
+          expression: "$.orderId"
+          regex: "^ORD-[0-9]+"
+```
+
+### TLS/Certificate Configuration
+
+`config/http-config/tls.yaml`:
+
+```yaml
+default:
+  verify: true                          # verify server cert by default
+
+profiles:
+  no_verify:
+    verify: false
+  corp_ca:
+    verify: /certs/corp-ca-bundle.pem
+  mtls_internal:
+    verify: /certs/internal-ca.pem
+    client_cert: /certs/client.pem
+    client_key:  /certs/client.key
+    client_key_password_env: MTLS_KEY_PASSWORD   # env var holding key password
+
+host_overrides:                         # first match wins
+  "*.internal.corp.com":
+    profile: mtls_internal
+  "localhost":
+    profile: no_verify
+  "partner-api.example.com:8440-8449":  # port range
+    profile: corp_ca
+```
+
+### Authentication Configuration
+
+`config/http-config/auth.yaml`:
+
+```yaml
+profiles:
+  basic_api:
+    type: basic
+    username: kafka-wiremock
+    # password loaded from env var: HTTP_AUTH_BASIC_API_PASSWORD
+
+  bearer_static:
+    type: bearer
+    token: "my-static-token"            # inline token
+
+  token_from_env:
+    type: bearer
+    token_env: MY_API_TOKEN             # env var holding the token
+
+  oauth_prod:
+    type: token_fetch                    # auto-acquire Bearer token
+    token_url: "https://auth.example.com/oauth/token"
+    method: POST
+    body: '{"grant_type":"client_credentials","client_id":"{{username}}","client_secret":"{{password}}"}'
+    username: my-client-id
+    # client_secret loaded from: HTTP_AUTH_OAUTH_PROD_PASSWORD
+    token_response_path: "$.access_token"
+    token_cache_ttl_s: 3600
+
+  cert_auth:
+    type: certificate
+    tls_profile: mtls_internal           # uses cert/key from TLS profile
+
+host_overrides:                          # first match wins
+  "api.example.com":
+    profile: basic_api
+  "*.internal.corp.com":
+    profile: cert_auth
+```
+
+**Password env-var convention**: For a profile named `my_api`, the password env var is `HTTP_AUTH_MY_API_PASSWORD` (profile name uppercased, non-alphanumeric → `_`).
+
+**Token caching**: `token_fetch` profiles cache the obtained token for `token_cache_ttl_s` seconds to avoid redundant auth calls.
+
+### Match Condition Types for HTTP Expectations
+
+| Condition type | Applies to | Description |
+|---------------|------------|-------------|
+| `status_code` | HTTP only | Match exact status code (`value: 200`) or regex (`regex: "2[0-9]{2}"`) |
+| `response_header` | HTTP only | `expression` = header name; match `value` (exact) or `regex` |
+| `jsonpath` | HTTP body | Extract from parsed JSON response body |
+| `exact` / `partial` / `regex` | HTTP body | Match against raw response body text |
+
+### Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `config/http-config/tls.yaml` | TLS profiles and per-host overrides |
+| `config/http-config/auth.yaml` | Auth profiles (basic, bearer, OAuth2, mTLS) |
+
+See `example/config/http-config/` for annotated example files.
+
+---
+
+
 
 Kafka Wiremock now supports IBM MQ for JMS messaging alongside Kafka, enabling:
 

@@ -1,9 +1,80 @@
 version: '3.9'
-# Note: This docker-compose file provides ONLY the kafka-wiremock service.
-# You must provide your own Kafka broker and set the KAFKA_BOOTSTRAP_SERVERS environment variable.
-# 
+# Note: This docker-compose file provides kafka-wiremock plus the HTTP/HTTPS
+# dummy-app test targets (ports 9081 / 9082 / 9083).
+# You must provide your own Kafka broker or set KAFKA_BOOTSTRAP_SERVERS.
+#
 # Example: docker-compose up -e KAFKA_BOOTSTRAP_SERVERS=kafka:9092
 services:
+
+  # ── Dummy API targets for HTTP/HTTPS testing ────────────────────────────────
+  dummy-app-http:
+    build:
+      context: ./test-dummy-app
+      dockerfile: Dockerfile
+    ports:
+      - "9081:8080"
+    environment:
+      PORT: "8080"
+      MODE: "http"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  dummy-app-https-t1:
+    build:
+      context: ./test-dummy-app
+      dockerfile: Dockerfile
+    ports:
+      - "9082:8080"
+    environment:
+      PORT: "8080"
+      MODE: "https"
+      SSL_CERTFILE: "/certs/server-t1.pem"
+      SSL_KEYFILE:  "/certs/server-t1.key"
+      # truststore t1 — only clients presenting a cert signed by CA1 are accepted
+      SSL_CA_CERTS:              "/certs/ca1.pem"
+      SSL_REQUIRE_CLIENT_CERT:   "true"
+    volumes:
+      - ./test-dummy-app/certs:/certs:ro
+    healthcheck:
+      # Must present client cert c1 (signed by CA1) to pass mTLS handshake
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,ssl; ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; ctx.load_cert_chain('/certs/c1.pem','/certs/c1.key'); urllib.request.urlopen('https://localhost:8080/health', context=ctx)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  dummy-app-https-t2:
+    build:
+      context: ./test-dummy-app
+      dockerfile: Dockerfile
+    ports:
+      - "9083:8080"
+    environment:
+      PORT: "8080"
+      MODE: "https"
+      SSL_CERTFILE: "/certs/server-t2.pem"
+      SSL_KEYFILE:  "/certs/server-t2.key"
+      # truststore t2 — only clients presenting a cert signed by CA2 are accepted
+      SSL_CA_CERTS:              "/certs/ca2.pem"
+      SSL_REQUIRE_CLIENT_CERT:   "true"
+    volumes:
+      - ./test-dummy-app/certs:/certs:ro
+    healthcheck:
+      # Must present client cert c2 (signed by CA2) to pass mTLS handshake
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,ssl; ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; ctx.load_cert_chain('/certs/c2.pem','/certs/c2.key'); urllib.request.urlopen('https://localhost:8080/health', context=ctx)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── kafka-wiremock ──────────────────────────────────────────────────────────
   kafka-wiremock:
     build:
       context: .
@@ -21,6 +92,8 @@ services:
       - ./config:/config:ro
       # Optional: mount logs
       - ./logs:/var/log/wiremock
+      # Client certificates for outbound mTLS calls to dummy-app targets
+      - ./test-dummy-app/certs:/certs:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s

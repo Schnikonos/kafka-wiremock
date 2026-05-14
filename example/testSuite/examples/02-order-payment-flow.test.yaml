@@ -7,7 +7,7 @@ timeout_ms: 8000
 when:
   inject:
     - message_id: "order"
-      topic: "orders.input"
+      destination: "orders.input"
       payload: |
         {
           "orderId": "ORD-{{testId}}-{{uuid}}",
@@ -21,7 +21,7 @@ when:
     - script_file: scripts/validate-order.py
 
     - message_id: "notification"
-      topic: "notifications.input"
+      destination: "notifications.input"
       payload: |
         {
           "type": "order_created",
@@ -35,7 +35,7 @@ when:
 
 then:
   expectations:
-    - topic: "payments.input"
+    - destination: "payments.input"
       correlate:
         message_id: "order"
         source:
@@ -53,7 +53,7 @@ then:
 
     - script_file: scripts/validate-payment.py
 
-    - topic: "notifications.output"
+    - destination: "notifications.output"
       correlate:
         message_id: "notification"
         source:

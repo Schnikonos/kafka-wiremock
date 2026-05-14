@@ -69,8 +69,8 @@ class ConfigLoader:
         # Get all YAML files, but exclude topic-config and custom-placeholders directories
         yaml_files = []
         for yaml_file in list(self.config_dir.rglob("*.yaml")) + list(self.config_dir.rglob("*.yml")):
-            # Skip topic-config and custom-placeholders directories (handled by specialized loaders)
-            if "topic-config" in yaml_file.parts or "custom_placeholders" in yaml_file.parts:
+            # Skip directories handled by their own specialised loaders
+            if any(d in yaml_file.parts for d in ("topic-config", "custom_placeholders", "http-config", "jms-config")):
                 continue
             yaml_files.append(yaml_file)
         
@@ -122,8 +122,8 @@ class ConfigLoader:
         # (they are handled by their own loaders)
         yaml_files = []
         for yaml_file in sorted(self.config_dir.rglob("*.yaml")) + sorted(self.config_dir.rglob("*.yml")):
-            # Skip topic-config and custom-placeholders directories
-            if "topic-config" in yaml_file.parts or "custom_placeholders" in yaml_file.parts:
+            # Skip directories handled by their own specialised loaders
+            if any(d in yaml_file.parts for d in ("topic-config", "custom_placeholders", "http-config", "jms-config")):
                 logger.debug(f"Skipping {yaml_file.name} (handled by specialized loader)")
                 continue
             yaml_files.append(yaml_file)
@@ -149,12 +149,12 @@ class ConfigLoader:
         logger.info(f"Loaded total of {len(new_rules)} rules")
 
     def _rebuild_topic_index(self) -> None:
-        """Rebuild the index of rules by input topic."""
+        """Rebuild the index of rules by input destination."""
         self.rules_by_input_topic.clear()
         for rule in self.rules:
-            if rule.input_topic not in self.rules_by_input_topic:
-                self.rules_by_input_topic[rule.input_topic] = []
-            self.rules_by_input_topic[rule.input_topic].append(rule)
+            if rule.input_destination not in self.rules_by_input_topic:
+                self.rules_by_input_topic[rule.input_destination] = []
+            self.rules_by_input_topic[rule.input_destination].append(rule)
 
     def _resolve_payload_files_in_rule(self, rule: Rule, rule_dir: Path):
         """Resolve external payload files in rule outputs."""
@@ -206,9 +206,9 @@ class ConfigLoader:
         when_block = rule_data.get('when')
         if not when_block:
             raise ValueError("'when' block is required")
-        input_topic = when_block.get('topic')
-        if not input_topic:
-            raise ValueError("Topic is required in 'when' block")
+        input_destination = when_block.get('destination')
+        if not input_destination:
+            raise ValueError("'destination' is required in 'when' block")
 
         conditions = []
         match_list = when_block.get('match', [])
@@ -271,11 +271,13 @@ class ConfigLoader:
 
         outputs = []
         for then_item in then_block:
-            output_topic = then_item.get('topic')
-            if not output_topic:
-                raise ValueError("Topic is required in output")
-            if "payload" not in then_item and "payload_file" not in then_item:
-                raise ValueError("Payload or payload_file is required in output")
+            output_destination = then_item.get('destination')
+            if not output_destination:
+                raise ValueError("'destination' is required in output")
+            output_msg_type = then_item.get('type', 'kafka').lower()
+            # HTTP outputs don't require payload (may have no body)
+            if output_msg_type != 'http' and "payload" not in then_item and "payload_file" not in then_item:
+                raise ValueError("'payload' or 'payload_file' is required in output")
 
             # Parse optional correlation for output
             correlation = None
@@ -298,12 +300,9 @@ class ConfigLoader:
                     check_result=bool(fault_data.get('check_result', False))
                 )
 
-            # Parse output message type (kafka or jms)
-            output_msg_type = then_item.get('msg_type', 'kafka').lower()
-            output_queue_manager_ref = then_item.get('queue_manager_ref')  # NEW
-
             output = Output(
-                topic=output_topic,
+                destination=output_destination,
+                msg_type=output_msg_type,
                 payload=then_item.get('payload'),
                 payload_file=then_item.get('payload_file'),
                 delay_ms=then_item.get('delay_ms', 0),
@@ -312,8 +311,12 @@ class ConfigLoader:
                 schema_id=then_item.get('schema_id'),
                 correlation=correlation,
                 fault=fault,
-                msg_type=output_msg_type,  # NEW
-                queue_manager_ref=output_queue_manager_ref  # NEW
+                connection_ref=then_item.get('connection_ref'),
+                method=then_item.get('method', 'POST'),
+                query_params=then_item.get('query_params'),
+                auth_ref=then_item.get('auth_ref'),
+                tls_ref=then_item.get('tls_ref'),
+                http_timeout_ms=int(then_item.get('http_timeout_ms', 10000)),
             )
             outputs.append(output)
 
@@ -324,18 +327,18 @@ class ConfigLoader:
             extract_rules = corr_data.get("extract", [])
             input_correlation = CorrelationInput(extract=extract_rules)
 
-        # Parse input message type from when block
-        input_msg_type = when_block.get('msg_type', 'kafka').lower()
+        # Parse input message type from when block (YAML key: 'type')
+        input_type = when_block.get('type', 'kafka').lower()
 
         return Rule(
             priority=priority,
-            input_topic=input_topic,
+            input_destination=input_destination,
             conditions=conditions,
             outputs=outputs,
             rule_name=rule_name,
             correlation=input_correlation,
             skip=skip,
-            input_msg_type=input_msg_type
+            input_type=input_type
         )
 
     def _parse_rule_old_format(self, rule_data: Dict[str, Any], filename: str, index: int) -> Rule:
@@ -346,7 +349,7 @@ class ConfigLoader:
                 raise ValueError(f"Missing required field: {field}")
         priority = rule_data.get('priority', 100)
         rule_name = rule_data.get('name', f"{filename}#{index}")
-        input_topic = rule_data['input_topic']
+        input_destination = rule_data['input_topic']  # old format uses 'input_topic'
 
         conditions = []
         match_strategy = rule_data['match_strategy']
@@ -377,11 +380,11 @@ class ConfigLoader:
                 payload = ""
             if not topic:
                 raise ValueError("Output must have a 'topic' field")
-            outputs.append(Output(topic=topic, payload=payload))
+            outputs.append(Output(destination=topic, payload=payload))
 
         return Rule(
             priority=priority,
-            input_topic=input_topic,
+            input_destination=input_destination,
             conditions=conditions,
             outputs=outputs,
             rule_name=rule_name,

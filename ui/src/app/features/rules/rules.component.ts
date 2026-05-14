@@ -61,7 +61,7 @@ import { Rule } from '../../core/models';
                   <span class="rule-priority">#{{ rule.priority }}</span>
                 </mat-panel-title>
                 <mat-panel-description class="rule-description">
-                  {{ rule.input_topic }} → {{ rule.outputs.length }} output(s)
+                  {{ rule.input_destination }} → {{ rule.outputs.length }} output(s)
                 </mat-panel-description>
               </mat-expansion-panel-header>
 
@@ -69,7 +69,7 @@ import { Rule } from '../../core/models';
                 <!-- Input Topic -->
                 <div class="detail-section">
                   <h4>Input Topic</h4>
-                  <p><code>{{ rule.input_topic }}</code></p>
+                  <p><code>{{ rule.input_destination }}</code></p>
                 </div>
 
                 <!-- Conditions -->
@@ -90,7 +90,7 @@ import { Rule } from '../../core/models';
                   <h4>Output Messages ({{ rule.outputs.length }})</h4>
                   <div class="outputs-list">
                     <div *ngFor="let output of rule.outputs; let j = index" class="output">
-                      <div class="output-topic">📤 <code>{{ output.topic }}</code></div>
+                      <div class="output-topic">📤 <code>{{ output.destination }}</code></div>
                       <div *ngIf="output.delay_ms" class="output-meta">
                         Delay: {{ output.delay_ms }}ms
                       </div>
@@ -379,8 +379,8 @@ export class RulesComponent implements OnInit {
       const searchLower = this.searchText.toLowerCase();
       this.filteredRules = this.rules.filter(rule =>
         rule.name.toLowerCase().includes(searchLower) ||
-        rule.input_topic.toLowerCase().includes(searchLower) ||
-        rule.outputs.some(out => out.topic.toLowerCase().includes(searchLower))
+        rule.input_destination.toLowerCase().includes(searchLower) ||
+        rule.outputs.some(out => out.destination.toLowerCase().includes(searchLower))
       );
     }
     this.expandedRuleIndex = -1;
@@ -427,7 +427,7 @@ export class RulesComponent implements OnInit {
        if (!key) delete testMessage.key;
        if (!headers) delete testMessage.headers;
 
-       this.api.testRuleMatching(rule.input_topic, testMessage, rule.name).subscribe({
+       this.api.testRuleMatching(rule.input_destination, testMessage, rule.name).subscribe({
          next: (result) => {
            this.testResults[rule.name] = result;
            if (!result.matched) {

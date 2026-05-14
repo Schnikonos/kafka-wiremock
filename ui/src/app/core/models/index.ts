@@ -88,7 +88,7 @@ export interface ListsResponse<T> {
 export interface Rule {
   name: string;
   priority: number;
-  input_topic: string;
+  input_destination: string;
   conditions: RuleCondition[];
   outputs: RuleOutput[];
   skip?: boolean;
@@ -103,7 +103,7 @@ export interface RuleCondition {
 }
 
 export interface RuleOutput {
-  topic: string;
+  destination: string;
   delay_ms?: number;
   headers?: Record<string, string>;
 }

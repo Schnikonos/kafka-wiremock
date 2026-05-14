@@ -40,7 +40,8 @@ class KafkaListenerEngine:
                  custom_placeholder_registry: CustomPlaceholderRegistry = None,
                  message_cache = None,
                  topic_metadata_manager: TopicMetadataManager = None,
-                 schema_registry: SchemaRegistry = None):
+                 schema_registry: SchemaRegistry = None,
+                 http_executor=None):  # Optional HttpExecutor for type=http rule outputs
         """
         Initialize the listener engine.
 
@@ -52,6 +53,7 @@ class KafkaListenerEngine:
             message_cache: Optional MessageCache instance
             topic_metadata_manager: Optional TopicMetadataManager for dynamic topics
             schema_registry: Optional SchemaRegistry for AVRO decoding
+            http_executor: Optional HttpExecutor for type=http rule outputs
         """
         self.config_loader = config_loader
         self.kafka_client = kafka_client
@@ -61,6 +63,7 @@ class KafkaListenerEngine:
         self.message_cache = message_cache
         self.topic_metadata_manager = topic_metadata_manager
         self.schema_registry = schema_registry
+        self.http_executor = http_executor  # Optional; HTTP outputs skipped if None
 
         self.consumer: Optional[Consumer] = None
         self.listener_thread: Optional[threading.Thread] = None
@@ -292,7 +295,7 @@ class KafkaListenerEngine:
                 # Fallback: use topics from rules
                 configured_topics = set()
                 for rule in self.config_loader.get_all_rules():
-                    configured_topics.add(rule.input_topic)
+                    configured_topics.add(rule.input_destination)
                 existing_topics = configured_topics
 
             # Update subscription
@@ -596,7 +599,7 @@ class KafkaListenerEngine:
                 try:
                     # Apply delay if specified
                     if output.delay_ms and output.delay_ms > 0:
-                        logger.debug(f"Delaying output to {output.topic} by {output.delay_ms}ms")
+                        logger.debug(f"Delaying output to {output.destination} by {output.delay_ms}ms")
                         time.sleep(output.delay_ms / 1000.0)
 
                     # Render template with context
@@ -621,7 +624,7 @@ class KafkaListenerEngine:
                         should_produce, message_to_send = FaultInjector.apply_fault(message_to_send, output.fault, is_json)
 
                         if not should_produce:
-                            logger.info(f"Message to {output.topic} was dropped due to fault injection")
+                            logger.info(f"Message to {output.destination} was dropped due to fault injection")
                             continue
 
                         # Apply random latency if configured
@@ -653,21 +656,56 @@ class KafkaListenerEngine:
                         if FaultInjector._should_fault(output.fault.poison_pill):
                             key_to_send = FaultInjector.apply_messagekey_poison_pill(key_to_send)
 
-                    # Produce to output topic with headers, key, and schema_id
-                    self.kafka_client.produce(
-                        output.topic,
-                        message_to_send,
-                        headers=headers_to_send,
-                        key=key_to_send,
-                        schema_id=output.schema_id
-                    )
-                    logger.info(f"Produced message to {output.topic} (rule: {rule.rule_name})")
-
-                    # Handle message duplication if configured
-                    if output.fault and FaultInjector.should_duplicate(output.fault):
-                        logger.info(f"Duplicating message to {output.topic} (fault injection)")
+                    # Produce to correct destination based on output type
+                    output_type = getattr(output, 'msg_type', 'kafka').lower()
+                    if output_type == 'http':
+                        # Fire HTTP call (synchronous bridge from listener thread)
+                        if not self.http_executor:
+                            logger.error(
+                                f"HTTP executor not initialized; cannot call {output.destination} "
+                                f"(rule: {rule.rule_name}). Wire http_executor into KafkaListenerEngine."
+                            )
+                        else:
+                            import asyncio as _asyncio
+                            rendered_url = TemplateRenderer.render(output.destination, matcher_contexts)
+                            rendered_query = None
+                            if output.query_params:
+                                rendered_query = {k: TemplateRenderer.render(v, matcher_contexts) for k, v in output.query_params.items()}
+                            try:
+                                http_result = _asyncio.run(
+                                    self.http_executor.execute(
+                                        url=rendered_url,
+                                        method=output.method,
+                                        payload=rendered_message if output.payload else None,
+                                        headers=headers_to_send,
+                                        query_params=rendered_query,
+                                        auth_ref=output.auth_ref,
+                                        tls_ref=output.tls_ref,
+                                        timeout_ms=output.http_timeout_ms,
+                                    )
+                                )
+                                logger.info(
+                                    f"HTTP {output.method} {rendered_url} → {http_result.status_code} "
+                                    f"(rule: {rule.rule_name})"
+                                )
+                            except Exception as http_err:
+                                logger.error(f"HTTP output failed for {rendered_url}: {http_err}")
+                    else:
+                        # Default: produce to Kafka topic
                         self.kafka_client.produce(
-                            output.topic,
+                            output.destination,
+                            message_to_send,
+                            headers=headers_to_send,
+                            key=key_to_send,
+                            schema_id=output.schema_id
+                        )
+                        logger.info(f"Produced message to {output.destination} (rule: {rule.rule_name})")
+
+                    # Handle message duplication if configured (not for HTTP)
+                    if output_type != 'http' and output.fault and FaultInjector.should_duplicate(output.fault):
+                        logger.info(f"Duplicating message to {output.destination} (fault injection)")
+                        self.kafka_client.produce(
+                            output.destination,
                             message_to_send,
                             headers=headers_to_send,
                             key=key_to_send,
@@ -675,7 +713,7 @@ class KafkaListenerEngine:
                         )
 
                 except Exception as e:
-                    logger.error(f"Failed to execute output for {output.topic}: {e}")
+                    logger.error(f"Failed to execute output for {output.destination}: {e}")
 
         except Exception as e:
             logger.error(f"Error executing rule {rule.rule_name}: {e}")
