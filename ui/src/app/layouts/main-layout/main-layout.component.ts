@@ -65,10 +65,16 @@ import { AppSettingsDialogComponent } from '../../features/settings/app-settings
       <mat-sidenav #sidenav class="app-sidenav" mode="side" opened="true">
         <mat-nav-list>
           <h2 matSubheader>Management</h2>
-          <mat-list-item routerLink="/tests" routerLinkActive="active">
+          <mat-list-item routerLink="/tests" [routerLinkActiveOptions]="{exact:true}" routerLinkActive="active">
             <div class="nav-list-item">
               <mat-icon>assignment</mat-icon>
               <span>Test Suite</span>
+            </div>
+          </mat-list-item>
+          <mat-list-item routerLink="/tests/load-test" routerLinkActive="active">
+            <div class="nav-list-item">
+              <mat-icon>speed</mat-icon>
+              <span>Load Testing</span>
             </div>
           </mat-list-item>
           <mat-list-item routerLink="/sends" routerLinkActive="active">

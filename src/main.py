@@ -39,7 +39,7 @@ from .http.mock_server_registry import HttpMockServerRegistry
 
 # Import API routers and setter functions
 from .api import health, kafka_injection, rules, custom_placeholders, dependencies_mgmt, results, app_settings, config, jms as jms_api
-from .api.tests import discovery, execution, jobs, logs, bulk
+from .api.tests import discovery, execution, jobs, logs, bulk, load as load_tests
 from .api.send import discovery as send_discovery, execution as send_execution, bulk as send_bulk
 from .api.debug import decode, match, topics, cache, template
 from .jms.providers.factory import ProviderFactory  # NEW: provider factory
@@ -336,6 +336,8 @@ async def lifespan(app: FastAPI):
         bulk.set_test_loader(test_loader)
         bulk.set_test_suite_runner(test_suite_runner)
         bulk.set_results_db(results_db)
+        load_tests.set_test_loader(test_loader)
+        load_tests.set_test_suite_runner(test_suite_runner)
         send_bulk.set_send_loader(send_loader)
         send_bulk.set_send_executor(send_executor)
         send_bulk.set_results_db(results_db)
@@ -407,6 +409,7 @@ app.include_router(execution.router, prefix="/api")
 app.include_router(send_discovery.router, prefix="/api")
 app.include_router(send_execution.router, prefix="/api")
 app.include_router(bulk.router, prefix="/api")
+app.include_router(load_tests.router, prefix="/api")
 app.include_router(send_bulk.router, prefix="/api")
 app.include_router(decode.router, prefix="/api")
 app.include_router(match.router, prefix="/api")

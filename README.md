@@ -23,6 +23,7 @@ Event-driven Kafka and JMS mock container for testing, similar to Pact for APIs.
 - ✅ **Hot-Reload**: Configuration updates every 30 seconds (no restart needed)
 - ✅ **Docker Ready**: Lightweight container with all dependencies included
 - ✅ **Angular Web UI**: Modern dashboard for managing tests, sends, rules, and messages
+- ✅ **Load Testing**: Gatling-style closed-model load scenarios with live charts and HTML-style reports
 
 ## UI Features (Angular 19)
 
@@ -37,6 +38,16 @@ The Angular 19 web UI provides a modern dashboard for managing Kafka Wiremock:
 - **Search & Filter**: Find tests by name or tags
 - **Real-Time Results**: View pass/fail/skip status and execution time
 - **Statistics**: Total, passed, failed, skipped counts with timing
+- **⚡ Load Test Button**: Jump to Load Testing with current selection pre-filled
+
+#### ⚡ Load Testing (Gatling-style, May 2026)
+- **Scenario Builder**: Define ramp-up, steady-state, and ramp-down phases with a visual editor
+- **Live Load Shape Preview**: Instant SVG chart showing users-over-time as you edit phases
+- **Closed-model Concurrency**: Maintain N concurrent virtual users each looping through selected tests
+- **Live Progress**: Active users, OK/KO counts, and error rate updated every 2 seconds during a run
+- **Gatling-style Report**: Three Chart.js charts (active users, OK/KO requests, p50/p90/p99 response time) plus a per-test summary statistics table
+- **JSON Export**: Download the full report as JSON
+- **Open-model Ready**: Architecture reserved for future `inject_rate_per_s` open-model support
 
 #### 📮 Send Messages Manager
 - **Multi-Select Sends**: Select multiple message definitions
@@ -859,6 +870,11 @@ See [API.md](docs/API.md) for complete documentation of all HTTP endpoints:
 | `GET /tests/logs` | List test log files |
 | `GET /tests/logs/{test_id}` | Get log for a specific test |
 | `GET /jms/pool-stats` | Get JMS connection pooling statistics (May 2026) |
+| `GET /load-tests` | List all load test jobs |
+| `POST /load-tests` | Start a Gatling-style load scenario |
+| `GET /load-tests/{job_id}` | Poll load job progress + partial metrics (live charts) |
+| `GET /load-tests/{job_id}/report` | Fetch final load report (buckets, summaries, charts) |
+| `DELETE /load-tests/{job_id}` | Cancel a running load job |
 | `POST /debug/decode` | Decode a raw message and detect its format |
 | `POST /debug/match` | Detailed rule-matching analysis for a message |
 | `GET /debug/topics` | Show discovered topics and metadata |
@@ -1187,6 +1203,11 @@ POST   /api/rules:match             # Test rule matching with message
 POST   /api/inject/{topic}          # Inject message to topic
 GET    /api/messages/{topic}        # Get messages from topic
 GET    /api/jms/pool-stats          # Get JMS connection pooling statistics
+GET    /api/load-tests              # List all load test jobs
+POST   /api/load-tests              # Start a Gatling-style load scenario
+GET    /api/load-tests/{job_id}     # Poll load job progress + partial metrics
+GET    /api/load-tests/{job_id}/report  # Fetch final load report
+DELETE /api/load-tests/{job_id}     # Cancel a running load job
 GET    /api/debug/topics            # List discovered topics
 GET    /api/debug/cache             # View message cache stats
 POST   /api/debug/decode            # Decode message payload

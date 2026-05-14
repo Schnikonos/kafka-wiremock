@@ -1,6 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule, ReactiveFormsModule, FormBuilder } from '@angular/forms';
+import { Router } from '@angular/router';
 import { MatCardModule } from '@angular/material/card';
 import { MatTableModule } from '@angular/material/table';
 import { MatCheckboxModule } from '@angular/material/checkbox';
@@ -65,10 +66,7 @@ import { SelectionModel } from '@angular/cdk/collections';
                        (ngModelChange)="filterTests()">
                 <mat-icon matSuffix>search</mat-icon>
               </mat-form-field>
-            </div>
 
-            <!-- Advanced Filters -->
-            <div class="filter-section">
               <mat-form-field appearance="outline" class="filter-field">
                 <mat-label>Filter by Tag</mat-label>
                 <mat-select [(ngModel)]="selectedTag" (ngModelChange)="filterTests()">
@@ -140,6 +138,11 @@ import { SelectionModel } from '@angular/cdk/collections';
               <button mat-raised-button color="warn" *ngIf="isRunning" (click)="stopExecution()">
                 <mat-icon>stop</mat-icon>
                 Stop Execution
+              </button>
+              <button mat-stroked-button color="primary" (click)="goToLoadTest()"
+                      matTooltip="Open Load Test builder{{selection.selected.length > 0 ? ' with ' + selection.selected.length + ' selected test(s)' : ''}}">
+                <mat-icon>speed</mat-icon>
+                Load Test{{selection.selected.length > 0 ? ' (' + selection.selected.length + ')' : ''}}
               </button>
             </div>
           </div>
@@ -492,7 +495,12 @@ import { SelectionModel } from '@angular/cdk/collections';
 
     mat-chip-set { display: flex; flex-wrap: wrap; gap: 4px; }
 
-    .search-section { margin-bottom: 16px; }
+    .search-section {
+      margin-bottom: 16px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
     .search-field { width: 300px; max-width: 100%; }
 
     .filter-section {
@@ -544,6 +552,7 @@ export class TestsComponent implements OnInit {
     private dialog: MatDialog,
     public appConfigService: AppConfigService,
     private exportService: ExportService,
+    private router: Router,
   ) {}
 
   ngOnInit() {
@@ -717,6 +726,14 @@ This may take some time depending on your test duration.`;
     this.isRunning = false;
     this.currentExecutionRequest = null;
     this.snackBar.open('Attempting to stop execution...', 'Close', { duration: 3000 });
+  }
+
+  /** Navigate to the Load Test page, pre-populating with selected test IDs. */
+  goToLoadTest(): void {
+    const ids = this.selection.selected.map(t => t.test_id);
+    this.router.navigate(['/tests/load-test'], {
+      queryParams: ids.length > 0 ? { test_ids: ids.join(',') } : {}
+    });
   }
 
   exportResults(event: Event) {

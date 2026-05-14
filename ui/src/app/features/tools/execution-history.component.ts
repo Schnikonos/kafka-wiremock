@@ -1,6 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { RouterModule } from '@angular/router';
 import { MatCardModule } from '@angular/material/card';
 import { MatTableModule } from '@angular/material/table';
 import { MatButtonModule } from '@angular/material/button';
@@ -13,14 +14,17 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
-import { SelectionModel } from '@angular/cdk/collections';
+import { LoadHistoryService } from '../../core/services/load-history.service';
+import { LoadReport } from '../../core/models';
 
 @Component({
   selector: 'app-execution-history',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     CommonModule,
     FormsModule,
+    RouterModule,
     MatCardModule,
     MatTableModule,
     MatButtonModule,
@@ -51,7 +55,7 @@ import { SelectionModel } from '@angular/cdk/collections';
           </div>
 
           <mat-tab-group>
-            <!-- Recent Executions Tab -->
+            <!-- Recent Executions Tab (rendered eagerly — this is the landing tab) -->
             <mat-tab label="Recent Executions">
               <div class="tab-content">
                 <!-- Execution List -->
@@ -60,7 +64,7 @@ import { SelectionModel } from '@angular/cdk/collections';
                   <p>No execution history yet. Run some tests to see results here.</p>
                 </div>
 
-                <div *ngFor="let execution of executionHistory | slice:0:20; let i = index"
+                <div *ngFor="let execution of recentHistory; trackBy: trackByTimestamp"
                      class="execution-item">
                   <div class="execution-header"
                        [ngClass]="'status-' + (execution.result.passed > 0 ? 'passed' : 'failed')">
@@ -90,8 +94,8 @@ import { SelectionModel } from '@angular/cdk/collections';
                     <div class="execution-details">
                       <h4>Test Results</h4>
                       <div class="results-grid">
-                        <div *ngFor="let test of getTestResults(execution)" class="result-item">
-                          <span [ngClass]="'status-badge status-' + getStatusClass(test)">
+                        <div *ngFor="let test of execution.previewResults; trackBy: trackByTestId" class="result-item">
+                          <span [ngClass]="'status-badge status-' + (test.status | lowercase)">
                             {{ test.status }}
                           </span>
                           <span class="test-id">{{ test.test_id }}</span>
@@ -143,8 +147,9 @@ import { SelectionModel } from '@angular/cdk/collections';
               </div>
             </mat-tab>
 
-            <!-- Comparison Tab -->
+            <!-- Comparison Tab (lazy: rendered only when first activated) -->
             <mat-tab label="Compare Executions">
+              <ng-template matTabContent>
               <div class="tab-content">
                 <h3>Select 2-4 Executions to Compare</h3>
                 <p class="hint">{{ selectedCount }} execution(s) selected</p>
@@ -159,7 +164,7 @@ import { SelectionModel } from '@angular/cdk/collections';
                     <h4>Pass Rate Trend</h4>
                   </div>
                   <div class="trend-chart">
-                    <div *ngFor="let exec of selectedExecutions" class="trend-column">
+                    <div *ngFor="let exec of selectedExecutions; trackBy: trackByTimestamp" class="trend-column">
                       <div class="trend-bar">
                         <div class="trend-passed" [style.height.%]="(exec.result.passed / exec.result.total) * 100"></div>
                         <div class="trend-failed" [style.height.%]="(exec.result.failed / exec.result.total) * 100"></div>
@@ -178,7 +183,7 @@ import { SelectionModel } from '@angular/cdk/collections';
                       <thead>
                         <tr>
                           <th>Metric</th>
-                          <th *ngFor="let exec of selectedExecutions; let i = index">
+                          <th *ngFor="let exec of selectedExecutions; let i = index; trackBy: trackByTimestamp">
                             Run {{ i + 1 }}<br/>
                             <span class="timestamp">{{ exec.timestamp | date:'short' }}</span>
                           </th>
@@ -188,28 +193,24 @@ import { SelectionModel } from '@angular/cdk/collections';
                       <tbody>
                         <tr>
                           <td>Pass Rate</td>
-                          <td *ngFor="let exec of selectedExecutions">
+                          <td *ngFor="let exec of selectedExecutions; trackBy: trackByTimestamp">
                             {{ ((exec.result.passed / exec.result.total) * 100).toFixed(1) }}%
                           </td>
-                          <td *ngIf="selectedCount > 1">
-                            {{ calculateChange('pass_rate') }}
-                          </td>
+                          <td *ngIf="selectedCount > 1">{{ changePassRate }}</td>
                         </tr>
                         <tr>
                           <td>Total Tests</td>
-                          <td *ngFor="let exec of selectedExecutions">{{ exec.result.total }}</td>
+                          <td *ngFor="let exec of selectedExecutions; trackBy: trackByTimestamp">{{ exec.result.total }}</td>
                           <td *ngIf="selectedCount > 1">-</td>
                         </tr>
                         <tr>
                           <td>Duration</td>
-                          <td *ngFor="let exec of selectedExecutions">{{ exec.result.elapsed_ms }}ms</td>
-                          <td *ngIf="selectedCount > 1">
-                            {{ calculateChange('duration') }}
-                          </td>
+                          <td *ngFor="let exec of selectedExecutions; trackBy: trackByTimestamp">{{ exec.result.elapsed_ms }}ms</td>
+                          <td *ngIf="selectedCount > 1">{{ changeDuration }}</td>
                         </tr>
                         <tr>
                           <td>Avg per Test</td>
-                          <td *ngFor="let exec of selectedExecutions">
+                          <td *ngFor="let exec of selectedExecutions; trackBy: trackByTimestamp">
                             {{ (exec.result.elapsed_ms / exec.result.total).toFixed(0) }}ms
                           </td>
                           <td *ngIf="selectedCount > 1">-</td>
@@ -226,7 +227,7 @@ import { SelectionModel } from '@angular/cdk/collections';
 
                 <h4>Execution List (Click to select)</h4>
                 <div class="selection-list">
-                  <div *ngFor="let execution of executionHistory | slice:0:20"
+                  <div *ngFor="let execution of recentHistory; trackBy: trackByTimestamp"
                        class="selection-item"
                        [class.selected]="execution.selected"
                        (click)="execution.selected = !execution.selected; updateSelection()">
@@ -240,10 +241,12 @@ import { SelectionModel } from '@angular/cdk/collections';
                   </div>
                 </div>
               </div>
+              </ng-template>
             </mat-tab>
 
-            <!-- Statistics Tab -->
+            <!-- Statistics Tab (lazy) -->
             <mat-tab label="Overall Statistics">
+              <ng-template matTabContent>
               <div class="tab-content">
                 <h3>Execution Statistics</h3>
 
@@ -259,31 +262,31 @@ import { SelectionModel } from '@angular/cdk/collections';
                   </div>
                   <div class="stat-card">
                     <div class="stat-label">Total Tests Run</div>
-                    <div class="stat-value">{{ getTotalTestsRun() }}</div>
+                    <div class="stat-value">{{ totalTestsRun }}</div>
                   </div>
                   <div class="stat-card">
                     <div class="stat-label">Overall Pass Rate</div>
-                    <div class="stat-value" [ngClass]="getOverallPassRate() > 80 ? 'good' : 'warning'">
-                      {{ getOverallPassRate().toFixed(1) }}%
+                    <div class="stat-value" [ngClass]="overallPassRate > 80 ? 'good' : 'warning'">
+                      {{ overallPassRate.toFixed(1) }}%
                     </div>
                   </div>
                   <div class="stat-card">
                     <div class="stat-label">Avg Duration</div>
-                    <div class="stat-value">{{ getAverageDuration() }}ms</div>
+                    <div class="stat-value">{{ averageDuration }}ms</div>
                   </div>
                   <div class="stat-card">
                     <div class="stat-label">Fastest Run</div>
-                    <div class="stat-value">{{ getFastestRun() }}ms</div>
+                    <div class="stat-value">{{ fastestRun }}ms</div>
                   </div>
                   <div class="stat-card">
                     <div class="stat-label">Slowest Run</div>
-                    <div class="stat-value">{{ getSlowestRun() }}ms</div>
+                    <div class="stat-value">{{ slowestRun }}ms</div>
                   </div>
                 </div>
 
                 <h4>Execution Timeline</h4>
                 <div class="timeline">
-                  <div *ngFor="let execution of executionHistory.slice().reverse() | slice:0:15"
+                  <div *ngFor="let execution of recentHistoryReversed; trackBy: trackByTimestamp"
                        class="timeline-item"
                        [ngClass]="'status-' + (execution.result.passed > 0 ? 'passed' : 'failed')">
                     <div class="timeline-dot"></div>
@@ -297,6 +300,63 @@ import { SelectionModel } from '@angular/cdk/collections';
                   </div>
                 </div>
               </div>
+              </ng-template>
+            </mat-tab>
+
+            <!-- Load Test Reports Tab (lazy) -->
+            <mat-tab label="Load Test Reports">
+              <ng-template matTabContent>
+              <div class="tab-content">
+                <div class="ltreports-toolbar">
+                  <span class="ltreports-count">{{ loadTestReports.length }} saved report(s)</span>
+                  <button mat-stroked-button color="warn"
+                          *ngIf="loadTestReports.length > 0"
+                          (click)="clearLoadReports()">
+                    <mat-icon>delete_sweep</mat-icon> Clear All Reports
+                  </button>
+                </div>
+
+                <div *ngIf="loadTestReports.length === 0" class="empty-state">
+                  <mat-icon>speed</mat-icon>
+                  <p>No load test reports saved yet. Run a load test to see reports here.</p>
+                </div>
+
+                <div *ngFor="let r of loadTestReports; trackBy: trackByJobId" class="ltreport-row">
+                  <div class="ltreport-status" [ngClass]="'ltr-status-' + r.status.toLowerCase()">
+                    <mat-icon>{{ r.status === 'COMPLETED' ? 'check_circle' : r.status === 'FAILED' ? 'error' : 'cancel' }}</mat-icon>
+                  </div>
+                  <div class="ltreport-info">
+                    <div class="ltreport-name">{{ r.scenario_name }}</div>
+                    <div class="ltreport-meta">
+                      {{ r.started_at | date:'short' }} &nbsp;·&nbsp;
+                      {{ r.total_duration_s }}s &nbsp;·&nbsp;
+                      {{ r.total_requests | number }} requests &nbsp;·&nbsp;
+                      <span [class.ltreport-err]="r.error_rate_pct > 2">
+                        {{ r.error_rate_pct | number:'1.1-1' }}% errors
+                      </span>
+                    </div>
+                    <div class="ltreport-kpis">
+                      <span class="ltreport-kpi ok">OK {{ r.total_ok | number }}</span>
+                      <span class="ltreport-kpi ko">KO {{ r.total_ko | number }}</span>
+                      <span class="ltreport-kpi">p90 {{ r.p90_ms | number:'1.0-0' }}ms</span>
+                      <span class="ltreport-kpi">p99 {{ r.p99_ms | number:'1.0-0' }}ms</span>
+                    </div>
+                  </div>
+                  <div class="ltreport-actions">
+                    <button mat-icon-button color="primary"
+                            [routerLink]="['/tests/load-report', r.job_id]"
+                            matTooltip="View full report">
+                      <mat-icon>open_in_new</mat-icon>
+                    </button>
+                    <button mat-icon-button color="warn"
+                            (click)="deleteLoadReport(r.job_id)"
+                            matTooltip="Delete this report">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              </ng-template>
             </mat-tab>
           </mat-tab-group>
         </mat-card-content>
@@ -834,17 +894,111 @@ import { SelectionModel } from '@angular/cdk/collections';
       font-size: 12px;
       margin: 0 0 16px 0;
     }
+
+    /* ── Load Test Reports tab ── */
+    .ltreports-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .ltreports-count {
+      font-size: 13px;
+      color: #999;
+    }
+    .ltreport-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      background: #fafafa;
+      transition: box-shadow .15s;
+    }
+    .ltreport-row:hover {
+      box-shadow: 0 2px 8px rgba(0,0,0,.1);
+    }
+    .ltreport-status mat-icon {
+      font-size: 28px;
+      width: 28px;
+      height: 28px;
+    }
+    .ltr-status-completed mat-icon { color: #4caf50; }
+    .ltr-status-failed    mat-icon { color: #f44336; }
+    .ltr-status-cancelled mat-icon { color: #ff9800; }
+
+    .ltreport-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .ltreport-name {
+      font-weight: 600;
+      font-size: 14px;
+      color: #333;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ltreport-meta {
+      font-size: 12px;
+      color: #888;
+      margin-top: 2px;
+    }
+    .ltreport-err { color: #f44336; font-weight: 600; }
+    .ltreport-kpis {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .ltreport-kpi {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: #f0f0f0;
+      color: #555;
+    }
+    .ltreport-kpi.ok { background: #e8f5e9; color: #2e7d32; }
+    .ltreport-kpi.ko { background: #ffebee; color: #c62828; }
+    .ltreport-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
   `]
 })
 export class ExecutionHistoryComponent implements OnInit {
   executionHistory: ExecutionRecord[] = [];
+  /** Sliced to first 20 entries — used directly in templates instead of piping every cycle */
+  recentHistory: ExecutionRecord[] = [];
+  /** Last 15 entries in reverse order for the timeline — pre-computed once */
+  recentHistoryReversed: ExecutionRecord[] = [];
   selectedExecutions: ExecutionRecord[] = [];
   selectedCount = 0;
+  loadTestReports: LoadReport[] = [];
 
-  constructor(private snackBar: MatSnackBar) {}
+  // Pre-computed aggregate stats (updated once after data changes)
+  totalTestsRun = 0;
+  overallPassRate = 0;
+  averageDuration = 0;
+  fastestRun = 0;
+  slowestRun = 0;
+
+  // Pre-computed comparison strings
+  changePassRate = '-';
+  changeDuration = '-';
+
+  constructor(
+    private snackBar: MatSnackBar,
+    private loadHistorySvc: LoadHistoryService,
+    private cdr: ChangeDetectorRef,
+  ) {}
 
   ngOnInit() {
     this.loadHistory();
+    this.loadTestReports = this.loadHistorySvc.getAllReports();
   }
 
   loadHistory() {
@@ -855,21 +1009,67 @@ export class ExecutionHistoryComponent implements OnInit {
           ...exec,
           timestamp: new Date(exec.timestamp),
           selected: false,
-          expanded: false
+          expanded: false,
+          previewResults: Array.isArray(exec.result?.results)
+            ? exec.result.results.slice(0, 10)
+            : [],
         }));
       } catch (e) {
         console.error('Failed to parse execution history:', e);
       }
     }
+    this.computeDerivedData();
+  }
+
+  /** Compute all derived arrays and aggregate stats once so templates only read properties. */
+  private computeDerivedData() {
+    const h = this.executionHistory;
+    this.recentHistory = h.slice(0, 20);
+    this.recentHistoryReversed = h.slice().reverse().slice(0, 15);
+
+    if (h.length === 0) {
+      this.totalTestsRun = 0;
+      this.overallPassRate = 0;
+      this.averageDuration = 0;
+      this.fastestRun = 0;
+      this.slowestRun = 0;
+    } else {
+      const total = h.reduce((s, e) => s + e.result.total, 0);
+      const passed = h.reduce((s, e) => s + e.result.passed, 0);
+      const totalMs = h.reduce((s, e) => s + e.result.elapsed_ms, 0);
+      this.totalTestsRun = total;
+      this.overallPassRate = total === 0 ? 0 : (passed / total) * 100;
+      this.averageDuration = Math.round(totalMs / h.length);
+      this.fastestRun = Math.min(...h.map(e => e.result.elapsed_ms));
+      this.slowestRun = Math.max(...h.map(e => e.result.elapsed_ms));
+    }
+    this.computeChangeStats();
+  }
+
+  private computeChangeStats() {
+    if (this.selectedExecutions.length < 2) {
+      this.changePassRate = '-';
+      this.changeDuration = '-';
+      return;
+    }
+    const first = this.selectedExecutions[0];
+    const last = this.selectedExecutions[this.selectedExecutions.length - 1];
+    const rateChange = ((last.result.passed / last.result.total) - (first.result.passed / first.result.total)) * 100;
+    this.changePassRate = rateChange > 0 ? `+${rateChange.toFixed(1)}%` : `${rateChange.toFixed(1)}%`;
+    const msChange = last.result.elapsed_ms - first.result.elapsed_ms;
+    this.changeDuration = msChange > 0 ? `+${msChange}ms` : `${msChange}ms`;
   }
 
   updateSelection() {
     this.selectedExecutions = this.executionHistory.filter(e => e.selected);
     this.selectedCount = this.selectedExecutions.length;
+    this.computeChangeStats();
+    this.cdr.markForCheck();
   }
 
   toggleExpanded(execution: ExecutionRecord) {
     execution.expanded = !execution.expanded;
+    this.cdr.markForCheck();
   }
 
   exportExecution(execution: ExecutionRecord) {
@@ -895,51 +1095,39 @@ export class ExecutionHistoryComponent implements OnInit {
     if (confirm('Are you sure? This will delete all execution history.')) {
       localStorage.removeItem('test_execution_history');
       this.executionHistory = [];
+      this.computeDerivedData();
       this.snackBar.open('History cleared', 'Close', { duration: 2000 });
+      this.cdr.markForCheck();
     }
   }
 
-  calculateChange(metric: string): string {
-    if (this.selectedExecutions.length < 2) return '-';
-    const first = this.selectedExecutions[0];
-    const last = this.selectedExecutions[this.selectedExecutions.length - 1];
-
-    if (metric === 'pass_rate') {
-      const firstRate = (first.result.passed / first.result.total) * 100;
-      const lastRate = (last.result.passed / last.result.total) * 100;
-      const change = lastRate - firstRate;
-      return change > 0 ? `+${change.toFixed(1)}%` : `${change.toFixed(1)}%`;
-    } else if (metric === 'duration') {
-      const change = last.result.elapsed_ms - first.result.elapsed_ms;
-      return change > 0 ? `+${change}ms` : `${change}ms`;
+  clearLoadReports() {
+    if (confirm('Are you sure? This will delete all saved load test reports.')) {
+      this.loadHistorySvc.clearAll();
+      this.loadTestReports = [];
+      this.snackBar.open('Load test reports cleared', 'Close', { duration: 2000 });
+      this.cdr.markForCheck();
     }
-    return '-';
   }
 
-  getTotalTestsRun(): number {
-    return this.executionHistory.reduce((sum, e) => sum + e.result.total, 0);
+  deleteLoadReport(jobId: string) {
+    this.loadHistorySvc.deleteReport(jobId);
+    this.loadTestReports = this.loadHistorySvc.getAllReports();
+    this.snackBar.open('Report deleted', 'Close', { duration: 2000 });
+    this.cdr.markForCheck();
   }
 
-  getOverallPassRate(): number {
-    const total = this.executionHistory.reduce((sum, e) => sum + e.result.total, 0);
-    const passed = this.executionHistory.reduce((sum, e) => sum + e.result.passed, 0);
-    return total === 0 ? 0 : (passed / total) * 100;
+  // ── trackBy helpers ──────────────────────────────────────────────────────
+  trackByTimestamp(_: number, exec: ExecutionRecord): number {
+    return exec.timestamp.getTime();
   }
 
-  getAverageDuration(): number {
-    if (this.executionHistory.length === 0) return 0;
-    const total = this.executionHistory.reduce((sum, e) => sum + e.result.elapsed_ms, 0);
-    return Math.round(total / this.executionHistory.length);
+  trackByTestId(index: number, test: any): string {
+    return test?.test_id ?? index;
   }
 
-  getFastestRun(): number {
-    if (this.executionHistory.length === 0) return 0;
-    return Math.min(...this.executionHistory.map(e => e.result.elapsed_ms));
-  }
-
-  getSlowestRun(): number {
-    if (this.executionHistory.length === 0) return 0;
-    return Math.max(...this.executionHistory.map(e => e.result.elapsed_ms));
+  trackByJobId(_: number, r: LoadReport): string {
+    return r.job_id;
   }
 
   private downloadFile(content: string, filename: string) {
@@ -951,20 +1139,6 @@ export class ExecutionHistoryComponent implements OnInit {
     element.click();
     document.body.removeChild(element);
   }
-
-  getTestResults(execution: any): any[] {
-    if (!execution.result || !Array.isArray(execution.result.results)) {
-      return [];
-    }
-    return execution.result.results.slice(0, 10);
-  }
-
-  getStatusClass(test: any): string {
-    if (!test || !test.status) {
-      return '';
-    }
-    return String(test.status).toLowerCase();
-  }
 }
 
 interface ExecutionRecord {
@@ -974,6 +1148,8 @@ interface ExecutionRecord {
   result: any;
   selected: boolean;
   expanded: boolean;
+  /** First 10 results, pre-sliced on load to avoid repeated slicing in the template */
+  previewResults: any[];
 }
 
 
