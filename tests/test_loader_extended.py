@@ -84,7 +84,7 @@ priority: 10
 when:
   inject:
     - message_id: msg1
-      topic: input
+      destination: input
       payload: {}
 then:
   expectations: []
@@ -264,10 +264,10 @@ class TestComplexStructures(unittest.TestCase):
 when:
   inject:
     - message_id: msg1
-      topic: topic1
+      destination: topic1
       payload: {}
     - message_id: msg2
-      topic: topic2
+      destination: topic2
       payload: {}
 then:
   expectations: []

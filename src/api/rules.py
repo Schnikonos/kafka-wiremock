@@ -39,7 +39,7 @@ def _serialize_rule(rule) -> Dict[str, Any]:
     """Convert a Rule object to a dictionary for JSON serialization."""
     outputs = [
         {
-            "topic": output.topic,
+            "destination": output.destination,
             "payload": output.payload,
             "delay_ms": output.delay_ms,
             "headers": output.headers,
@@ -60,7 +60,7 @@ def _serialize_rule(rule) -> Dict[str, Any]:
         "name": rule.rule_name,
         "priority": rule.priority,
         "conditions": conditions,
-        "input_topic": rule.input_topic,
+        "input_destination": rule.input_destination,
         "outputs": outputs,
     }
 
@@ -220,14 +220,14 @@ async def explain_rule_match(
                     "rule": {
                         "name": rule.rule_name,
                         "priority": rule.priority,
-                        "input_topic": rule.input_topic
+                        "input_destination": rule.input_destination
                     },
                     "conditions": conditions_detail,
                     "context": context,
                     "message_preview": str(request.payload)[:200],
                     "topic": topic,
                     "outputs_count": len(rule.outputs),
-                    "outputs": [{"topic": o.topic, "delay_ms": o.delay_ms} for o in rule.outputs]
+                    "outputs": [{"destination": o.destination, "delay_ms": o.delay_ms} for o in rule.outputs]
                 }
 
         # No rule matched

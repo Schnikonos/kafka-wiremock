@@ -145,7 +145,7 @@ import { ApiService } from '../../core/services/api.service';
                         <div *ngFor="let output of match.outputs; let i = index" class="output-item">
                           <div class="output-header">
                             <span class="output-number">Output {{ i + 1 }}</span>
-                            <span class="output-topic">📤 {{ output.topic }}</span>
+                            <span class="output-topic">📤 {{ output.destination }}</span>
                           </div>
                           <div *ngIf="output.delay_ms" class="output-meta">
                             Delay: {{ output.delay_ms }}ms

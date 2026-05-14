@@ -1,0 +1,59 @@
+# Test: Call an HTTP API directly and validate the response.
+priority: 50
+name: "http-api-test"
+tags: ["example", "http"]
+timeout_ms: 10000
+when:
+  inject:
+    # HTTP POST to a REST API with a JSON payload
+    - message_id: "create_order"
+      destination: "https://api.example.com/orders"
+      type: http
+      method: POST
+      auth_ref: orders_api          # defined in config/http-config/auth.yaml
+      tls_ref: corp_ca              # defined in config/http-config/tls.yaml
+      http_timeout_ms: 5000
+      headers:
+        Content-Type: "application/json"
+        X-Request-ID: "{{uuid}}"
+      payload: |
+        {
+          "customerId": "CUST-001",
+          "amount": 99.99,
+          "currency": "EUR"
+        }
+    # HTTP GET with query params
+    - message_id: "get_order"
+      destination: "https://api.example.com/orders/{{uuid}}"
+      type: http
+      method: GET
+      auth_ref: orders_api
+      query_params:
+        include_details: "true"
+      delay_ms: 500                 # Wait 500ms before the GET (let the POST settle)
+then:
+  expectations:
+    # Validate the POST response
+    - type: http
+      source_id: "create_order"     # references the message_id of the HTTP injection above
+      match:
+        - type: status_code
+          value: 201                # expect HTTP 201 Created
+        - type: response_header
+          expression: "content-type"
+          regex: "application/.*json"
+        - type: jsonpath
+          expression: "$.orderId"
+          regex: "^ORD-[0-9]+"     # orderId must follow the expected pattern
+        - type: jsonpath
+          expression: "$.status"
+          value: "PENDING"
+    # Validate the GET response
+    - type: http
+      source_id: "get_order"
+      match:
+        - type: status_code
+          value: 200
+        - type: jsonpath
+          expression: "$.customerId"
+          value: "CUST-001"

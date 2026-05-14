@@ -13,71 +13,123 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class HttpInjectionResult:
+    """Captured response from an HTTP injection (type=http)."""
+    message_id: str
+    status_code: int
+    response_headers: Dict[str, str] = field(default_factory=dict)
+    body: str = ""
+    body_json: Optional[Any] = None  # Parsed JSON body (if Content-Type is application/json)
+    error: Optional[str] = None      # Set when the HTTP call itself failed
+
+
+@dataclass
 class TestCorrelation:
     """Correlation configuration for test expectation."""
-    message_id: Optional[str] = None  # Reference to injected message_id
-    source: Optional[Dict[str, str]] = None  # {"jsonpath": "..."} or {"header": "..."}
-    target: Optional[Dict[str, str]] = None  # {"jsonpath": "..."} or {"header": "..."}
+    message_id: Optional[str] = None
+    source: Optional[Dict[str, str]] = None
+    target: Optional[Dict[str, str]] = None
 
 
 @dataclass
 class TestInjection:
     """A message to inject during test setup (when phase)."""
     message_id: str
-    topic: str
-    payload: Optional[str] = None  # String (will be templated)
-    payload_file: Optional[str] = None  # Path to external payload file (relative to test file)
+    destination: str           # Kafka topic, JMS queue, or HTTP URL (formerly 'topic')
+    payload: Optional[str] = None
+    payload_file: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
-    key: Optional[str] = None  # Message key (supports templating)
+    key: Optional[str] = None
     delay_ms: int = 0
-    correlation_id: Optional[str] = None  # Optional override correlation ID
-    fault: Optional[Fault] = None  # Optional fault injection configuration
-    msg_type: str = "kafka"  # "kafka" (default) or "jms" - type of destination
-    queue_manager_ref: Optional[str] = None  # (JMS only) Reference to queue manager from queue-managers.yaml
+    correlation_id: Optional[str] = None
+    fault: Optional[Fault] = None
+    msg_type: str = "kafka"            # YAML key: 'type'. Values: kafka | jms | http
+    connection_ref: Optional[str] = None  # JMS queue manager ref (formerly queue_manager_ref)
+    # HTTP-specific fields
+    method: str = "POST"
+    query_params: Optional[Dict[str, str]] = None
+    auth_ref: Optional[str] = None     # Auth profile name (overrides host-match)
+    tls_ref: Optional[str] = None      # TLS profile name (overrides host-match)
+    http_timeout_ms: int = 10000
+
+    # Backward compatibility aliases
+    @property
+    def topic(self) -> str:
+        return self.destination
+
+    @property
+    def queue_manager_ref(self) -> Optional[str]:
+        return self.connection_ref
 
 
 @dataclass
 class TestScript:
     """A script to execute (can be in when or then phase)."""
-    script: str  # Python code
-    script_file: Optional[str] = None  # Path to external script file (relative to test file)
+    script: str
+    script_file: Optional[str] = None
+
+
+@dataclass
+class HttpStubResponse:
+    """HTTP response definition for a type=http-stub expectation."""
+    status_code: int = 200
+    payload: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+    content_type: str = "application/json"
 
 
 @dataclass
 class TestExpectation:
     """An expected message to receive during test validation (then phase)."""
-    topic: str
-    wait_ms: int = 2000  # Default 2s timeout
-    match: List[Condition] = field(default_factory=list)  # Optional conditions
-    match_file: Optional[str] = None  # Path to external match conditions file (YAML)
-    correlate: Optional[TestCorrelation] = None  # Correlation configuration
-    msg_type: str = "kafka"  # "kafka" (default) or "jms" - type of destination to consume from
-    queue_manager_ref: Optional[str] = None  # (JMS only) Reference to queue manager from queue-managers.yaml
+    destination: str = ""              # Kafka topic, JMS queue (formerly 'topic'). Empty for type=http/http-stub
+    wait_ms: int = 2000
+    match: List[Condition] = field(default_factory=list)
+    match_file: Optional[str] = None
+    correlate: Optional[TestCorrelation] = None
+    msg_type: str = "kafka"            # YAML key: 'type'. Values: kafka | jms | http | http-stub
+    connection_ref: Optional[str] = None  # JMS queue manager ref (formerly queue_manager_ref)
+    source_id: Optional[str] = None    # For type=http: references the message_id of the HTTP injection
+
+    # HTTP stub fields (type=http-stub only)
+    server: Optional[str] = None       # Mock server name (from http-config/mock-servers/)
+    path: Optional[str] = None         # URL path pattern, e.g. "/orders/{orderId}"
+    method: str = "*"                  # HTTP method filter ("*" = any)
+    response: Optional[HttpStubResponse] = None  # Response to return when stub is called
+    times: int = 1                     # Expected number of calls
+
+    # Backward compatibility aliases
+    @property
+    def topic(self) -> str:
+        return self.destination
+
+    @property
+    def queue_manager_ref(self) -> Optional[str]:
+        return self.connection_ref
 
 
 @dataclass
 class TestWhen:
     """Input phase of test: flat list of injections and scripts."""
-    items: List[Union[TestInjection, TestScript]] = field(default_factory=list)  # Mixed items, executed sequentially
+    items: List[Union[TestInjection, TestScript]] = field(default_factory=list)
 
 
 @dataclass
 class TestThen:
     """Output phase of test: flat list of expectations and scripts."""
-    items: List[Union[TestExpectation, TestScript]]  # Mixed items, executed sequentially
+    items: List[Union[TestExpectation, TestScript]]
 
 
 @dataclass
 class TestDefinition:
     """A complete test definition."""
-    name: str  # Test identifier
+    name: str
     when: TestWhen
     then: TestThen
-    priority: int = 999  # Optional; lower = runs first
-    tags: List[str] = field(default_factory=list)  # Optional; for filtering
-    skip: bool = False  # Optional; default false
-    timeout_ms: int = 5000  # Optional; overall test timeout
-    file_path: Optional[str] = None  # Path to the test YAML file (for logging)
+    priority: int = 999
+    tags: List[str] = field(default_factory=list)
+    skip: bool = False
+    timeout_ms: int = 5000
+    file_path: Optional[str] = None
 
 
 class TestYamlParser:
@@ -125,7 +177,19 @@ class TestValidator:
     """Validates test definitions."""
 
     @staticmethod
-    def validate_test_definition(test_dict: Dict[str, Any], file_path: str = "unknown") -> TestDefinition:
+    def _parse_stub_response(response_dict: Optional[Dict[str, Any]]) -> Optional['HttpStubResponse']:
+        """Parse optional HTTP stub response configuration."""
+        if not response_dict:
+            return None
+        return HttpStubResponse(
+            status_code=int(response_dict.get('status_code', 200)),
+            payload=response_dict.get('payload'),
+            headers=response_dict.get('headers') or {},
+            content_type=response_dict.get('content_type', 'application/json'),
+        )
+
+    @staticmethod
+    def validate_test_definition(test_dict: Dict[str, Any], file_path: str = "unknown") -> "TestDefinition":
         """
         Validate and convert test dictionary to TestDefinition.
 
@@ -182,7 +246,7 @@ class TestValidator:
             raise ValueError(f"Invalid test definition in {file_path}: {e}")
 
     @staticmethod
-    def _parse_when(when_dict: Dict[str, Any]) -> TestWhen:
+    def _parse_when(when_dict: Dict[str, Any]) -> "TestWhen":
         """Parse 'when' phase - flat list of injections and scripts."""
         if "inject" not in when_dict:
             raise ValueError("'when' block must contain 'inject' list")
@@ -207,14 +271,15 @@ class TestValidator:
                 # It's an injection
                 if "message_id" not in item_dict:
                     raise ValueError(f"Injection at index {idx} missing 'message_id'")
-                if "topic" not in item_dict:
-                    raise ValueError(f"Injection at index {idx} missing 'topic'")
-                if "payload" not in item_dict and "payload_file" not in item_dict:
+                if "destination" not in item_dict:
+                    raise ValueError(f"Injection at index {idx} missing 'destination'")
+                msg_type = str(item_dict.get("type", "kafka")).lower()
+                if msg_type != "http" and "payload" not in item_dict and "payload_file" not in item_dict:
                     raise ValueError(f"Injection at index {idx} missing 'payload' or 'payload_file'")
 
                 injection = TestInjection(
                     message_id=str(item_dict["message_id"]),
-                    topic=str(item_dict["topic"]),
+                    destination=str(item_dict["destination"]),
                     payload=str(item_dict["payload"]) if "payload" in item_dict else None,
                     payload_file=item_dict.get("payload_file"),
                     headers=item_dict.get("headers"),
@@ -222,15 +287,20 @@ class TestValidator:
                     delay_ms=int(item_dict.get("delay_ms", 0)),
                     correlation_id=item_dict.get("correlation_id"),
                     fault=TestYamlParser._parse_fault(item_dict.get("fault")),
-                    msg_type=str(item_dict.get("msg_type", "kafka")).lower(),
-                    queue_manager_ref=item_dict.get("queue_manager_ref")
+                    msg_type=msg_type,
+                    connection_ref=item_dict.get("connection_ref"),
+                    method=str(item_dict.get("method", "POST")).upper(),
+                    query_params=item_dict.get("query_params"),
+                    auth_ref=item_dict.get("auth_ref"),
+                    tls_ref=item_dict.get("tls_ref"),
+                    http_timeout_ms=int(item_dict.get("http_timeout_ms", 10000)),
                 )
                 items.append(injection)
 
         return TestWhen(items=items)
 
     @staticmethod
-    def _parse_then(then_dict: Dict[str, Any]) -> TestThen:
+    def _parse_then(then_dict: Dict[str, Any]) -> "TestThen":
         """Parse 'then' phase - flat list of expectations and scripts."""
         if "expectations" not in then_dict:
             raise ValueError("'then' block must contain 'expectations' list")
@@ -252,9 +322,11 @@ class TestValidator:
                 # It's a script file reference
                 items.append(TestScript(script="", script_file=str(item_dict["script_file"])))
             else:
-                # It's an expectation
-                if "topic" not in item_dict:
-                    raise ValueError(f"Expectation at index {idx} missing 'topic'")
+                msg_type = str(item_dict.get("type", "kafka")).lower()
+                # For http/http-stub expectations, destination is optional
+                # (http: responses linked by source_id; http-stub: server+path used instead)
+                if msg_type not in ("http", "http-stub") and "destination" not in item_dict:
+                    raise ValueError(f"Expectation at index {idx} missing 'destination'")
 
                 # Parse match conditions
                 match_list = item_dict.get("match", [])
@@ -262,7 +334,7 @@ class TestValidator:
                 if isinstance(match_list, list):
                     for match_dict in match_list:
                         if not isinstance(match_dict, dict):
-                            raise ValueError(f"Match condition must be a dictionary")
+                            raise ValueError("Match condition must be a dictionary")
 
                         condition_type = match_dict.get("type")
                         if not condition_type:
@@ -287,13 +359,20 @@ class TestValidator:
                     )
 
                 expectation = TestExpectation(
-                    topic=str(item_dict["topic"]),
+                    destination=str(item_dict.get("destination", "")),
                     wait_ms=int(item_dict.get("wait_ms", 2000)),
                     match=conditions,
                     match_file=item_dict.get("match_file"),
                     correlate=correlate,
-                    msg_type=str(item_dict.get("msg_type", "kafka")).lower(),
-                    queue_manager_ref=item_dict.get("queue_manager_ref")
+                    msg_type=msg_type,
+                    connection_ref=item_dict.get("connection_ref"),
+                    source_id=item_dict.get("source_id"),
+                    # HTTP stub fields (type=http-stub)
+                    server=item_dict.get("server"),
+                    path=item_dict.get("path"),
+                    method=str(item_dict.get("method", "*")).upper() if item_dict.get("method") else "*",
+                    times=int(item_dict.get("times", 1)),
+                    response=TestValidator._parse_stub_response(item_dict.get("response")),
                 )
                 items.append(expectation)
 
@@ -381,8 +460,7 @@ class TestLoader:
 
             test_dict = TestYamlParser.parse_test_yaml(yaml_content, str(file_path))
             test = TestValidator.validate_test_definition(test_dict, str(file_path))
-            
-            # Resolve payload files and script files relative to test file directory
+
             test_dir = Path(file_path).parent
             self._resolve_payload_files(test, test_dir)
             self._resolve_script_files(test, test_dir)
@@ -422,8 +500,8 @@ class TestLoader:
                 else:
                     try:
                         with open(match_path, "r") as f:
-                            import yaml
-                            match_data = yaml.safe_load(f)
+                            import yaml as _yaml
+                            match_data = _yaml.safe_load(f)
                             if isinstance(match_data, list):
                                 # Each item in match file is a condition
                                 for match_dict in match_data:
@@ -488,8 +566,8 @@ class TestLoader:
         topics = set()
         for test in tests:
             for item in test.then.items:
-                if isinstance(item, TestExpectation):
-                    topics.add(item.topic)
+                if isinstance(item, TestExpectation) and item.msg_type != "http":
+                    topics.add(item.destination)
         return topics
 
     def get_tests_by_tag(self, tests: List[TestDefinition], tags: List[str]) -> List[TestDefinition]:

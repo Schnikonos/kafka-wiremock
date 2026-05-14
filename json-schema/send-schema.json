@@ -56,8 +56,8 @@
   "definitions": {
     "sendMessage": {
       "type": "object",
-      "description": "A message to send to Kafka or JMS.",
-      "required": ["message_id", "topic"],
+      "description": "A message/request to send: Kafka, JMS, or HTTP.",
+      "required": ["message_id", "destination"],
       "additionalProperties": false,
       "properties": {
         "message_id": {
@@ -66,24 +66,51 @@
           "minLength": 1,
           "examples": ["msg1", "order-1", "payment-123"]
         },
-        "topic": {
+        "destination": {
           "type": "string",
-          "description": "Destination (Kafka topic or JMS queue/topic name).",
+          "description": "Kafka topic, JMS queue/topic name, or HTTP(S) URL depending on 'type'.",
           "minLength": 1,
-          "examples": ["orders.input", "ORDERS_QUEUE", "payments.topic"]
+          "examples": ["orders.input", "ORDERS_QUEUE", "https://api.example.com/orders"]
         },
-        "msg_type": {
+        "type": {
           "type": "string",
-          "description": "Message type - kafka or jms (default: kafka).",
-          "enum": ["kafka", "jms"],
+          "description": "Destination type - kafka (default), jms, or http.",
+          "enum": ["kafka", "jms", "http"],
           "default": "kafka",
-          "examples": ["kafka", "jms"]
+          "examples": ["kafka", "jms", "http"]
         },
-        "queue_manager_ref": {
+        "connection_ref": {
           "type": "string",
-          "description": "Reference to queue manager (only for jms msg_type). Name from queue-managers.yaml.",
+          "description": "Reference to queue manager (only for type=jms). Name from queue-managers.yaml.",
           "minLength": 1,
           "examples": ["qm_us_east", "qm_eu_west", "qm_primary"]
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method (only for type=http). Defaults to POST.",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+          "default": "POST"
+        },
+        "query_params": {
+          "type": "object",
+          "description": "HTTP query parameters (only for type=http). Values support template placeholders.",
+          "additionalProperties": { "type": "string" }
+        },
+        "auth_ref": {
+          "type": "string",
+          "description": "Auth profile name from config/http-config/auth.yaml.",
+          "examples": ["api_basic", "bearer_oauth"]
+        },
+        "tls_ref": {
+          "type": "string",
+          "description": "TLS profile name from config/http-config/tls.yaml.",
+          "examples": ["internal", "corp_ca"]
+        },
+        "http_timeout_ms": {
+          "type": "integer",
+          "description": "HTTP request timeout in milliseconds (only for type=http).",
+          "minimum": 0,
+          "default": 10000
         },
         "payload": {
           "type": "string",
@@ -224,15 +251,15 @@
       "inject": [
         {
           "message_id": "order1",
-          "topic": "orders.input",
-          "msg_type": "kafka",
+          "destination": "orders.input",
+          "type": "kafka",
           "payload": "{\"orderId\": \"ORD-{{uuid}}\", \"customerId\": \"CUST-123\", \"amount\": 99.99, \"status\": \"NEW\"}",
           "delay_ms": 0
         },
         {
           "message_id": "order2",
-          "topic": "orders.input",
-          "msg_type": "kafka",
+          "destination": "orders.input",
+          "type": "kafka",
           "payload": "{\"orderId\": \"ORD-{{uuid}}\", \"customerId\": \"CUST-456\", \"amount\": 199.99, \"status\": \"NEW\"}",
           "delay_ms": 100
         }
@@ -245,9 +272,9 @@
       "inject": [
         {
           "message_id": "jms-order1",
-          "topic": "ORDERS_INPUT",
-          "msg_type": "jms",
-          "queue_manager_ref": "qm_us_east",
+          "destination": "ORDERS_INPUT",
+          "type": "jms",
+          "connection_ref": "qm_us_east",
           "payload": "{\"orderId\": \"ORD-001\", \"status\": \"NEW\"}",
           "headers": {
             "X-Source": "send-test"

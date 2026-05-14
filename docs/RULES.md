@@ -378,6 +378,140 @@ then:
 
 ---
 
+## HTTP Listener Rules
+
+Each **mock server** declared in `http-config/mock-servers/<name>.yaml` accepts inbound HTTP
+requests. Rules with `when.type: http` are matched against those requests following a 4-layer
+priority order.
+
+### Overview
+
+| Priority | Source | Description |
+|----------|--------|-------------|
+| 1 | HttpStubCache | Active test stubs registered by a running test suite |
+| 2 | Rule files | `when.type: http` rules (hot-reloaded, evaluated live per request) |
+| 3 | Endpoint defaults | Path-pattern defaults in the server's YAML config |
+| 4 | Server default | Top-level `default_response` in the server's YAML config |
+
+A request that matches none of the above returns **404** (or the configured `default_response`).
+
+### `when` block for HTTP rules
+
+```yaml
+when:
+  type: http
+  connection_ref: api-server      # mock server name (required when >1 server)
+  destination: /orders/{orderId}  # path pattern; {param} → named regex group
+  method: POST                    # HTTP method (default: "*" = any method)
+  match:
+    - type: path_param
+      expression: orderId
+      regex: "^[0-9]{6}$"
+    - type: query_param
+      expression: locale
+      value: "en"
+    - type: jsonpath
+      expression: "$.status"
+      value: "PENDING"
+    - type: header
+      expression: "X-Tenant-ID"
+      value: "acme"
+```
+
+#### New match condition types
+
+| Type | `expression` | Description |
+|------|-------------|-------------|
+| `path_param` | param name | Match an extracted path parameter from `destination` pattern |
+| `query_param` | param name | Match a query string parameter |
+
+Both support `value` (exact) and `regex` (pattern) comparisons, same as other condition types.
+
+### Template placeholders for HTTP rules
+
+Inside `then` payloads and headers, the following context keys are available when processing an
+HTTP request:
+
+| Placeholder | Description |
+|------------|-------------|
+| `{{path.orderId}}` | Extracted path parameter named `orderId` |
+| `{{query.locale}}` | Query string parameter named `locale` |
+| `{{header.X-Tenant-ID}}` | Request header value |
+| `{{body}}` | Raw request body string |
+| `{{$.field}}` | JSONPath resolved against the parsed JSON body |
+
+### `then` block — sync/async ordering
+
+Items in `then` are split at the **`type: http_response`** boundary:
+
+- Items **before** `http_response` → executed **synchronously** (blocking, completed before the
+  HTTP response is returned)
+- The `http_response` item → defines the HTTP response content
+- Items **after** `http_response` → rendered immediately (context snapshot taken), then launched
+  as background tasks **just before** the response is returned
+
+```yaml
+then:
+  - type: log
+    message: "Received order {{path.orderId}}"    # runs BEFORE response
+
+  - type: http_response
+    status_code: 202
+    payload: '{"orderId": "{{path.orderId}}", "accepted": true}'
+    response_content_type: application/json
+
+  - type: kafka                                   # runs AFTER response is sent
+    destination: orders.events
+    payload: |
+      {"event": "ORDER_RECEIVED", "orderId": "{{path.orderId}}"}
+```
+
+### `http_response` output fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | — | Must be `http_response` |
+| `status_code` | integer | `200` | HTTP response status code |
+| `payload` | string | `""` | Response body (template placeholders supported) |
+| `response_content_type` | string | `application/json` | `Content-Type` response header |
+| `headers` | map | `{}` | Additional response headers (values are templates) |
+
+### Full HTTP rule example
+
+```yaml
+# config/rules/order-rule.yaml
+when:
+  type: http
+  connection_ref: api-server
+  destination: /orders/{orderId}
+  method: POST
+  match:
+    - type: jsonpath
+      expression: "$.amount"
+      regex: "^[0-9]+(\\.[0-9]{1,2})?$"
+
+then:
+  - type: http_response
+    status_code: 201
+    payload: |
+      {
+        "orderId": "{{path.orderId}}",
+        "amount": {{$.amount}},
+        "currency": "{{$.currency}}",
+        "requestId": "{{uuid}}"
+      }
+    response_content_type: application/json
+    headers:
+      X-Trace-ID: "{{uuid}}"
+
+  - type: kafka
+    destination: orders.created
+    payload: |
+      {"orderId": "{{path.orderId}}", "amount": {{$.amount}}}
+```
+
+---
+
 ## Schema Validation
 
 Validate rule files against `rule-schema.json`:

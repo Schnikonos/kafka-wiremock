@@ -93,6 +93,11 @@ COPY src/ src/
 COPY run.py .
 COPY --from=frontend-builder /ui/dist/ui/browser src/static
 
+# Bundle JSON schemas as a downloadable ZIP served as a static asset
+COPY json-schema/*.json /tmp/schemas/
+RUN python3 -c "import zipfile, glob, os; files = sorted(glob.glob('/tmp/schemas/*.json')); zf = zipfile.ZipFile('src/static/schemas.zip', 'w', zipfile.ZIP_DEFLATED); [zf.write(f, os.path.basename(f)) for f in files]; zf.close(); print('schemas.zip created with', str(len(files)), 'files')" \
+    && rm -rf /tmp/schemas
+
 RUN mkdir -p /config /testSuite /send && \
     useradd -m appuser && \
     chown -R appuser:appuser /app /config /testSuite /send

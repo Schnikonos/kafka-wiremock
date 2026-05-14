@@ -6,7 +6,7 @@ timeout_ms: 5000
 
 inject:
   - message_id: "order1"
-    topic: "users.commands"
+    destination: "users.commands"
     headers:
       my-test-header: "HeaderValue123"
     key: "myMessageKey"

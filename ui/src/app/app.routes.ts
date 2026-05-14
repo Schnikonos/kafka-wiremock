@@ -9,6 +9,8 @@ import { RuleMatcherDebugComponent } from './features/debug/rule-matcher-debug.c
 import { TemplatePreviewComponent } from './features/tools/template-preview.component';
 import { ExecutionHistoryComponent } from './features/tools/execution-history.component';
 import { ConfigViewComponent } from './features/config/config-view.component';
+import { LoadTestComponent } from './features/tests/load-test/load-test.component';
+import { LoadReportComponent } from './features/tests/load-report/load-report.component';
 
 export const routes: Routes = [
   {
@@ -16,6 +18,8 @@ export const routes: Routes = [
     component: LayoutComponent,
     children: [
       { path: 'tests', component: TestsComponent },
+      { path: 'tests/load-test', component: LoadTestComponent },
+      { path: 'tests/load-report/:jobId', component: LoadReportComponent },
       { path: 'sends', component: SendsComponent },
       { path: 'rules', component: RulesComponent },
       { path: 'messages', component: MessagesComponent },

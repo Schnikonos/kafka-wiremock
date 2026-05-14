@@ -30,10 +30,16 @@ from .test.results_db import ResultsDatabase
 from .dependencies.manager import DependencyManager
 from .send.loader import SendLoader
 from .send.executor import SendExecutor
+from .http.executor import HttpExecutor
+from .config.mock_server_config import MockServerConfigLoader
+from .http.stub_cache import HttpStubCache
+from .http.mock_dispatch import MockDispatchHandler
+from .http.mock_server import HttpMockServer
+from .http.mock_server_registry import HttpMockServerRegistry
 
 # Import API routers and setter functions
 from .api import health, kafka_injection, rules, custom_placeholders, dependencies_mgmt, results, app_settings, config, jms as jms_api
-from .api.tests import discovery, execution, jobs, logs, bulk
+from .api.tests import discovery, execution, jobs, logs, bulk, load as load_tests
 from .api.send import discovery as send_discovery, execution as send_execution, bulk as send_bulk
 from .api.debug import decode, match, topics, cache, template
 from .jms.providers.factory import ProviderFactory  # NEW: provider factory
@@ -63,13 +69,18 @@ message_cache: Optional[MessageCache] = None
 test_listener_manager: Optional[TestListenerManager] = None
 send_loader: Optional[SendLoader] = None
 send_executor: Optional[SendExecutor] = None
+http_executor: Optional[HttpExecutor] = None
 results_db: Optional[ResultsDatabase] = None
+mock_server_config_loader: Optional[MockServerConfigLoader] = None
+http_stub_cache: Optional[HttpStubCache] = None
+mock_dispatch_handler: Optional[MockDispatchHandler] = None
+mock_server_registry: Optional[HttpMockServerRegistry] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown."""
-    global config_loader, app_settings_loader, qm_config_loader, jms_config_loader, jms_registry, kafka_client, listener_engine, jms_listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager, message_cache, test_listener_manager, send_loader, send_executor, results_db
+    global config_loader, app_settings_loader, qm_config_loader, jms_config_loader, jms_registry, kafka_client, listener_engine, jms_listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager, message_cache, test_listener_manager, send_loader, send_executor, http_executor, results_db, mock_server_config_loader, http_stub_cache, mock_dispatch_handler, mock_server_registry
     # Startup
     logger.info("Starting Kafka Wiremock...")
     try:
@@ -205,7 +216,8 @@ async def lifespan(app: FastAPI):
             custom_placeholder_registry=custom_placeholder_registry,
             message_cache=message_cache,
             topic_metadata_manager=topic_metadata_manager,
-            schema_registry=schema_registry
+            schema_registry=schema_registry,
+            http_executor=http_executor  # wired after creation below
         )
          # Start listener engines
         listener_engine.start()
@@ -221,7 +233,8 @@ async def lifespan(app: FastAPI):
                     jms_config_loader=jms_config_loader,
                     kafka_client=kafka_client,  # needed for msg_type=kafka rule outputs
                     message_cache=message_cache,
-                    custom_placeholder_registry=custom_placeholder_registry
+                    custom_placeholder_registry=custom_placeholder_registry,
+                    http_executor=http_executor  # wired after creation below
                 )
                 jms_listener_engine.start()
                 logger.info("JMS Listener started")
@@ -231,14 +244,45 @@ async def lifespan(app: FastAPI):
         # Initialize test suite components
         test_loader = TestLoader(test_suite_dir=test_suite_dir)
 
-        # Pass listener_engine, message_cache, and jms_registry to test suite runner
+        # Initialise HttpExecutor (uses config/http-config/tls.yaml + auth.yaml)
+        http_executor = HttpExecutor(config_dir=config_dir)
+        # Back-wire into already-created listener engines
+        listener_engine.http_executor = http_executor
+        if jms_listener_engine is not None:
+            jms_listener_engine.http_executor = http_executor
+
+        # Initialize HTTP Mock Servers (http-config/mock-servers/*.yaml)
+        http_stub_cache = HttpStubCache()
+        mock_server_config_loader = MockServerConfigLoader(config_dir=config_dir)
+        mock_server_configs = mock_server_config_loader.load()
+        if mock_server_configs:
+            mock_dispatch_handler = MockDispatchHandler(
+                config_loader=config_loader,
+                server_configs=mock_server_configs,
+                stub_cache=http_stub_cache,
+                kafka_client=kafka_client,
+                jms_registry=jms_registry,
+                http_executor=http_executor,
+            )
+            mock_server_registry = HttpMockServerRegistry()
+            for srv_name, srv_config in mock_server_configs.items():
+                srv = HttpMockServer(config=srv_config, dispatch_handler=mock_dispatch_handler)
+                mock_server_registry.add_server(srv)
+            mock_server_registry.start_all()
+            logger.info(f"Started {len(mock_server_configs)} HTTP mock server(s)")
+        else:
+            logger.info("No HTTP mock servers configured (http-config/mock-servers/ is empty or absent)")
+
+        # Pass listener_engine, message_cache, jms_registry, http_executor and stub_cache to test suite runner
         test_suite_runner = TestSuiteRunner(
             kafka_client,
             custom_placeholder_registry,
             test_suite_dir,
             message_cache=message_cache,
             listener_engine=listener_engine,
-            jms_registry=jms_registry
+            jms_registry=jms_registry,
+            http_executor=http_executor,
+            stub_cache=http_stub_cache,
         )
         test_job_manager = TestJobManager()
 
@@ -257,11 +301,13 @@ async def lifespan(app: FastAPI):
             kafka_client,
             custom_placeholder_registry,
             send_dir=send_dir,
-            jms_registry=jms_registry  # NEW: pass JMS registry for JMS support in sends
+            jms_registry=jms_registry,
+            http_executor=http_executor  # NEW: HTTP support in sends
         )
 
         # Set references in API modules
         kafka_injection.set_kafka_client(kafka_client)
+        kafka_injection.set_message_cache(message_cache)
         if not jms_registry.is_empty():  # NEW: pass registry instead of client
             kafka_injection.set_jms_registry(jms_registry)
             kafka_injection.set_jms_config_loader(jms_config_loader)  # NEW
@@ -290,6 +336,8 @@ async def lifespan(app: FastAPI):
         bulk.set_test_loader(test_loader)
         bulk.set_test_suite_runner(test_suite_runner)
         bulk.set_results_db(results_db)
+        load_tests.set_test_loader(test_loader)
+        load_tests.set_test_suite_runner(test_suite_runner)
         send_bulk.set_send_loader(send_loader)
         send_bulk.set_send_executor(send_executor)
         send_bulk.set_results_db(results_db)
@@ -319,6 +367,8 @@ async def lifespan(app: FastAPI):
             kafka_client.close()
         if jms_registry:  # NEW: close all clients in registry
             jms_registry.close_all()
+        if mock_server_registry:
+            mock_server_registry.stop_all()
         logger.info("Kafka Wiremock shutdown successfully")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
@@ -359,6 +409,7 @@ app.include_router(execution.router, prefix="/api")
 app.include_router(send_discovery.router, prefix="/api")
 app.include_router(send_execution.router, prefix="/api")
 app.include_router(bulk.router, prefix="/api")
+app.include_router(load_tests.router, prefix="/api")
 app.include_router(send_bulk.router, prefix="/api")
 app.include_router(decode.router, prefix="/api")
 app.include_router(match.router, prefix="/api")

@@ -7,7 +7,8 @@ Event-driven Kafka and JMS mock container for testing, similar to Pact for APIs.
 ## Key Features
 
 - ✅ **Kafka & JMS Support**: Use with Kafka topics and IBM MQ queues simultaneously
-- ✅ **Mixed Message Flows**: Input from Kafka → Output to JMS (or vice versa)
+- ✅ **HTTP(S) Support**: Call REST APIs as rule outputs, test injections, and sends
+- ✅ **Mixed Message Flows**: Input from Kafka → Output to JMS or HTTP (or vice versa)
 - ✅ **Multiple Matching Strategies**: JSONPath, Regex, Exact, Partial matching
 - ✅ **Rich Templating**: UUID, timestamps, random data, JSONPath extraction
 - ✅ **Custom Placeholders**: User-defined functions with ordered pipeline execution
@@ -22,6 +23,7 @@ Event-driven Kafka and JMS mock container for testing, similar to Pact for APIs.
 - ✅ **Hot-Reload**: Configuration updates every 30 seconds (no restart needed)
 - ✅ **Docker Ready**: Lightweight container with all dependencies included
 - ✅ **Angular Web UI**: Modern dashboard for managing tests, sends, rules, and messages
+- ✅ **Load Testing**: Gatling-style closed-model load scenarios with live charts and HTML-style reports
 
 ## UI Features (Angular 19)
 
@@ -36,6 +38,16 @@ The Angular 19 web UI provides a modern dashboard for managing Kafka Wiremock:
 - **Search & Filter**: Find tests by name or tags
 - **Real-Time Results**: View pass/fail/skip status and execution time
 - **Statistics**: Total, passed, failed, skipped counts with timing
+- **⚡ Load Test Button**: Jump to Load Testing with current selection pre-filled
+
+#### ⚡ Load Testing (Gatling-style, May 2026)
+- **Scenario Builder**: Define ramp-up, steady-state, and ramp-down phases with a visual editor
+- **Live Load Shape Preview**: Instant SVG chart showing users-over-time as you edit phases
+- **Closed-model Concurrency**: Maintain N concurrent virtual users each looping through selected tests
+- **Live Progress**: Active users, OK/KO counts, and error rate updated every 2 seconds during a run
+- **Gatling-style Report**: Three Chart.js charts (active users, OK/KO requests, p50/p90/p99 response time) plus a per-test summary statistics table
+- **JSON Export**: Download the full report as JSON
+- **Open-model Ready**: Architecture reserved for future `inject_rate_per_s` open-model support
 
 #### 📮 Send Messages Manager
 - **Multi-Select Sends**: Select multiple message definitions
@@ -234,210 +246,263 @@ export IBM_MQ_CHANNEL="PROD.SVRCONN"
 | - **Recent Executions**: View all test runs with statistics
 | - **Pass Rate Trend**: Visual comparison of execution quality over time
 
-## JMS Support (May 2026)
+## HTTP(S) Support (May 2026)
 
-Kafka Wiremock now supports IBM MQ for JMS messaging alongside Kafka, enabling:
+Kafka Wiremock now supports outbound HTTP(S) calls as a first-class destination type alongside Kafka and JMS.
 
-### Features
-- **IBM MQ Integration**: Connect to IBM Message Queue systems
-- **Mixed Workloads**: Input from Kafka → Output to JMS (or vice versa)
-- **JMS Configuration Files**: Similar to topic-config, store JMS-specific settings in `config/jms-config/`
-- **Flexible Routing**: Rules can output to Kafka, JMS queues, or both
-- **Message Type Detection**: Specify `msg_type` to route messages appropriately
+### Overview
 
-### Quick Start: IBM MQ with Docker Compose
+| Feature | Kafka | JMS | HTTP |
+|---------|-------|-----|------|
+| Rule output (`then`) | ✅ | ✅ | ✅ |
+| Test injection (`when`) | ✅ | ✅ | ✅ |
+| Test expectation (`then`) | ✅ | ✅ | ✅ Response validation |
+| Send injection | ✅ | ✅ | ✅ |
+| TLS/mTLS | — | — | ✅ Per-host or per-profile |
+| Auth (Basic/Bearer/OAuth2/mTLS) | — | — | ✅ |
 
-**✅ Recommended: Use Docker Compose with Official IBM MQ Container**
+### YAML Syntax
 
-The easiest way to get started with IBM MQ is using the included `docker-compose.full.yml` which provides a complete development environment:
+The `when`/`then` blocks now use `destination` + `type` instead of the old `topic` + `msg_type`:
 
-```bash
-# Start everything (Kafka, Zookeeper, IBM MQ, and Kafka Wiremock)
-docker-compose -f docker-compose.full.yml up -d
-
-# Wait for services to be healthy
-docker-compose -f docker-compose.full.yml ps
-
-# Verify IBM MQ is ready
-docker-compose -f docker-compose.full.yml logs ibm-mq | grep "QM1"
-```
-
-**What you get automatically:**
-- ✅ Official IBM MQ 9.3 container (QM1 queue manager)
-- ✅ Pre-created test queues (ORDERS_INPUT, ORDERS_OUTPUT, PAYMENTS_INPUT, etc.)
-- ✅ Python app with JMS support (Kafka, ActiveMQ, RabbitMQ)
-- ✅ All test/example queues initialized
-- ✅ Health checks to verify everything is ready
-
-**Note on IBM MQ Library Support:**
-The Docker image attempts to install `pymqi` for IBM MQ support. If pymqi compilation fails due to missing IBM MQ C libraries, the build will complete anyway with other JMS providers (stomp.py, pika) still available. See [PYMQI_INSTALLATION_GUIDE.md](PYMQI_INSTALLATION_GUIDE.md) for details.
-
-**Access IBM MQ Admin Console:**
-```
-URL: https://localhost:9443/ibmmq/console/
-Username: admin
-Password: passw0rd
-```
-
-**Verify IBM MQ Queue Configuration:**
-```bash
-# Check queue status
-docker-compose -f docker-compose.full.yml exec ibm-mq dspmq -m QM1
-
-# Verify pre-created queues
-docker-compose -f docker-compose.full.yml exec ibm-mq runmqsc -m QM1 << EOF
-DISPLAY QLOCAL(ORDERS_INPUT)
-DISPLAY QLOCAL(ORDERS_OUTPUT)
-EOF
-```
-
-For comprehensive setup guide, troubleshooting, and advanced configuration:
-
-👉 **See: [IBM_MQ_DOCKER_SETUP.md](IBM_MQ_DOCKER_SETUP.md)**
-
-**pymqi Compilation & Docker Build:**
-
-The Docker build gracefully handles pymqi installation:
-- Attempts to install `pymqi==1.12.13` from PyPI (may use pre-built wheels if available)
-- If pymqi compilation fails, continues with other JMS providers (stomp.py, pika)
-- FastAPI, Kafka client, and core functionality always installed
-- Build completes successfully even if pymqi unavailable
-
-For detailed troubleshooting, installation options, and how to enable IBM MQ support:
-
-👉 **See: [PYMQI_INSTALLATION_GUIDE.md](PYMQI_INSTALLATION_GUIDE.md)**
-
----
-
-### Alternative: Manual IBM MQ Setup (Advanced)
-
-If you prefer to use an external IBM MQ server or need custom configuration:
-
-**1. Install IBM MQ Client Library**
-```bash
-# Option A: Use pymqi (open-source, recommended for Docker and most use cases)
-pip install pymqi==1.12.13
-
-# Option B: Use official ibm-mq (requires IBM repository credentials, not recommended)
-pip install ibm-mq --index-url https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/messaging/mqpython/
-```
-
-**2. Configure JMS Connection (Environment Variables)**
-```bash
-export IBM_MQ_BROKER_URL="your-mq-server(1414)"
-export IBM_MQ_CHANNEL="YOUR.SVRCONN"
-export IBM_MQ_QUEUE_MANAGER="YOUR_QM"
-export IBM_MQ_USERNAME="your_user"
-export IBM_MQ_PASSWORD="your_password"
-```
-
-**3. Create JMS Configuration** (`config/jms-config/orders.yaml`)
 ```yaml
-destination: YOUR_QUEUE_NAME
-destination_type: queue
-message:
-  format: json
-correlation:
-  extract:
-    - from: header
-      name: X-Correlation-Id
-      priority: 1
-```
+# Rule: Kafka input → HTTP output
+priority: 20
+name: "order-webhook"
 
-**4. Create a Rule with Mixed Input/Output** (`config/rules/jms-example.yaml`)
-```yaml
-priority: 10
-name: "jms-to-kafka-rule"
 when:
-  topic: YOUR_QUEUE_NAME
-  msg_type: jms  # Input from JMS
+  destination: orders.events   # Kafka topic, JMS queue, or (future) HTTP webhook path
+  type: kafka                  # kafka | jms
   match:
     - type: jsonpath
-      expression: "$.eventType"
-      value: "ORDER_CREATED"
+      expression: "$.status"
+      value: "CONFIRMED"
+
 then:
-  # Output to Kafka
-  - topic: orders.processed
-    msg_type: kafka
+  - destination: "https://webhook.partner.example.com/orders"
+    type: http
+    method: POST               # GET | POST | PUT | PATCH | DELETE
+    auth_ref: partner_api      # optional: auth profile from config/http-config/auth.yaml
+    tls_ref: corp_ca           # optional: TLS profile from config/http-config/tls.yaml
+    http_timeout_ms: 5000
+    headers:
+      Content-Type: "application/json"
     payload: |
-      {
-        "orderId": "{{$.orderId}}",
-        "event": "PROCESSED"
-      }
-  # Output to another JMS queue
-  - topic: ORDERS_PROCESSED
-    msg_type: jms
-    payload: |
-      {
-        "orderId": "{{$.orderId}}",
-        "status": "processed"
-      }
+      {"orderId": "{{$.orderId}}", "status": "{{$.status}}"}
+
+  - destination: orders.notified
+    type: kafka
+    payload: '{"orderId": "{{$.orderId}}", "webhookCalled": true}'
 ```
 
-**5. Inject/Consume via API**
-```bash
-# Inject to JMS queue
-curl -X POST "http://localhost:8000/api/inject/ORDERS_INPUT?msg_type=jms" \
-  -H "Content-Type: application/json" \
-  -d '{"orderId": "ORD-123", "eventType": "ORDER_CREATED"}'
+### HTTP in testSuite
 
-# Consume from JMS queue
-curl "http://localhost:8000/api/messages/ORDERS_PROCESSED?msg_type=jms&limit=5"
+```yaml
+when:
+  inject:
+    - message_id: "create_order"
+      destination: "https://api.example.com/orders"
+      type: http
+      method: POST
+      auth_ref: orders_api
+      payload: '{"customerId": "CUST-001", "amount": 99.99}'
+
+then:
+  expectations:
+    - type: http
+      source_id: "create_order"    # links to the injection's message_id
+      match:
+        - type: status_code
+          value: 201
+        - type: response_header
+          expression: "content-type"
+          regex: "application/.*json"
+        - type: jsonpath
+          expression: "$.orderId"
+          regex: "^ORD-[0-9]+"
 ```
+
+### TLS/Certificate Configuration
+
+`config/http-config/tls.yaml`:
+
+```yaml
+default:
+  verify: true                          # verify server cert by default
+
+profiles:
+  no_verify:
+    verify: false
+  corp_ca:
+    verify: /certs/corp-ca-bundle.pem
+  mtls_internal:
+    verify: /certs/internal-ca.pem
+    client_cert: /certs/client.pem
+    client_key:  /certs/client.key
+    client_key_password_env: MTLS_KEY_PASSWORD   # env var holding key password
+
+host_overrides:                         # first match wins
+  "*.internal.corp.com":
+    profile: mtls_internal
+  "localhost":
+    profile: no_verify
+  "partner-api.example.com:8440-8449":  # port range
+    profile: corp_ca
+```
+
+### Authentication Configuration
+
+`config/http-config/auth.yaml`:
+
+```yaml
+profiles:
+  basic_api:
+    type: basic
+    username: kafka-wiremock
+    # password loaded from env var: HTTP_AUTH_BASIC_API_PASSWORD
+
+  bearer_static:
+    type: bearer
+    token: "my-static-token"            # inline token
+
+  token_from_env:
+    type: bearer
+    token_env: MY_API_TOKEN             # env var holding the token
+
+  oauth_prod:
+    type: token_fetch                    # auto-acquire Bearer token
+    token_url: "https://auth.example.com/oauth/token"
+    method: POST
+    body: '{"grant_type":"client_credentials","client_id":"{{username}}","client_secret":"{{password}}"}'
+    username: my-client-id
+    # client_secret loaded from: HTTP_AUTH_OAUTH_PROD_PASSWORD
+    token_response_path: "$.access_token"
+    token_cache_ttl_s: 3600
+
+  cert_auth:
+    type: certificate
+    tls_profile: mtls_internal           # uses cert/key from TLS profile
+
+host_overrides:                          # first match wins
+  "api.example.com":
+    profile: basic_api
+  "*.internal.corp.com":
+    profile: cert_auth
+```
+
+**Password env-var convention**: For a profile named `my_api`, the password env var is `HTTP_AUTH_MY_API_PASSWORD` (profile name uppercased, non-alphanumeric → `_`).
+
+**Token caching**: `token_fetch` profiles cache the obtained token for `token_cache_ttl_s` seconds to avoid redundant auth calls.
+
+### Match Condition Types for HTTP Expectations
+
+| Condition type | Applies to | Description |
+|---------------|------------|-------------|
+| `status_code` | HTTP only | Match exact status code (`value: 200`) or regex (`regex: "2[0-9]{2}"`) |
+| `response_header` | HTTP only | `expression` = header name; match `value` (exact) or `regex` |
+| `jsonpath` | HTTP body | Extract from parsed JSON response body |
+| `exact` / `partial` / `regex` | HTTP body | Match against raw response body text |
 
 ### Configuration Files
 
-| Type | Location | Purpose |
-|------|----------|---------|
-| **JMS Config** | `config/jms-config/*.yaml` | Queue/topic metadata, properties, correlation |
-| **Rules** | `config/rules/*.yaml` | Message matching and routing (supports `msg_type` field) |
-| **Topic Config** | `config/topic-config/*.yaml` | Kafka topic config (unchanged) |
+| File | Purpose |
+|------|---------|
+| `config/http-config/tls.yaml` | TLS profiles and per-host overrides |
+| `config/http-config/auth.yaml` | Auth profiles (basic, bearer, OAuth2, mTLS) |
+| `config/http-config/mock-servers/*.yaml` | Inbound HTTP mock server definitions |
 
-### Rule Structure for Mixed Messages
+See `example/config/http-config/` for annotated example files.
+
+---
+
+## HTTP Mock Server (Inbound)
+
+Kafka Wiremock can spin up one or more **inbound HTTP mock servers** — each on its own port — to
+act as a stand-in for downstream HTTP services. A system-under-test or a rule can call these
+servers, and Kafka Wiremock will respond according to configured rules or active test stubs.
+
+### Use cases
+
+- Rule produces a Kafka message **and** expects the consumer to call a REST API → stub the API
+- Integration test verifies the full flow: Kafka → rule → HTTP call → back to Kafka
+- Replace real external services with controllable fakes without changing application code
+
+### Server configuration
+
+Create one YAML file per mock server in `config/http-config/mock-servers/`:
 
 ```yaml
-priority: 10
-when:
-  topic: INPUT_QUEUE_OR_TOPIC
-  msg_type: kafka  # or 'jms' - defaults to 'kafka'
-  match:
-    - type: jsonpath
-      expression: "$.eventType"
-      value: "ORDER_CREATED"
-then:
-  - topic: output.queue.or.topic
-    msg_type: jms  # or 'kafka' - defaults to 'kafka'
-    payload: |
-      {
-        "status": "processed"
-      }
+# config/http-config/mock-servers/payment-api.yaml
+name: payment-api
+port: 8081
+
+tls:                          # Optional — omit for plain HTTP
+  cert: /certs/server.pem
+  key: /certs/server.key
+  ca: /certs/ca.pem           # Only required for mTLS client verification
+
+default_response:
+  status_code: 404
+  payload: '{"error": "not found"}'
+  headers:
+    Content-Type: application/json
+
+endpoints:                    # Optional path-specific defaults
+  - path: /health
+    method: GET
+    response:
+      status_code: 200
+      payload: '{"status": "healthy"}'
 ```
 
-### Supported Message Types
-- `kafka` (default) - Send/receive from Kafka topics
-- `jms` - Send/receive from JMS queues via IBM MQ
+### Rule-based responses
 
-### Environment Variables for IBM MQ
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `IBM_MQ_BROKER_URL` | `localhost(1414)` | Broker connection string |
-| `IBM_MQ_CHANNEL` | `DEV.APP.SVRCONN` | Channel name |
-| `IBM_MQ_QUEUE_MANAGER` | `QM1` | Queue manager name |
-| `IBM_MQ_USERNAME` | _(none)_ | Username for authentication |
-| `IBM_MQ_PASSWORD` | _(none)_ | Password for authentication |
-| `IBM_MQ_SSL_KEY_STORE` | _(none)_ | Path to SSL keystore (PEM) |
-| `IBM_MQ_SSL_KEY_STORE_PASSWORD` | _(none)_ | SSL keystore password |
+Write rules with `when.type: http` to match requests and produce dynamic responses:
 
-### JMS Connection Pooling (May 2026)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `JMS_POOLING_ENABLED` | `true` | Enable connection pooling for all queue managers |
-| `JMS_POOL_MIN_IDLE` | `1` | Minimum number of idle connections per queue manager |
-| `JMS_POOL_MAX_SIZE` | `5` | Maximum connections per pool |
-| `JMS_POOL_MAX_WAIT_MS` | `5000` | Maximum wait time for connection availability (milliseconds) |
-| `JMS_POOL_AUTO_RECONNECT` | `true` | Enable automatic reconnection on connection failure |
-| `JMS_POOL_RECONNECT_ATTEMPTS` | `3` | Number of reconnection retry attempts |
-| `JMS_POOL_RECONNECT_DELAY_MS` | `1000` | Initial delay between reconnection attempts (milliseconds) |
+```yaml
+# config/rules/payment-rule.yaml
+when:
+  type: http
+  connection_ref: payment-api       # references server name above
+  destination: /payments/{paymentId}
+  method: POST
+
+then:
+  - type: http_response
+    status_code: 201
+    payload: '{"paymentId": "{{path.paymentId}}", "status": "ACCEPTED"}'
+
+  - type: kafka                     # side-effect after response
+    destination: payments.events
+    payload: '{"event": "PAYMENT_PROCESSED", "paymentId": "{{path.paymentId}}"}'
+```
+
+### Test stub expectations
+
+Register temporary stubs inside a test to intercept calls and assert request contents:
+
+```yaml
+then:
+  expectations:
+    - type: http-stub
+      server: payment-api
+      path: /payments/{paymentId}
+      method: POST
+      wait_ms: 5000
+      match:
+        - type: jsonpath
+          expression: "$.amount"
+          value: 99.99
+      response:
+        status_code: 201
+        payload: '{"paymentId": "{{path.paymentId}}", "status": "ACCEPTED"}'
+```
+
+See [docs/RULES.md — HTTP Listener Rules](docs/RULES.md#http-listener-rules) and
+[docs/TEST_SUITE.md — HTTP Stub Expectations](docs/TEST_SUITE.md#http-stub-expectations) for full
+details.
+
+---
 
 ## Recent Improvements (May 2026)
 
@@ -805,6 +870,11 @@ See [API.md](docs/API.md) for complete documentation of all HTTP endpoints:
 | `GET /tests/logs` | List test log files |
 | `GET /tests/logs/{test_id}` | Get log for a specific test |
 | `GET /jms/pool-stats` | Get JMS connection pooling statistics (May 2026) |
+| `GET /load-tests` | List all load test jobs |
+| `POST /load-tests` | Start a Gatling-style load scenario |
+| `GET /load-tests/{job_id}` | Poll load job progress + partial metrics (live charts) |
+| `GET /load-tests/{job_id}/report` | Fetch final load report (buckets, summaries, charts) |
+| `DELETE /load-tests/{job_id}` | Cancel a running load job |
 | `POST /debug/decode` | Decode a raw message and detect its format |
 | `POST /debug/match` | Detailed rule-matching analysis for a message |
 | `GET /debug/topics` | Show discovered topics and metadata |
@@ -1133,6 +1203,11 @@ POST   /api/rules:match             # Test rule matching with message
 POST   /api/inject/{topic}          # Inject message to topic
 GET    /api/messages/{topic}        # Get messages from topic
 GET    /api/jms/pool-stats          # Get JMS connection pooling statistics
+GET    /api/load-tests              # List all load test jobs
+POST   /api/load-tests              # Start a Gatling-style load scenario
+GET    /api/load-tests/{job_id}     # Poll load job progress + partial metrics
+GET    /api/load-tests/{job_id}/report  # Fetch final load report
+DELETE /api/load-tests/{job_id}     # Cancel a running load job
 GET    /api/debug/topics            # List discovered topics
 GET    /api/debug/cache             # View message cache stats
 POST   /api/debug/decode            # Decode message payload

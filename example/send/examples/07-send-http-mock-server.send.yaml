@@ -1,0 +1,59 @@
+# Send: Trigger the HTTP mock server via a Kafka injection
+#
+# This send exercises the payment-api mock server indirectly:
+#   1. Inject an order event onto orders.input (Kafka)
+#   2. Rule 06-http-mock-server-rule.yaml matches and calls
+#      POST http://localhost:8081/payments/PAY-xxx
+#   3. The mock server processes the request (rule or endpoint default)
+#   4. No assertions — use the test suite (07-http-mock-stub.test.yaml) for validation
+#
+# Can also call the mock server directly (plain HTTP injection), shown below.
+#
+# Requires:
+#   - config/http-config/mock-servers/payment-api.yaml  (mock server on port 8081)
+#   - config/rules/06-http-mock-server-rule.yaml
+#
+# Run via API:
+#   POST /api/send/run/http-mock-server-smoke
+
+priority: 70
+name: "http-mock-server-smoke"
+tags: ["http-mock", "example", "smoke"]
+
+inject:
+  # ── 1. Trigger via Kafka → rule → mock server ─────────────────────────────
+  # Inject an order onto orders.input; the matching rule will call
+  # POST http://localhost:8081/payments/PAY-{uuid} on the mock server.
+  - message_id: "kafka_trigger"
+    destination: "orders.input"
+    payload: |
+      {
+        "orderId": "ORD-{{uuid}}",
+        "amount": 49.99,
+        "currency": "EUR",
+        "customerId": "CUST-SMOKE",
+        "eventType": "ORDER_CONFIRMED"
+      }
+
+  # ── 2. Call the mock server directly (HTTP injection) ──────────────────────
+  # This bypasses Kafka and hits the mock server's /health endpoint directly.
+  - message_id: "health_check"
+    destination: "http://localhost:8081/health"
+    type: http
+    method: GET
+
+  # Direct POST to a payments path — will match the endpoint default (404)
+  # unless a rule or stub is active.
+  - message_id: "direct_post"
+    destination: "http://localhost:8081/payments/PAY-direct-001"
+    type: http
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    payload: |
+      {
+        "amount": 25.00,
+        "currency": "USD",
+        "orderId": "ORD-DIRECT"
+      }
+

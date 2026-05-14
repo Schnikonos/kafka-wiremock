@@ -108,19 +108,20 @@ async def get_test_log(test_id: str) -> Dict[str, Any]:
 
         # Primary: fast filename-based match (test name is usually part of the file name)
         matching_logs = [lf for lf in log_files if test_id in lf.name]
+        found_by_filename = bool(matching_logs)
 
         # Fallback: search inside each log file for a stored "test_name" that matches exactly.
-        # This handles cases where the YAML filename differs from the test's "name:" field.
+        # This handles cases where the YAML filename differs from the test's "name:" field,
+        # or where the test was renamed after its first run (so the first line of the file
+        # may carry an old test name — we must scan ALL lines).
         if not matching_logs:
-            for lf in log_files:
+            # Sort by modification time, newest first, so we prefer the most-recently-used file
+            for lf in sorted(log_files, key=lambda p: p.stat().st_mtime, reverse=True):
                 try:
-                    with open(lf, "r") as _f:
-                        first_line = _f.readline().strip()
-                    if first_line:
-                        first_run = json.loads(first_line)
-                        if first_run.get("test_name") == test_id:
-                            matching_logs = [lf]
-                            break
+                    runs = _parse_log_file(lf)  # parses all lines; returns newest-first
+                    if any(r.get("test_name") == test_id for r in runs):
+                        matching_logs = [lf]
+                        break
                 except Exception:
                     pass
 
@@ -132,6 +133,15 @@ async def get_test_log(test_id: str) -> Dict[str, Any]:
 
         log_file = matching_logs[0]
         runs = _parse_log_file(log_file)
+
+        # Filter by test_name only when the file was found via the content-scan fallback
+        # (i.e. the filename does NOT embed the test_id). This handles renamed tests where
+        # one file may contain runs for multiple test names.
+        # When the file was found by filename the test_name in log entries may legitimately
+        # differ from the URL test_id (the YAML "name:" field vs the filename prefix), so
+        # we must NOT filter in that case — all runs in the file belong to this test.
+        if not found_by_filename:
+            runs = [r for r in runs if r.get("test_name") == test_id or "test_name" not in r]
 
         return {
             "test_id": test_id,

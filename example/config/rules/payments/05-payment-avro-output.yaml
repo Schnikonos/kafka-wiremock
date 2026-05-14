@@ -3,14 +3,14 @@
 priority: 20
 
 when:
-  topic: orders.input
+  destination: orders.input
   match:
     - type: jsonpath
       expression: "$.eventType"
       value: "ORDER_CREATED"
 
 then:
-  - topic: payments.avro
+  - destination: payments.avro
     delay_ms: 100
     schema_id: 123              # AVRO schema ID from registry
     headers:
@@ -23,7 +23,7 @@ then:
         "timestamp": "{{now}}"
       }
 
-  - topic: audit.avro
+  - destination: audit.avro
     schema_id: 456
     payload: |
       {

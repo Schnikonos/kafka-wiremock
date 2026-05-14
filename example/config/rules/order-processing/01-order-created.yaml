@@ -2,7 +2,7 @@
 priority: 10
 
 when:
-  topic: orders.input
+  destination: orders.input
   match:                      # All conditions are ANDed together
     - type: jsonpath
       expression: "$.eventType"
@@ -12,7 +12,7 @@ when:
       regex: "[0-9]+"         # Regex variant - amount must be numeric
 
 then:
-  - topic: payments.input
+  - destination: payments.input
     delay_ms: 200             # Simulate processing delay
     headers:
       correlationId: "{{$.correlationId}}"   # Placeholder from request
@@ -26,7 +26,7 @@ then:
         "correlationId": "{{$.correlationId}}"
       }
 
-  - topic: notifications.events   # Multiple outputs supported
+  - destination: notifications.events   # Multiple outputs supported
     delay_ms: 100
     payload: |
       { 

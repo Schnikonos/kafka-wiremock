@@ -7,7 +7,7 @@ timeout_ms: 6000
 when:
   inject:
     - message_id: "user"
-      topic: "users.input"
+      destination: "users.input"
       payload: |
         {
           "userId": "USER-{{uuid}}",
@@ -18,7 +18,7 @@ when:
 
 then:
   expectations:
-    - topic: "users.verified"
+    - destination: "users.verified"
       match:
         - type: jsonpath
           expression: "$.email"
@@ -28,7 +28,7 @@ then:
           regex: "ACTIVE|VERIFIED"
       wait_ms: 2000
 
-    - topic: "audit.events"
+    - destination: "audit.events"
       match:
         - type: jsonpath
           expression: "$.eventType"

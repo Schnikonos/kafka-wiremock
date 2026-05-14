@@ -1,0 +1,61 @@
+# Example: HTTP Mock Server Rule Test
+#
+# Demonstrates the inbound HTTP mock server rule:
+#   1. Test injects HTTP POST directly to the payment-api mock server
+#   2. Rule 06-http-mock-server-rule.yaml intercepts: returns 201 + fires Kafka
+#   3. Test validates the HTTP 201 response body
+#   4. Test waits for the payments.processed Kafka event (rule side-effect)
+#
+# This is a "rule-based response" test — no stubs.
+# See 08-http-stub-via-kafka.test.yaml for the http-stub feature.
+#
+# Requires:
+#   - config/http-config/mock-servers/payment-api.yaml  (mock server on :8081)
+#   - config/rules/06-http-mock-server-rule.yaml
+
+name: "http-mock-rule-response-test"
+priority: 50
+tags: ["http-mock", "example", "integration"]
+timeout_ms: 10000
+
+when:
+  inject:
+    - message_id: "payment_post"
+      destination: "http://localhost:8081/payments/PAY-TEST-001"
+      type: http
+      method: POST
+      headers:
+        Content-Type: "application/json"
+      payload: |
+        {
+          "amount": 99.99,
+          "currency": "USD",
+          "orderId": "ORD-001"
+        }
+
+then:
+  expectations:
+    # Validate the HTTP 201 response returned by the mock server rule
+    - type: http
+      source_id: "payment_post"
+      wait_ms: 5000
+      match:
+        - type: status_code
+          value: 201
+        - type: jsonpath
+          expression: "$.paymentId"
+          regex: "^PAY-TEST-001$"
+        - type: jsonpath
+          expression: "$.status"
+          value: "ACCEPTED"
+
+    # The rule fires a Kafka side-effect after the response is sent
+    - destination: payments.processed
+      wait_ms: 5000
+      match:
+        - type: jsonpath
+          expression: "$.event"
+          value: "PAYMENT_PROCESSED"
+        - type: jsonpath
+          expression: "$.paymentId"
+          regex: "^PAY-TEST-001$"

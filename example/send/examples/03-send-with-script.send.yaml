@@ -6,7 +6,7 @@ timeout_ms: 5000
 
 inject:
   - message_id: "msg1"
-    topic: "events.input"
+    destination: "events.input"
     payload: |
       {
         "eventId": "{{uuid}}",
@@ -24,7 +24,7 @@ inject:
       context['event_timestamp'] = current_injections[0]['payload'].get('timestamp') if current_injections else None
 
   - message_id: "msg2"
-    topic: "events.processing"
+    destination: "events.processing"
     payload: |
       {
         "eventId": "{{uuid}}",

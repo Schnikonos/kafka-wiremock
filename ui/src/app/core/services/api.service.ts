@@ -14,7 +14,10 @@ import {
   BulkSendExecutionResult,
   InjectMessageRequest,
   InjectMessageResponse,
-  ListsResponse
+  ListsResponse,
+  LoadScenarioRequest,
+  LoadJobStatus,
+  LoadReport,
 } from '../models';
 
 @Injectable({
@@ -190,6 +193,38 @@ export class ApiService {
    */
   getCustomPlaceholders(): Observable<any[]> {
     return this.http.get<any[]>(`${this.apiUrl}/custom-placeholders`)
+      .pipe(catchError(this.handleError));
+  }
+
+  // ─── Load Testing ────────────────────────────────────────────────────────
+
+  /** Start a new load scenario. Returns {job_id, status, ...}. */
+  startLoadTest(request: LoadScenarioRequest): Observable<{ job_id: string; scenario_name: string; total_duration_s: number; status: string }> {
+    return this.http.post<any>(`${this.apiUrl}/load-tests`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  /** List all load jobs. */
+  listLoadJobs(): Observable<{ total: number; jobs: any[] }> {
+    return this.http.get<any>(`${this.apiUrl}/load-tests`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /** Poll a running or completed load job (includes partial buckets). */
+  getLoadJob(jobId: string): Observable<LoadJobStatus> {
+    return this.http.get<LoadJobStatus>(`${this.apiUrl}/load-tests/${jobId}`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /** Fetch the final report for a completed load job. */
+  getLoadReport(jobId: string): Observable<LoadReport> {
+    return this.http.get<LoadReport>(`${this.apiUrl}/load-tests/${jobId}/report`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /** Cancel a running load job. */
+  cancelLoadJob(jobId: string): Observable<{ job_id: string; status: string }> {
+    return this.http.delete<any>(`${this.apiUrl}/load-tests/${jobId}`)
       .pipe(catchError(this.handleError));
   }
 }

@@ -1,0 +1,46 @@
+# Example HTTP Mock Server configuration
+#
+# This file defines an inbound HTTP mock server that kafka-wiremock will start
+# on the specified port. Rules with `when.type: http` and
+# `when.connection_ref: payment-api` will be matched against requests received
+# by this server.
+#
+# Place this file in: config/http-config/mock-servers/
+#
+# The server name must match `connection_ref` values in your rules and test stubs.
+
+name: payment-api
+port: 8081
+
+# Optional TLS — omit entirely for plain HTTP
+# tls:
+#   cert: /certs/server.pem       # Server certificate
+#   key: /certs/server.key        # Server private key
+#   ca: /certs/ca.pem             # CA bundle for mTLS (optional)
+#   key_password_env: TLS_KEY_PW  # Env var holding key password (optional)
+
+# Fallback response when no rule or endpoint default matches
+default_response:
+  status_code: 404
+  payload: '{"error": "not found", "server": "payment-api"}'
+  headers:
+    Content-Type: application/json
+
+# Optional path-specific defaults (lower priority than rules, higher than server default)
+endpoints:
+  - path: /health
+    method: GET
+    response:
+      status_code: 200
+      payload: '{"status": "healthy", "service": "payment-api"}'
+      headers:
+        Content-Type: application/json
+
+  - path: /payments/{paymentId}
+    method: GET
+    response:
+      status_code: 200
+      payload: '{"paymentId": "unknown", "status": "NOT_FOUND"}'
+      headers:
+        Content-Type: application/json
+

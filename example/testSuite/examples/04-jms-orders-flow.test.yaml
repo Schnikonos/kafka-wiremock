@@ -14,9 +14,9 @@ when:
     # The rule jms-multi-qm-example.yaml will pick this up and fan-out to
     # both Kafka and JMS destinations.
     - message_id: "jms-order"
-      topic: "ORDERS_INPUT"
-      msg_type: jms
-      queue_manager_ref: qm_dev_local
+      destination: "ORDERS_INPUT"
+      type: jms
+      connection_ref: qm_dev_local
       payload: |
         {
           "orderId": "ORD-{{testId}}-{{uuid}}",
@@ -30,8 +30,8 @@ when:
 then:
   expectations:
 #    # 1. Expect the fan-out message on Kafka topic orders.processed
-    - topic: "orders.processed"
-      msg_type: kafka
+    - destination: "orders.processed"
+      type: kafka
       correlate:
         message_id: "jms-order"
         source:
@@ -48,9 +48,9 @@ then:
           value: "jms"
 
     # 2. Expect the fan-out message on JMS ORDERS_PROCESSED queue
-    - topic: "ORDERS_PROCESSED"
-      msg_type: jms
-      queue_manager_ref: qm_dev_local
+    - destination: "ORDERS_PROCESSED"
+      type: jms
+      connection_ref: qm_dev_local
       wait_ms: 8000
       match:
         - type: jsonpath

@@ -41,6 +41,7 @@ class JMSListenerEngine:
         kafka_client=None,  # KafkaClientWrapper — needed to produce rule output to Kafka topics
         message_cache: Optional[MessageCache] = None,
         custom_placeholder_registry: Optional[CustomPlaceholderRegistry] = None,
+        http_executor=None,  # Optional HttpExecutor for type=http rule outputs
     ):
         """
         Initialize JMS listener engine.
@@ -52,6 +53,7 @@ class JMSListenerEngine:
             kafka_client: Kafka client wrapper for producing Kafka outputs from rules
             message_cache: Optional message cache for test correlation
             custom_placeholder_registry: Optional custom placeholder registry
+            http_executor: Optional HttpExecutor for type=http rule outputs
         """
         self.jms_registry = jms_registry
         self.jms_config_loader = jms_config_loader
@@ -59,6 +61,7 @@ class JMSListenerEngine:
         self.kafka_client = kafka_client  # used in _execute_rule for msg_type=kafka outputs
         self.message_cache = message_cache
         self.custom_placeholder_registry = custom_placeholder_registry
+        self.http_executor = http_executor  # Optional; HTTP outputs skipped if None
         self.template_renderer = TemplateRenderer()
         self.fault_injector = FaultInjector()
         self.matcher_factory = MatcherFactory()
@@ -234,7 +237,7 @@ class JMSListenerEngine:
             with self._queues_lock:
                 current_queues = set()
                 for rule in jms_rules:
-                    current_queues.add(rule.input_topic)
+                    current_queues.add(rule.input_destination)
 
                 if current_queues != self._queues:
                     logger.debug(
@@ -259,24 +262,25 @@ class JMSListenerEngine:
                 except json.JSONDecodeError:
                     pass
 
-            # Get rules for this queue
-            rules = self.config_loader.get_rules_for_topic(queue_name)
-            if not rules:
-                logger.debug(f"No rules configured for queue {queue_name}")
-                return
-
-            # Cache the message for tests
+            # Cache the message for tests BEFORE the rules check so that test
+            # expectations on queues without rules can still read from the cache.
             if self.message_cache:
                 try:
                     self.message_cache.add_message(
                         topic=queue_name,
                         value=message_data,
-                        message_format=jms_message.get("format", "json"),
+                        message_format=jms_message.get("format", "json") if hasattr(jms_message, "get") else "json",
                         headers=message_headers,
                         key=message_key,
                     )
                 except Exception as e:
                     logger.debug(f"Failed to cache message: {e}")
+
+            # Get rules for this queue
+            rules = self.config_loader.get_rules_for_topic(queue_name)
+            if not rules:
+                logger.debug(f"No rules configured for queue {queue_name}")
+                return
 
             # Verbose: log the incoming message once before checking all rules
             if _matcher_is_verbose():
@@ -462,34 +466,67 @@ class JMSListenerEngine:
                         fault_result = self.fault_injector.should_inject(output.fault)
                         if fault_result["should_inject"]:
                             logger.info(
-                                f"Injecting fault for output to {output.topic}: {fault_result['type']}"
+                                f"Injecting fault for output to {output.destination}: {fault_result['type']}"
                             )
                             if fault_result["type"] == "drop":
                                 continue
 
-                    # Determine target client (Kafka or JMS)
+                    # Determine target client (Kafka, JMS, or HTTP)
                     msg_type = output.msg_type.lower()
 
-                    if msg_type == "jms":
+                    if msg_type == "http":
+                        # Fire HTTP call (sync bridge from listener thread via asyncio.run)
+                        if not self.http_executor:
+                            logger.error(
+                                f"HTTP executor not initialized; cannot call {output.destination} "
+                                f"(rule: {rule.rule_name}). Wire http_executor into JMSListenerEngine."
+                            )
+                        else:
+                            import asyncio as _asyncio
+                            from ..rules.templater import TemplateRenderer as _TR
+                            rendered_url = _TR.render(output.destination, matcher_contexts)
+                            rendered_query = None
+                            if output.query_params:
+                                rendered_query = {k: _TR.render(v, matcher_contexts) for k, v in output.query_params.items()}
+                            try:
+                                http_result = _asyncio.run(
+                                    self.http_executor.execute(
+                                        url=rendered_url,
+                                        method=output.method,
+                                        payload=rendered_payload if output.payload else None,
+                                        headers=output.headers,
+                                        query_params=rendered_query,
+                                        auth_ref=output.auth_ref,
+                                        tls_ref=output.tls_ref,
+                                        timeout_ms=output.http_timeout_ms,
+                                    )
+                                )
+                                logger.info(
+                                    f"HTTP {output.method} {rendered_url} → {http_result.status_code} "
+                                    f"(rule: {rule.rule_name})"
+                                )
+                            except Exception as http_err:
+                                logger.error(f"HTTP output failed for {rendered_url}: {http_err}")
+                    elif msg_type == "jms":
                         # Get JMS config to find which queue manager
-                        jms_config = self.jms_config_loader.get_config(output.topic)
+                        jms_config = self.jms_config_loader.get_config(output.destination)
                         qm_ref = jms_config.queue_manager_ref if jms_config else "default"
 
-                        # Override with explicit queue_manager_ref if provided in rule
-                        if output.queue_manager_ref:
-                            qm_ref = output.queue_manager_ref
+                        # Override with explicit connection_ref if provided in rule
+                        if output.connection_ref:
+                            qm_ref = output.connection_ref
 
                         try:
                             client = self.jms_registry.get_client(qm_ref)
 
                             message_id = client.put_message(
-                                destination=output.topic,
+                                destination=output.destination,
                                 payload=json.dumps(message_payload) if isinstance(message_payload, dict) else message_payload,
                                 headers=output.headers,
                             )
                             if message_id:
                                 logger.info(
-                                    f"Output {message_id} sent to JMS queue {output.topic} "
+                                    f"Output {message_id} sent to JMS queue {output.destination} "
                                     f"(queue_manager={qm_ref})"
                                 )
                                 # Cache the produced message so test expectations can
@@ -499,7 +536,7 @@ class JMSListenerEngine:
                                 if self.message_cache:
                                     try:
                                         self.message_cache.add_message(
-                                            topic=output.topic,
+                                            topic=output.destination,
                                             value=message_payload,
                                             message_format="json",
                                             timestamp=int(time.time() * 1000),
@@ -516,28 +553,28 @@ class JMSListenerEngine:
                         # Send to Kafka topic via the kafka_client passed at construction.
                         if self.kafka_client is None:
                             logger.error(
-                                f"Cannot send to Kafka topic {output.topic}: "
+                                f"Cannot send to Kafka topic {output.destination}: "
                                 f"no kafka_client was provided to JMSListenerEngine. "
                                 f"Pass kafka_client= when constructing JMSListenerEngine."
                             )
                         else:
                             try:
                                 message_id = self.kafka_client.produce(
-                                    topic=output.topic,
+                                    topic=output.destination,
                                     message=message_payload,
                                     schema_id=output.schema_id,
                                 )
                                 if message_id:
                                     logger.info(
-                                        f"Output {message_id} sent to Kafka topic {output.topic}"
+                                        f"Output {message_id} sent to Kafka topic {output.destination}"
                                     )
                             except Exception as e:
                                 logger.error(
-                                    f"Error sending to Kafka topic {output.topic}: {e}"
+                                    f"Error sending to Kafka topic {output.destination}: {e}"
                                 )
 
                 except Exception as e:
-                    logger.error(f"Error producing output message to {output.topic}: {e}")
+                    logger.error(f"Error producing output message to {output.destination}: {e}")
 
         except Exception as e:
             logger.error(f"Error executing rule {rule.rule_name}: {e}")

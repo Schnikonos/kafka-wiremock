@@ -1,0 +1,28 @@
+# Send: Fire HTTP calls without test assertions (quick manual testing).
+priority: 50
+name: "send-http-calls"
+tags: ["example", "http"]
+inject:
+  # POST to a REST API
+  - message_id: "create_order"
+    destination: "https://api.example.com/orders"
+    type: http
+    method: POST
+    auth_ref: orders_api            # defined in config/http-config/auth.yaml
+    http_timeout_ms: 5000
+    headers:
+      Content-Type: "application/json"
+    payload: |
+      {
+        "orderId": "ORD-{{uuid}}",
+        "customerId": "CUST-DEMO",
+        "amount": 42.00,
+        "currency": "EUR"
+      }
+  # DELETE with no body
+  - message_id: "delete_stale"
+    destination: "https://api.example.com/orders/STALE-001"
+    type: http
+    method: DELETE
+    auth_ref: orders_api
+    delay_ms: 200

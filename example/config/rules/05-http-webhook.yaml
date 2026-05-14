@@ -1,0 +1,34 @@
+# Rule: when an order event arrives on Kafka, call an external HTTP webhook.
+priority: 20
+name: "order-http-webhook"
+when:
+  destination: orders.events        # Kafka topic
+  type: kafka
+  match:
+    - type: jsonpath
+      expression: "$.status"
+      value: "CONFIRMED"
+then:
+  # Notify via HTTP POST (Bearer token from auth profile "partner_api")
+  - destination: "https://webhook.partner.example.com/orders"
+    type: http
+    method: POST
+    auth_ref: partner_api           # defined in config/http-config/auth.yaml
+    tls_ref: corp_ca                # defined in config/http-config/tls.yaml
+    http_timeout_ms: 5000
+    headers:
+      Content-Type: "application/json"
+    payload: |
+      {
+        "orderId": "{{$.orderId}}",
+        "status":  "{{$.status}}",
+        "notifiedAt": "{{now}}"
+      }
+  # Also produce a Kafka confirmation message
+  - destination: orders.notified
+    type: kafka
+    payload: |
+      {
+        "orderId": "{{$.orderId}}",
+        "webhookCalled": true
+      }

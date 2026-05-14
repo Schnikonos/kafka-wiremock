@@ -386,6 +386,105 @@ then:
 
 ---
 
+## HTTP Stub Expectations
+
+Use `type: http-stub` in the `then.expectations` list to register an HTTP stub **before** the
+`when` injections run. The stub intercepts inbound HTTP requests to a mock server and waits for the
+expected number of calls to arrive within the timeout window.
+
+### How it works
+
+1. Stubs are registered **before** `when.inject` fires — so any rule that makes an outbound HTTP
+   call immediately hits the stub.
+2. The test waits for the stub to receive `times` matching calls within `wait_ms` milliseconds.
+3. Match conditions are evaluated against the **recorded call** (body, path params, etc.).
+4. After the test (pass or fail) the stub is automatically removed from the cache.
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | ✅ | Must be `http-stub` |
+| `server` | ✅* | Mock server name (required when >1 server is configured) |
+| `path` | ✅ | Path pattern with optional `{param}` placeholders |
+| `method` | ❌ | HTTP method filter (default `"*"` = any method) |
+| `wait_ms` | ❌ | Timeout to wait for `times` calls (default `5000`) |
+| `times` | ❌ | Expected number of calls (default `1`) |
+| `match` | ❌ | Conditions evaluated against the recorded call |
+| `response` | ❌ | HTTP response to return when the stub is hit |
+
+#### `response` sub-fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `status_code` | `200` | HTTP response status code |
+| `payload` | `""` | Response body (template placeholders: `{{path.X}}` etc. resolved against incoming request) |
+| `headers` | `{}` | Response headers map |
+| `content_type` | `application/json` | `Content-Type` header value |
+
+### Example
+
+```yaml
+# testSuite/payment-flow.test.yaml
+name: payment-flow-test
+when:
+  inject:
+    - topic: orders.input
+      payload: |
+        {
+          "orderId": "ORDER-001",
+          "amount": 99.99,
+          "currency": "USD"
+        }
+
+then:
+  expectations:
+    # 1. Wait for the rule to POST to our mock payment API
+    - type: http-stub
+      server: payment-api
+      path: /payments/{paymentId}
+      method: POST
+      wait_ms: 5000
+      times: 1
+      match:
+        - type: jsonpath
+          expression: "$.amount"
+          value: 99.99
+        - type: path_param
+          expression: paymentId
+          regex: "^PAY-.*"
+      response:
+        status_code: 201
+        payload: |
+          {
+            "paymentId": "{{path.paymentId}}",
+            "status": "ACCEPTED",
+            "transactionId": "TXN-12345"
+          }
+        headers:
+          Content-Type: application/json
+
+    # 2. Kafka notification should arrive after the HTTP call
+    - topic: notifications.events
+      wait_ms: 3000
+      match:
+        - type: jsonpath
+          expression: "$.type"
+          value: "PAYMENT_ACCEPTED"
+```
+
+### Combined flow: Kafka → HTTP → Kafka
+
+```
+Kafka message (orders.input)
+       ↓ rule matches
+       ↓ rule POSTs to payment-api:8081/payments/{id}  ← stub responds with 201
+       ↓ rule publishes to notifications.events
+Test asserts: stub was called + Kafka message arrived
+```
+
+---
+
 ## Schema Validation
 
 Validate test files against `test-suite-schema.json`:
