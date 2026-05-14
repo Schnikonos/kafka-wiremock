@@ -15,6 +15,7 @@ _kafka_client = None
 _jms_registry = None  # NEW: registry instead of single client
 _config_loader = None
 _jms_config_loader = None  # NEW
+_message_cache = None  # cache populated by background listeners
 
 
 def set_kafka_client(client):
@@ -39,6 +40,12 @@ def set_jms_config_loader(loader):  # NEW
     """Set the global JMS config loader reference."""
     global _jms_config_loader
     _jms_config_loader = loader
+
+
+def set_message_cache(cache):
+    """Set the global message cache reference (populated by background listeners)."""
+    global _message_cache
+    _message_cache = cache
 
 
 @router.post("/inject/{destination}", response_model=InjectMessageResponse)
@@ -138,6 +145,14 @@ async def get_messages(
         le=5000,
         description="Individual poll interval in milliseconds (default: 100)",
     ),
+    since_ms: int = Query(
+        None,
+        description=(
+            "Only return messages cached after this Unix epoch timestamp in milliseconds. "
+            "Useful for paging: pass the timestamp of the last message you received to "
+            "avoid re-fetching old ones.  Only applies when the message cache is available."
+        ),
+    ),
 ) -> List[ConsumedMessage]:
     """
     Retrieve messages from a Kafka topic or JMS queue.
@@ -146,8 +161,9 @@ async def get_messages(
         msg_type: Message type ('kafka' or 'jms', default: 'kafka')
         queue_manager: (JMS only) Queue manager reference to use
         limit: Maximum number of messages to retrieve (default: 10, max: 100)
-        timeout_ms: Total time budget for polling in milliseconds (default: 500)
+        timeout_ms: Total polling timeout in milliseconds (default: 500)
         poll_interval_ms: Duration of each individual poll in milliseconds (default: 100)
+        since_ms: Only return messages cached after this Unix epoch milliseconds timestamp
     Returns:
         List of consumed messages
     """
@@ -157,6 +173,24 @@ async def get_messages(
         if not _jms_registry or _jms_registry.is_empty():  # NEW: check registry
             raise HTTPException(status_code=503, detail="JMS client(s) not initialized")
         try:
+            # Serve from cache when available (populated by JMS listener background thread)
+            if _message_cache is not None:
+                since_s = (since_ms / 1000.0) if since_ms is not None else None
+                cached = _message_cache.get_messages(destination, since=since_s)
+                if cached:
+                    result = []
+                    for m in cached[-limit:]:
+                        result.append(ConsumedMessage(
+                            topic=destination,
+                            partition=m.partition,
+                            offset=m.offset,
+                            key=m.key,
+                            value=m.value,
+                            headers=m.headers or {},
+                            timestamp=m.timestamp,
+                        ))
+                    return result
+
             # NEW: Get the correct client from registry
             try:
                 client = _jms_registry.get_client(queue_manager)
@@ -171,6 +205,8 @@ async def get_messages(
                 if "error" not in msg:
                     result.append(ConsumedMessage(**msg))
             return result
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error consuming messages from JMS queue {destination}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -179,6 +215,26 @@ async def get_messages(
         if not _kafka_client:
             raise HTTPException(status_code=503, detail="Kafka client not initialized")
         try:
+            # Serve from cache when available (populated by KafkaListenerEngine background thread).
+            # The cache path is near-zero latency; fall back to direct polling only when
+            # the topic is not yet covered by the listener.
+            if _message_cache is not None:
+                since_s = (since_ms / 1000.0) if since_ms is not None else None
+                cached = _message_cache.get_messages(destination, since=since_s)
+                if cached:
+                    result = []
+                    for m in cached[-limit:]:
+                        result.append(ConsumedMessage(
+                            topic=destination,
+                            partition=m.partition,
+                            offset=m.offset,
+                            key=m.key,
+                            value=m.value,
+                            headers=m.headers or {},
+                            timestamp=m.timestamp,
+                        ))
+                    return result
+
             messages = _kafka_client.consume_latest(
                 topic=destination,
                 max_messages=limit,

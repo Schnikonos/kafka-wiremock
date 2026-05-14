@@ -39,6 +39,8 @@ class MessageCache:
     - Tracks consumption status (rules vs tests - no duplicate evaluation)
     - Background cleanup thread to prevent memory leaks
     - Format-aware message storage (json/avro/bytes)
+    - Event-driven notification: callers can block on wait_for_new_message()
+      and be woken immediately when any new message arrives (no fixed polling delay)
     """
 
     def __init__(self, ttl_seconds: int = 120, cleanup_interval_seconds: int = 30):
@@ -55,6 +57,10 @@ class MessageCache:
         self._lock = Lock()
         self._running = False
         self._cleanup_thread: Optional[threading.Thread] = None
+        # Condition variable used to wake up any thread waiting for new messages.
+        # Signalled inside add_message() so test loops react instantly instead of
+        # polling every 100 ms.
+        self._new_message_condition = threading.Condition()
 
     def start_cleanup(self) -> None:
         """Start background cleanup thread."""
@@ -126,6 +132,11 @@ class MessageCache:
             self.messages[topic].append(msg)
             self._cleanup_expired(topic)
 
+        # Notify any threads waiting in wait_for_new_message() so test loops
+        # wake up immediately rather than after their fixed sleep interval.
+        with self._new_message_condition:
+            self._new_message_condition.notify_all()
+
     def get_messages(self, topic: str, since: Optional[float] = None) -> List[CachedMessage]:
         """
         Get all non-expired messages from a topic (for backwards compatibility).
@@ -187,6 +198,22 @@ class MessageCache:
                 messages = [m for m in messages if m.cached_at >= since]
 
             return messages
+
+    def wait_for_new_message(self, timeout_seconds: float) -> bool:
+        """
+        Block the calling thread until a new message is added to the cache or the
+        timeout expires.  Intended to be called via ``asyncio.to_thread()`` from an
+        async test-expectation loop so the loop wakes up the instant a message
+        arrives instead of waiting a fixed polling interval (previously 100 ms).
+
+        Args:
+            timeout_seconds: Maximum time to wait in seconds.
+
+        Returns:
+            True if a new message arrived before the timeout, False otherwise.
+        """
+        with self._new_message_condition:
+            return self._new_message_condition.wait(timeout=timeout_seconds)
 
     def mark_consumed_by_rules(self, topic: str, offset: int) -> None:
         """Mark a message as consumed by rules engine."""

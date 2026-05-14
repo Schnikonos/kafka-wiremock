@@ -275,6 +275,7 @@ async def lifespan(app: FastAPI):
 
         # Set references in API modules
         kafka_injection.set_kafka_client(kafka_client)
+        kafka_injection.set_message_cache(message_cache)
         if not jms_registry.is_empty():  # NEW: pass registry instead of client
             kafka_injection.set_jms_registry(jms_registry)
             kafka_injection.set_jms_config_loader(jms_config_loader)  # NEW

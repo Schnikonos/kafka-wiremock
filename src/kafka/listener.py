@@ -210,7 +210,11 @@ class KafkaListenerEngine:
                                 'auto.offset.reset': 'latest',
                                 'enable.auto.commit': True,
                                 'auto.commit.interval.ms': 5000,
-                                'fetch.wait.max.ms': 500,
+                                # Keep broker-side fetch wait short so messages reach
+                                # the cache quickly.  The listener thread already calls
+                                # poll() in a tight loop, so a large value here would
+                                # add unnecessary latency to test expectations.
+                                'fetch.wait.max.ms': 10,
                             })
                             self.consumer = Consumer(consumer_config)
                             retry_count = 0

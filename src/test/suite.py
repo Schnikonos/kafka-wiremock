@@ -1053,7 +1053,17 @@ class TestExecutor:
                 if received_messages:
                     break
 
-                await asyncio.sleep(0.1)
+                # Wait for the cache to signal a new message (event-driven) rather
+                # than sleeping a fixed 100 ms.  Cap individual waits at 50 ms so we
+                # still re-check the deadline and handle the no-cache fallback path.
+                remaining = end_time - time.time()
+                if remaining <= 0:
+                    break
+                wait_s = min(0.05, remaining)
+                if self.message_cache:
+                    await asyncio.to_thread(self.message_cache.wait_for_new_message, wait_s)
+                else:
+                    await asyncio.sleep(wait_s)
 
             exp_result.received = len(received_messages)
             exp_result.received_messages = [asdict(m) for m in received_messages]

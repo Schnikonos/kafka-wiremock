@@ -262,24 +262,25 @@ class JMSListenerEngine:
                 except json.JSONDecodeError:
                     pass
 
-            # Get rules for this queue
-            rules = self.config_loader.get_rules_for_topic(queue_name)
-            if not rules:
-                logger.debug(f"No rules configured for queue {queue_name}")
-                return
-
-            # Cache the message for tests
+            # Cache the message for tests BEFORE the rules check so that test
+            # expectations on queues without rules can still read from the cache.
             if self.message_cache:
                 try:
                     self.message_cache.add_message(
                         topic=queue_name,
                         value=message_data,
-                        message_format=jms_message.get("format", "json"),
+                        message_format=jms_message.get("format", "json") if hasattr(jms_message, "get") else "json",
                         headers=message_headers,
                         key=message_key,
                     )
                 except Exception as e:
                     logger.debug(f"Failed to cache message: {e}")
+
+            # Get rules for this queue
+            rules = self.config_loader.get_rules_for_topic(queue_name)
+            if not rules:
+                logger.debug(f"No rules configured for queue {queue_name}")
+                return
 
             # Verbose: log the incoming message once before checking all rules
             if _matcher_is_verbose():
