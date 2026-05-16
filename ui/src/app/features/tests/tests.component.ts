@@ -24,6 +24,7 @@ import { AppConfigService } from '../../core/services/app-config.service';
 import { ExportService } from '../../core/services/export.service';
 import { Test, BulkTestExecutionRequest, BulkTestExecutionResult } from '../../core/models';
 import { SelectionModel } from '@angular/cdk/collections';
+import { TruncJsonPipe } from '../../core/pipes/trunc-json.pipe';
 
 @Component({
   selector: 'app-tests',
@@ -47,6 +48,7 @@ import { SelectionModel } from '@angular/cdk/collections';
     MatSnackBarModule,
     MatDialogModule,
     MatTooltipModule,
+    TruncJsonPipe,
   ],
   template: `
     <div class="container">
@@ -348,8 +350,13 @@ import { SelectionModel } from '@angular/cdk/collections';
                     </div>
                     <pre class="msg-payload">{{ msg.payload | json }}</pre>
                     <div *ngIf="msg.failed_conditions && msg.failed_conditions.length > 0" class="failed-conds">
-                      <span class="failed-title">Failed: </span>
-                      <code *ngFor="let fc of msg.failed_conditions">{{ fc.type }}{{ fc.expression ? ' ' + fc.expression : '' }}</code>
+                      <span class="failed-title">Failed conditions:</span>
+                      <div *ngFor="let fc of msg.failed_conditions" class="failed-cond-row">
+                        <span class="fc-type">[{{ fc.type }}]</span>
+                        <span *ngIf="fc.expression" class="fc-expr">{{ fc.expression }}</span>
+                        <span class="fc-expected">expected: <code>{{ fc.expected?.value != null ? fc.expected.value : (fc.expected?.regex != null ? '/' + fc.expected.regex + '/' : '—') }}</code></span>
+                        <span class="fc-actual">actual: <code>{{ fc.actual | truncJson }}</code></span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -357,6 +364,15 @@ import { SelectionModel } from '@angular/cdk/collections';
                 <div *ngIf="run.closest_match" class="log-section closest-section">
                   <h5 class="section-title">Closest Match ({{ run.closest_match.tier_name }})</h5>
                   <pre class="msg-payload">{{ run.closest_match.message?.payload | json }}</pre>
+                  <div *ngIf="run.closest_match.message?.failed_conditions?.length > 0" class="failed-conds">
+                    <span class="failed-title">Failed matchers:</span>
+                    <div *ngFor="let fc of run.closest_match.message.failed_conditions" class="failed-cond-row">
+                      <span class="fc-type">[{{ fc.type }}]</span>
+                      <span *ngIf="fc.expression" class="fc-expr">{{ fc.expression }}</span>
+                      <span class="fc-expected">expected: <code>{{ fc.expected?.value != null ? fc.expected.value : (fc.expected?.regex != null ? '/' + fc.expected.regex + '/' : '—') }}</code></span>
+                      <span class="fc-actual">actual: <code>{{ fc.actual | truncJson }}</code></span>
+                    </div>
+                  </div>
                 </div>
 
                 <div *ngIf="run.raw" class="log-section">
@@ -481,8 +497,14 @@ import { SelectionModel } from '@angular/cdk/collections';
     .cond-ok   { background: #c8e6c9; color: #1b5e20; }
     .cond-fail { background: #ffcdd2; color: #b71c1c; }
     .failed-conds { font-size: 12px; color: #c62828; margin-top: 4px; }
-    .failed-conds code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; margin: 0 2px; }
-    .failed-title { font-weight: 600; }
+    .failed-conds .failed-title { font-weight: 600; display: block; margin-bottom: 2px; }
+    .failed-conds code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; margin: 0 2px; color: #333; }
+    .failed-cond-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 2px 0; border-bottom: 1px solid #fce4e4; }
+    .failed-cond-row:last-child { border-bottom: none; }
+    .fc-type { font-weight: 700; color: #b71c1c; min-width: 70px; }
+    .fc-expr { color: #555; font-style: italic; }
+    .fc-expected { color: #555; }
+    .fc-actual { color: #555; }
     .closest-section { background: #fffde7; padding: 8px; border-radius: 4px; border-left: 3px solid #ffd54f; }
     .log-loading-row { padding: 16px; text-align: center; color: #999; }
     .log-loading-row p { margin: 8px 0 0 0; font-size: 13px; }

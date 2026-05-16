@@ -53,6 +53,19 @@ export class ExportService {
       .replace(/'/g, '&#39;');
   }
 
+  /** Serialise a value to a compact JSON string, truncated to 120 chars, HTML-escaped. */
+  private truncJson(value: unknown, maxLen = 120): string {
+    if (value === null || value === undefined) return '—';
+    let s: string;
+    if (typeof value === 'string') {
+      s = value;
+    } else {
+      try { s = JSON.stringify(value); } catch { s = String(value); }
+    }
+    const truncated = s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+    return this.esc(truncated);
+  }
+
   // ─── Shared CSS ───────────────────────────────────────────────────────────────
 
   private commonCss(): string {
@@ -96,7 +109,12 @@ export class ExportService {
     .msg.received { border-left: 3px solid #66bb6a; }
     .msg-topic { font-size: 12px; font-weight: 600; color: #555; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
     .failed-cond { font-size: 12px; color: #c62828; margin-top: 4px; }
-    .failed-cond code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; }
+    .failed-cond strong { display: block; margin-bottom: 3px; }
+    .failed-cond code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; color: #333; }
+    .fc-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 2px 0; border-bottom: 1px solid #fce4e4; color: #555; }
+    .fc-row:last-child { border-bottom: none; }
+    .fc-type { font-weight: 700; color: #b71c1c; min-width: 70px; }
+    .fc-expr { font-style: italic; }
     .closest-section { background: #fffde7; padding: 12px; border-radius: 4px; border-left: 3px solid #ffd54f; }
     .no-data { color: #aaa; font-style: italic; font-size: 13px; }`;
   }
@@ -172,8 +190,22 @@ export class ExportService {
                ? `<span style="background:${condOk ? '#c8e6c9' : '#ffcdd2'};color:${condOk ? '#1b5e20' : '#b71c1c'};padding:1px 5px;border-radius:3px;font-size:11px;">${msg.conditions_matched}/${msg.total_conditions} cond</span>`
                : '';
              const failedConds = (msg.failed_conditions?.length)
-               ? `<div class="failed-cond"><strong>Failed:</strong> ${msg.failed_conditions.map((fc: any) =>
-                   `<code>${this.esc(fc.type)}${fc.expression ? ' ' + this.esc(fc.expression) : ''}</code>`).join(', ')}</div>`
+               ? `<div class="failed-cond"><strong>Failed conditions:</strong>
+                    ${msg.failed_conditions.map((fc: any) => {
+                      const expected = fc.expected?.value != null
+                        ? this.esc(String(fc.expected.value))
+                        : fc.expected?.regex != null
+                          ? `/${this.esc(fc.expected.regex)}/`
+                          : '—';
+                      const actual = this.truncJson(fc.actual);
+                      return `<div class="fc-row">
+                        <span class="fc-type">[${this.esc(fc.type)}]</span>
+                        ${fc.expression ? `<span class="fc-expr">${this.esc(fc.expression)}</span>` : ''}
+                        <span>expected: <code>${expected}</code></span>
+                        <span>actual: <code>${actual}</code></span>
+                      </div>`;
+                    }).join('')}
+                  </div>`
                : '';
              return `
                <div class="msg received">
@@ -186,10 +218,32 @@ export class ExportService {
       : '';
 
     const closestHtml = run.closest_match
-      ? `<div class="section closest-section">
-           <h4>Closest Match (${this.esc(run.closest_match.tier_name || '')})</h4>
-           <pre>${this.esc(JSON.stringify(run.closest_match.message?.payload, null, 2))}</pre>
-         </div>`
+      ? (() => {
+          const fc = run.closest_match.message?.failed_conditions;
+          const failedMatchersHtml = (fc?.length)
+            ? `<div class="failed-cond" style="margin-top:8px"><strong>Failed matchers:</strong>
+                 ${fc.map((f: any) => {
+                   const expected = f.expected?.value != null
+                     ? this.esc(String(f.expected.value))
+                     : f.expected?.regex != null
+                       ? `/${this.esc(f.expected.regex)}/`
+                       : '—';
+                   const actual = this.truncJson(f.actual);
+                   return `<div class="fc-row">
+                     <span class="fc-type">[${this.esc(f.type)}]</span>
+                     ${f.expression ? `<span class="fc-expr">${this.esc(f.expression)}</span>` : ''}
+                     <span>expected: <code>${expected}</code></span>
+                     <span>actual: <code>${actual}</code></span>
+                   </div>`;
+                 }).join('')}
+               </div>`
+            : '';
+          return `<div class="section closest-section">
+            <h4>Closest Match (${this.esc(run.closest_match.tier_name || '')})</h4>
+            <pre>${this.esc(JSON.stringify(run.closest_match.message?.payload, null, 2))}</pre>
+            ${failedMatchersHtml}
+          </div>`;
+        })()
       : '';
 
     const rawHtml = run.raw

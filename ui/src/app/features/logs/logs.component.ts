@@ -17,6 +17,7 @@ import { catchError, map } from 'rxjs/operators';
 import { ApiService } from '../../core/services/api.service';
 import { AppConfigService } from '../../core/services/app-config.service';
 import { ExportService } from '../../core/services/export.service';
+import { TruncJsonPipe } from '../../core/pipes/trunc-json.pipe';
 
 interface RunEntry {
   test_name?: string;
@@ -64,6 +65,7 @@ interface LogEntry {
     MatProgressBarModule,
     MatChipsModule,
     MatTooltipModule,
+    TruncJsonPipe,
   ],
   template: `
     <div class="container">
@@ -199,8 +201,10 @@ interface LogEntry {
                           <div *ngIf="msg.failed_conditions && msg.failed_conditions.length > 0" class="failed-conditions">
                             <span class="failed-title">Failed conditions:</span>
                             <div *ngFor="let fc of msg.failed_conditions" class="failed-condition">
-                              <code>{{ fc.type }}{{ fc.expression ? ' ' + fc.expression : '' }}</code>
-                              expected <code>{{ fc.expected?.value ?? fc.expected?.regex ?? '—' }}</code>
+                              <span class="fc-type">[{{ fc.type }}]</span>
+                              <span *ngIf="fc.expression" class="fc-expr">{{ fc.expression }}</span>
+                              <span>expected: <code>{{ fc.expected?.value != null ? fc.expected.value : (fc.expected?.regex != null ? '/' + fc.expected.regex + '/' : '—') }}</code></span>
+                              <span>actual: <code>{{ fc.actual | truncJson }}</code></span>
                             </div>
                           </div>
                         </div>
@@ -210,6 +214,15 @@ interface LogEntry {
                       <div *ngIf="run.closest_match" class="run-section match-section">
                         <h5 class="section-title">Closest Match ({{ run.closest_match.tier_name }})</h5>
                         <pre class="msg-payload">{{ run.closest_match.message?.payload | json }}</pre>
+                        <div *ngIf="run.closest_match.message?.failed_conditions?.length > 0" class="failed-conditions">
+                          <span class="failed-title">Failed matchers:</span>
+                          <div *ngFor="let fc of run.closest_match.message.failed_conditions" class="failed-condition">
+                            <span class="fc-type">[{{ fc.type }}]</span>
+                            <span *ngIf="fc.expression" class="fc-expr">{{ fc.expression }}</span>
+                            <span>expected: <code>{{ fc.expected?.value != null ? fc.expected.value : (fc.expected?.regex != null ? '/' + fc.expected.regex + '/' : '—') }}</code></span>
+                            <span>actual: <code>{{ fc.actual | truncJson }}</code></span>
+                          </div>
+                        </div>
                       </div>
 
                       <!-- Raw fallback for legacy format -->
@@ -362,9 +375,12 @@ interface LogEntry {
     .cond-fail { background: #ffcdd2; color: #b71c1c; }
 
     .failed-conditions { margin-top: 6px; font-size: 12px; }
-    .failed-title { font-weight: 600; color: #c62828; }
-    .failed-condition { color: #666; margin-left: 8px; line-height: 1.6; }
-    .failed-condition code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; }
+    .failed-title { font-weight: 600; color: #c62828; display: block; margin-bottom: 2px; }
+    .failed-condition { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 2px 0; border-bottom: 1px solid #fce4e4; color: #555; line-height: 1.6; }
+    .failed-condition:last-child { border-bottom: none; }
+    .failed-condition code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; color: #333; }
+    .fc-type { font-weight: 700; color: #b71c1c; min-width: 70px; }
+    .fc-expr { font-style: italic; color: #555; }
 
     .match-section { background: #fffde7; padding: 8px; border-radius: 4px; border-left: 3px solid #ffd54f; }
 

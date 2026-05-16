@@ -1159,6 +1159,26 @@ class TestExecutor:
 
                                 # Track failed conditions
                                 if not condition_matched:
+                                    # Determine the actual received value for useful display
+                                    def _actual_value(ctype, expression, mv, m):
+                                        if ctype == 'jsonpath' and expression:
+                                            try:
+                                                from jsonpath_ng import parse as _jp_parse
+                                                _matches = _jp_parse(expression).find(
+                                                    json.loads(mv) if isinstance(mv, str) else mv
+                                                )
+                                                if _matches:
+                                                    return _matches[0].value
+                                                return "(field not found)"
+                                            except Exception:
+                                                return "(field not found)"
+                                        elif ctype == 'header':
+                                            return (m.get('headers') or {}).get(expression)
+                                        elif ctype == 'key':
+                                            return m.get('key')
+                                        else:
+                                            return mv
+
                                     failed_conditions_details.append({
                                         'position': idx,
                                         'type': condition.type,
@@ -1167,7 +1187,12 @@ class TestExecutor:
                                             'value': getattr(condition, 'value', None),
                                             'regex': getattr(condition, 'regex', None)
                                         },
-                                        'received': msg_value if condition.type == 'jsonpath' else msg.get(condition.type)
+                                        'actual': _actual_value(
+                                            condition.type,
+                                            getattr(condition, 'expression', None),
+                                            msg_value,
+                                            msg
+                                        )
                                     })
                             except Exception as e:
                                 logger.debug(f"Error matching condition: {e}")

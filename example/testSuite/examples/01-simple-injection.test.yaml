@@ -38,7 +38,7 @@ then:
           value: "MyCustomHeader"
         - type: jsonpath
           expression: "$.source"
-          value: "{{inject.order1.username}}"
+          value: "{{inject.order1.source}}"
         - type: jsonpath
           expression: "$.amount"
           value: "{{inject.order1.amount}}"
