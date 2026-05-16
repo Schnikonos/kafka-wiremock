@@ -38,7 +38,10 @@ then:
           value: "MyCustomHeader"
         - type: jsonpath
           expression: "$.source"
-          value: "SomeSource"
+          value: "{{inject.order1.username}}"
+        - type: jsonpath
+          expression: "$.amount"
+          value: "{{inject.order1.amount}}"
         - type: jsonpath
           expression: "$.status"
           regex: "PROCESSED|ACCEPTED"

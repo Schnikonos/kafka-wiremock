@@ -28,5 +28,8 @@ then:
         "registeredAt": "{{now}}",
         "verificationCodeExpiry": "{{now+24h}}",
         "temporaryToken": "token_{{randomInt(100000,999999)}}",
-        "source": "{{$.source}}"
+        "source": "{{$.source}}",
+        "other": "{{$.unusedValue | 'defaultFallback'}}",
+        "amount": {{$.amount}},
+        "other-amount": {{$.amount-other | 99.87}}
       }

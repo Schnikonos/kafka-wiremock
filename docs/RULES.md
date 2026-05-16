@@ -178,7 +178,7 @@ List of output messages to produce when the rule matches.
 
 ### Template Placeholders
 
-Use `{{ ... }}` syntax inside `payload`, `headers`, and `key` values.
+Use `{{ ... }}` syntax inside `payload`, `headers`, `key`, and `topic` (destination) values.
 
 | Placeholder | Description |
 |-------------|-------------|
@@ -194,6 +194,37 @@ Use `{{ ... }}` syntax inside `payload`, `headers`, and `key` values.
 | `{{correlationId}}` | Extracted correlation ID (from topic-config) |
 | `{{testId}}` | (Tests only) Unique ID for the current test run |
 | `{{myCustomPlaceholder}}` | Any custom placeholder loaded from `custom_placeholders/` |
+
+#### Dynamic Destination
+
+The `topic` field in `then` outputs also supports template placeholders, enabling dynamic routing based on the incoming message:
+
+```yaml
+# Route the reply to the topic specified inside the input message
+then:
+  - topic: "{{$.replyTopic}}"
+    payload: '{"status": "OK", "orderId": "{{$.orderId}}"}'
+```
+
+#### OR / Fallback Syntax
+
+Any placeholder expression can contain pipe-separated alternatives tried left-to-right.
+A quoted token is treated as a literal string default and is always returned:
+
+```yaml
+payload: |
+  {
+    "id":     "{{$.orderId | $.id | uuid}}",
+    "source": "{{header.X-Source | \"unknown\"}}"
+  }
+```
+
+Rules:
+- Tokens are separated by `|` and trimmed of surrounding whitespace.
+- The first token that resolves to a non-`null` value is used.
+- A token wrapped in `"…"` or `'…'` is always returned as-is (acts as a final fallback).
+- Path traversal is **null-safe**: `{{a.b.c.d}}` returns the unresolved placeholder text when any intermediate key is absent — no exception is thrown.
+- Combine with a quoted default to guarantee a value: `{{$.user.address.city | "N/A"}}`.
 
 ### Multiple Outputs
 

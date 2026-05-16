@@ -446,6 +446,10 @@ class JMSListenerEngine:
                     if output.delay_ms and output.delay_ms > 0:
                         time.sleep(output.delay_ms / 1000.0)
 
+                    # Render destination first (supports dynamic topic/queue names)
+                    from ..rules.templater import TemplateRenderer as _TR
+                    rendered_destination = _TR.render(output.destination, matcher_contexts)
+
                     # Render template
                     rendered_payload = (
                         self.template_renderer.render(
@@ -478,13 +482,12 @@ class JMSListenerEngine:
                         # Fire HTTP call (sync bridge from listener thread via asyncio.run)
                         if not self.http_executor:
                             logger.error(
-                                f"HTTP executor not initialized; cannot call {output.destination} "
+                                f"HTTP executor not initialized; cannot call {rendered_destination} "
                                 f"(rule: {rule.rule_name}). Wire http_executor into JMSListenerEngine."
                             )
                         else:
                             import asyncio as _asyncio
-                            from ..rules.templater import TemplateRenderer as _TR
-                            rendered_url = _TR.render(output.destination, matcher_contexts)
+                            rendered_url = rendered_destination
                             rendered_query = None
                             if output.query_params:
                                 rendered_query = {k: _TR.render(v, matcher_contexts) for k, v in output.query_params.items()}
@@ -509,7 +512,7 @@ class JMSListenerEngine:
                                 logger.error(f"HTTP output failed for {rendered_url}: {http_err}")
                     elif msg_type == "jms":
                         # Get JMS config to find which queue manager
-                        jms_config = self.jms_config_loader.get_config(output.destination)
+                        jms_config = self.jms_config_loader.get_config(rendered_destination)
                         qm_ref = jms_config.queue_manager_ref if jms_config else "default"
 
                         # Override with explicit connection_ref if provided in rule
@@ -520,13 +523,13 @@ class JMSListenerEngine:
                             client = self.jms_registry.get_client(qm_ref)
 
                             message_id = client.put_message(
-                                destination=output.destination,
+                                destination=rendered_destination,
                                 payload=json.dumps(message_payload) if isinstance(message_payload, dict) else message_payload,
                                 headers=output.headers,
                             )
                             if message_id:
                                 logger.info(
-                                    f"Output {message_id} sent to JMS queue {output.destination} "
+                                    f"Output {message_id} sent to JMS queue {rendered_destination} "
                                     f"(queue_manager={qm_ref})"
                                 )
                                 # Cache the produced message so test expectations can
@@ -536,7 +539,7 @@ class JMSListenerEngine:
                                 if self.message_cache:
                                     try:
                                         self.message_cache.add_message(
-                                            topic=output.destination,
+                                            topic=rendered_destination,
                                             value=message_payload,
                                             message_format="json",
                                             timestamp=int(time.time() * 1000),
@@ -553,24 +556,24 @@ class JMSListenerEngine:
                         # Send to Kafka topic via the kafka_client passed at construction.
                         if self.kafka_client is None:
                             logger.error(
-                                f"Cannot send to Kafka topic {output.destination}: "
+                                f"Cannot send to Kafka topic {rendered_destination}: "
                                 f"no kafka_client was provided to JMSListenerEngine. "
                                 f"Pass kafka_client= when constructing JMSListenerEngine."
                             )
                         else:
                             try:
                                 message_id = self.kafka_client.produce(
-                                    topic=output.destination,
+                                    topic=rendered_destination,
                                     message=message_payload,
                                     schema_id=output.schema_id,
                                 )
                                 if message_id:
                                     logger.info(
-                                        f"Output {message_id} sent to Kafka topic {output.destination}"
+                                        f"Output {message_id} sent to Kafka topic {rendered_destination}"
                                     )
                             except Exception as e:
                                 logger.error(
-                                    f"Error sending to Kafka topic {output.destination}: {e}"
+                                    f"Error sending to Kafka topic {rendered_destination}: {e}"
                                 )
 
                 except Exception as e:

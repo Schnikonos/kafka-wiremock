@@ -12,6 +12,9 @@ Event-driven Kafka and JMS mock container for testing, similar to Pact for APIs.
 - ✅ **Multiple Matching Strategies**: JSONPath, Regex, Exact, Partial matching
 - ✅ **Rich Templating**: UUID, timestamps, random data, JSONPath extraction
 - ✅ **Custom Placeholders**: User-defined functions with ordered pipeline execution
+- ✅ **OR / Fallback Syntax**: `{{expr1 | expr2 | "default"}}` in any template expression — rules and test expectations
+- ✅ **Dynamic Destinations**: Rule `then` topic names support template placeholders (e.g. `{{$.replyTopic}}`)
+- ✅ **Template Placeholders in Test `then`**: Reference injected fields (`{{inject.order1.orderId}}`), custom placeholders, and built-ins inside match `value`/`regex` conditions
 - ✅ **Multiple Outputs**: Single rule → multiple messages to different topics/queues
 - ✅ **Message Headers**: Custom correlation IDs and headers
 - ✅ **Execution Delays**: Simulate processing latency

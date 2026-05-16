@@ -566,7 +566,9 @@ class TestExecutor:
                 if isinstance(item, TestExpectation):
                     # Collect expectation messages
                     exp_result = await self._collect_expectation_messages(
-                        item, len(collected_results), when_result, injections_dict, context, test_logger, test_start_time=test_start_time, verbose=verbose
+                        item, len(collected_results), when_result, injections_dict, context,
+                        test_logger, test_start_time=test_start_time, verbose=verbose,
+                        test_id=test.name
                     )
                     result.expectations.append(exp_result)
                     collected_results.append(exp_result)
@@ -603,9 +605,37 @@ class TestExecutor:
         context: Dict[str, Any],
         test_logger: Optional[TestLogger] = None,
         test_start_time: float = None,
-        verbose: bool = False
+        verbose: bool = False,
+        test_id: str = "",
     ) -> ExpectationResult:
         """Collect messages for a single expectation with correlation."""
+
+        # Build template context for rendering condition values in this expectation.
+        # Priority (highest first): script context > injected payloads > testId / builtins.
+        _template_ctx: Dict[str, Any] = {
+            "testId": test_id,
+        }
+        # Add custom placeholder results (uuid/now/etc. are resolved on-demand by
+        # TemplateRenderer itself via the global registry, no need to add them here)
+        if self.custom_placeholder_registry:
+            try:
+                all_placeholders = self.custom_placeholder_registry.get_all_placeholders()
+                for _ph_name, _ph_func in all_placeholders.items():
+                    try:
+                        _template_ctx[_ph_name] = _ph_func(_template_ctx)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        # Expose injected message payloads as inject.<message_id>.<field> flat keys
+        for _msg_id, _msg_data in injections_dict.items():
+            _payload = _msg_data.get("payload")
+            if isinstance(_payload, dict):
+                for _field, _val in _payload.items():
+                    _template_ctx[f"inject.{_msg_id}.{_field}"] = _val
+        # Script-accumulated context values override everything else
+        _template_ctx.update(context)
+
         exp_result = ExpectationResult(
             index=exp_idx,
             topic=expectation.topic,
@@ -1057,22 +1087,49 @@ class TestExecutor:
                                 condition_matched = False
                                 match_result = None
 
+                                # ── Render condition value/regex with then-block template context ──
+                                # This allows placeholders like {{testId}}, {{inject.order1.field}},
+                                # {{myCustomPlaceholder}}, {{uuid}}, {{a | b | "default"}} in match values.
+                                def _render_condition_val(raw_val):
+                                    if raw_val is None:
+                                        return None
+                                    rendered_str = TemplateRenderer.render(str(raw_val), _template_ctx)
+                                    # Try to recover natural type (float/int/bool) so numeric
+                                    # comparisons still work after rendering.
+                                    try:
+                                        import json as _json
+                                        return _json.loads(rendered_str)
+                                    except (ValueError, TypeError):
+                                        return rendered_str
+
+                                rendered_val = _render_condition_val(condition.value)
+                                rendered_regex = (
+                                    TemplateRenderer.render(str(condition.regex), _template_ctx)
+                                    if condition.regex is not None else None
+                                )
+                                # Create a rendered copy of the condition for matchers that
+                                # accept the condition object directly (header, key, etc.)
+                                from dataclasses import replace as _dc_replace
+                                rendered_condition = _dc_replace(
+                                    condition, value=rendered_val, regex=rendered_regex
+                                )
+
                                 # Build matcher-specific condition dict and run match
                                 if condition.type == 'jsonpath':
                                     matcher_condition = {
                                         'path': condition.expression,
-                                        'value': condition.value,
-                                        'regex': condition.regex
+                                        'value': rendered_val,
+                                        'regex': rendered_regex
                                     }
                                     match_result = matcher.match(msg_value, matcher_condition) if matcher else None
                                 elif condition.type == 'header':
                                     headers_dict = msg.get('headers', {})
-                                    match_result = matcher.match(headers_dict, condition) if matcher else None
+                                    match_result = matcher.match(headers_dict, rendered_condition) if matcher else None
                                 elif condition.type == 'key':
                                     msg_key = msg.get('key')
-                                    match_result = matcher.match(msg_key, condition) if matcher else None
+                                    match_result = matcher.match(msg_key, rendered_condition) if matcher else None
                                 else:
-                                    match_result = matcher.match(msg_value, condition) if matcher else None
+                                    match_result = matcher.match(msg_value, rendered_condition) if matcher else None
 
                                 condition_matched = bool(match_result and match_result.matched)
                                 if condition_matched:

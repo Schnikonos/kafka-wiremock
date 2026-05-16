@@ -696,20 +696,22 @@ class KafkaListenerEngine:
                                 logger.error(f"HTTP output failed for {rendered_url}: {http_err}")
                     else:
                         # Default: produce to Kafka topic
+                        # Render destination to support dynamic topic names e.g. {{$.replyTopic}}
+                        rendered_destination = TemplateRenderer.render(output.destination, matcher_contexts)
                         self.kafka_client.produce(
-                            output.destination,
+                            rendered_destination,
                             message_to_send,
                             headers=headers_to_send,
                             key=key_to_send,
                             schema_id=output.schema_id
                         )
-                        logger.info(f"Produced message to {output.destination} (rule: {rule.rule_name})")
+                        logger.info(f"Produced message to {rendered_destination} (rule: {rule.rule_name})")
 
                     # Handle message duplication if configured (not for HTTP)
                     if output_type != 'http' and output.fault and FaultInjector.should_duplicate(output.fault):
-                        logger.info(f"Duplicating message to {output.destination} (fault injection)")
+                        logger.info(f"Duplicating message to {rendered_destination} (fault injection)")
                         self.kafka_client.produce(
-                            output.destination,
+                            rendered_destination,
                             message_to_send,
                             headers=headers_to_send,
                             key=key_to_send,

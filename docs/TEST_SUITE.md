@@ -124,26 +124,61 @@ then:
 
 All [match condition types](RULES.md#match-conditions-optional) from rules are supported: `jsonpath`, `exact`, `partial`, `regex`, `header`, `key`.
 
-### External Match File
+### Template Placeholders in `then` Expectations
+
+`value` and `regex` fields inside any `match` condition are rendered as templates before the comparison is made. This means you can reference injected message fields, custom placeholders, built-in helpers, and the OR/fallback syntax inside `then` expectations — the same way you would in rule `then` payloads.
+
+#### Available placeholders
+
+| Placeholder | Description |
+|-------------|-------------|
+| `{{testId}}` | Name of the current test |
+| `{{uuid}}` | Fresh random UUID |
+| `{{now}}` / `{{now+5m}}` | Current UTC timestamp with optional offset |
+| `{{inject.<message_id>.<field>}}` | Field from an injected `when` message, e.g. `{{inject.order1.orderId}}` |
+| `{{myCustomPlaceholder}}` | Any custom placeholder defined in `custom_placeholders/` |
+
+Script-accumulated `context` values (set in `when` or `then` scripts — see below) are also available as `{{myContextKey}}`.
+
+#### OR / Fallback Syntax
+
+Use pipe-separated alternatives, with an optional quoted literal as the final fallback:
 
 ```yaml
-    - topic: "payments.input"
-      match_file: expectations/payment-match.yaml   # Relative to test file
+match:
+  - type: jsonpath
+    expression: "$.orderId"
+    value: "{{inject.order1.orderId | inject.order1.id | \"DEFAULT\"}}"
 ```
 
-### Inline Script in `then`
+Path traversal is **null-safe**: `{{inject.order1.a.b.c}}` returns `null` (not an error) when any intermediate key is absent.
+
+#### Example — reference injected field in expectation
 
 ```yaml
+when:
+  inject:
+    - message_id: "order1"
+      topic: "orders.input"
+      payload: |
+        {"orderId": "{{uuid}}", "amount": 99.99}
+
 then:
   expectations:
-    - topic: "payments.input"
+    - topic: "payments.output"
       wait_ms: 3000
-
-    - script: |
-        # current_expectation.received_messages contains messages matched for the last expectation
-        msg = current_expectation.received_messages[0] if current_expectation.received_messages else {}
-        assert msg.get("value", {}).get("amount") == 99.99, f"Expected 99.99 but got {msg}"
+      match:
+        - type: jsonpath
+          expression: "$.orderId"
+          value: "{{inject.order1.orderId}}"   # must echo back the same orderId
+        - type: jsonpath
+          expression: "$.currency"
+          value: "{{inject.order1.currency | \"EUR\"}}"   # fallback to EUR if absent
 ```
+
+#### Numeric comparisons
+
+Both `condition.value` and the actual extract are coerced to string before the final comparison when a placeholder is used. For purely static numeric values (no placeholder tokens), the original type is preserved.
 
 ---
 
