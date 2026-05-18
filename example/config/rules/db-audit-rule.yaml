@@ -1,0 +1,33 @@
+priority: 20
+name: "audit-order-to-db"
+
+# Example rule: when an ORDER_CREATED event arrives on orders.input,
+# write an audit record to Oracle AND produce a Kafka output.
+# The db step result (generated_key) can be used in later outputs.
+
+when:
+  destination: orders.input
+  match:
+    - type: jsonpath
+      expression: "$.eventType"
+      value: "ORDER_CREATED"
+
+then:
+  # 1. Write an audit log entry to the DB
+  - type: db
+    id: audit_log
+    db: onepam
+    operation: insert
+    query: "INSERT INTO order_audit (order_id, event_type, created_at) VALUES ('{{$.orderId}}', 'ORDER_CREATED', SYSDATE)"
+
+  # 2. Publish confirmation to Kafka (generated_key available as {{db.audit_log.generated_key}}).
+  - type: kafka
+    destination: orders.output
+    payload: |
+      {
+        "orderId": "{{$.orderId}}",
+        "status": "PROCESSED",
+        "auditId": "{{db.audit_log.generated_key}}",
+        "processedAt": "{{now}}"
+      }
+

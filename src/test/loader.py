@@ -13,6 +13,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class TestDBAction:
+    """A database action in when.inject or then.expectations (type: db)."""
+    id: str                                      # Step ID — stored in context as db.<id>.*
+    db_ref: str                                  # Database reference name (from databases.yaml)
+    operation: str                               # select | insert | update | delete
+    query: str                                   # Raw SQL/CQL (template placeholders supported)
+    params: Optional[Dict[str, Any]] = None      # Optional named bind params (also template-rendered)
+    delay_ms: int = 0
+    # For 'then' phase: optional match conditions on select results (DB assertion)
+    match: List[Condition] = field(default_factory=list)
+    # Expected row count (for select assertions in then phase; None = no check)
+    expected_row_count: Optional[int] = None
+
+
+@dataclass
 class HttpInjectionResult:
     """Captured response from an HTTP injection (type=http)."""
     message_id: str
@@ -109,14 +124,14 @@ class TestExpectation:
 
 @dataclass
 class TestWhen:
-    """Input phase of test: flat list of injections and scripts."""
-    items: List[Union[TestInjection, TestScript]] = field(default_factory=list)
+    """Input phase of test: flat list of injections, DB actions, and scripts."""
+    items: List[Union[TestInjection, TestScript, 'TestDBAction']] = field(default_factory=list)
 
 
 @dataclass
 class TestThen:
-    """Output phase of test: flat list of expectations and scripts."""
-    items: List[Union[TestExpectation, TestScript]]
+    """Output phase of test: flat list of expectations, DB actions, and scripts."""
+    items: List[Union[TestExpectation, TestScript, 'TestDBAction']]
 
 
 @dataclass
@@ -267,6 +282,22 @@ class TestValidator:
             elif "script_file" in item_dict and len(item_dict) == 1:
                 # It's a script file reference
                 items.append(TestScript(script="", script_file=str(item_dict["script_file"])))
+            elif str(item_dict.get("type", "kafka")).lower() == "db":
+                # It's a DB action
+                if "db" not in item_dict:
+                    raise ValueError(f"DB action at index {idx} missing 'db' (database reference)")
+                if "query" not in item_dict:
+                    raise ValueError(f"DB action at index {idx} missing 'query'")
+                op = str(item_dict.get("operation", "insert")).lower()
+                step_id = item_dict.get("id", f"db_when_{idx}")
+                items.append(TestDBAction(
+                    id=step_id,
+                    db_ref=str(item_dict["db"]),
+                    operation=op,
+                    query=str(item_dict["query"]),
+                    params=item_dict.get("params"),
+                    delay_ms=int(item_dict.get("delay_ms", 0)),
+                ))
             else:
                 # It's an injection
                 if "message_id" not in item_dict:
@@ -321,6 +352,42 @@ class TestValidator:
             elif "script_file" in item_dict and len(item_dict) == 1:
                 # It's a script file reference
                 items.append(TestScript(script="", script_file=str(item_dict["script_file"])))
+            elif str(item_dict.get("type", "kafka")).lower() == "db":
+                # It's a DB action (cleanup, assertion, etc.)
+                if "db" not in item_dict:
+                    raise ValueError(f"DB action at index {idx} (then) missing 'db' field")
+                if "query" not in item_dict:
+                    raise ValueError(f"DB action at index {idx} (then) missing 'query' field")
+                op = str(item_dict.get("operation", "select")).lower()
+                step_id = item_dict.get("id", f"db_then_{idx}")
+
+                # Parse optional match conditions (for DB assertions on select results)
+                match_list = item_dict.get("match", [])
+                conditions = []
+                if isinstance(match_list, list):
+                    for match_dict in match_list:
+                        if not isinstance(match_dict, dict):
+                            raise ValueError("DB match condition must be a dictionary")
+                        ctype = match_dict.get("type")
+                        if not ctype:
+                            raise ValueError("DB match condition must have 'type' field")
+                        conditions.append(Condition(
+                            type=str(ctype),
+                            expression=match_dict.get("expression"),
+                            value=match_dict.get("value"),
+                            regex=match_dict.get("regex"),
+                        ))
+
+                items.append(TestDBAction(
+                    id=step_id,
+                    db_ref=str(item_dict["db"]),
+                    operation=op,
+                    query=str(item_dict["query"]),
+                    params=item_dict.get("params"),
+                    delay_ms=int(item_dict.get("delay_ms", 0)),
+                    match=conditions,
+                    expected_row_count=item_dict.get("expected_row_count"),
+                ))
             else:
                 msg_type = str(item_dict.get("type", "kafka")).lower()
                 # For http/http-stub expectations, destination is optional

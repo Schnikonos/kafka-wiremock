@@ -1,0 +1,84 @@
+# Database Configuration
+# ======================
+# Defines all named databases available in rules, tests, and sends.
+#
+# Passwords are NEVER stored here — set them as environment variables:
+#   DB_<NAME_UPPER>_PASSWORD          e.g. DB_ONEPAM_PASSWORD
+#   DB_<NAME_UPPER>_WALLET_PASSWORD   for Oracle wallet (if applicable)
+#
+# Provider libraries must be installed (via example/config/python-requirements/requirements.txt):
+#   oracle:    pip install oracledb
+#   mysql:     pip install mysql-connector-python
+#   cassandra: pip install cassandra-driver
+
+databases:
+
+  # ---------------------------------------------------------------------------
+  # Oracle 23c Free  (container: oracle-db)
+  # gvenzl/oracle-free:23-slim-faststart
+  # App user: myuser  |  password: DB_ONEPAM_PASSWORD env var
+  # Service name: FREE (default for gvenzl/oracle-free)
+  # ---------------------------------------------------------------------------
+  onepam:
+    provider: oracle
+    host: oracle-db
+    port: 1521
+    service_name: FREE
+    username: myuser
+    # password: set env DB_ONEPAM_PASSWORD
+    # To enable SSL/wallet in production, uncomment and configure:
+    # ssl:
+    #   wallet_location: /db-certs/oracle/wallet
+    #   ssl_server_dn_match: true
+    pool:
+      min_size: 1
+      max_size: 5
+      acquire_timeout_s: 30.0   # Oracle Free can be slow to warm up
+      validate_on_borrow: true
+
+  # ---------------------------------------------------------------------------
+  # MySQL 8.0  (container: mysql-db)
+  # Database: orders_db  |  user: orders_user  |  password: DB_MYSQL_ORDERS_PASSWORD
+  # Tables created by example/db-init/mysql/01-init.sql
+  # ---------------------------------------------------------------------------
+  mysql_orders:
+    provider: mysql
+    host: mysql-db
+    port: 3306
+    database: orders_db
+    username: orders_user
+    # password: set env DB_MYSQL_ORDERS_PASSWORD
+    # To enable SSL in production, uncomment and configure:
+    # ssl:
+    #   ca_certs: /db-certs/mysql/ca.pem
+    #   certfile: /db-certs/mysql/client-cert.pem
+    #   keyfile: /db-certs/mysql/client-key.pem
+    #   verify_cert: true
+    pool:
+      min_size: 1
+      max_size: 5
+
+  # ---------------------------------------------------------------------------
+  # Cassandra 4.1  (container: cassandra-db)
+  # Keyspace: mykeyspace
+  # Schema created by example/db-init/cassandra/01-init.cql
+  #
+  # NOTE: local dev stack uses AllowAllAuthenticator — no credentials required.
+  # For production, configure PasswordAuthenticator in cassandra.yaml and set:
+  #   username: cass_user
+  #   # password: set env DB_SOMECASSANDRA_PASSWORD
+  # ---------------------------------------------------------------------------
+  someCassandra:
+    provider: cassandra
+    contact_points:
+      - cassandra-db
+    port: 9042
+    keyspace: mykeyspace
+    # No username/password needed for local dev (AllowAllAuthenticator)
+    # ssl:
+    #   ca_certs: /db-certs/cassandra/ca.pem
+    #   check_hostname: false
+    pool:
+      min_size: 1
+      max_size: 5
+

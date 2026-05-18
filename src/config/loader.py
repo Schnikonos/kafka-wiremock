@@ -70,7 +70,7 @@ class ConfigLoader:
         yaml_files = []
         for yaml_file in list(self.config_dir.rglob("*.yaml")) + list(self.config_dir.rglob("*.yml")):
             # Skip directories handled by their own specialised loaders
-            if any(d in yaml_file.parts for d in ("topic-config", "custom_placeholders", "http-config", "jms-config")):
+            if any(d in yaml_file.parts for d in ("topic-config", "custom_placeholders", "http-config", "jms-config", "db-config")):
                 continue
             yaml_files.append(yaml_file)
         
@@ -123,7 +123,7 @@ class ConfigLoader:
         yaml_files = []
         for yaml_file in sorted(self.config_dir.rglob("*.yaml")) + sorted(self.config_dir.rglob("*.yml")):
             # Skip directories handled by their own specialised loaders
-            if any(d in yaml_file.parts for d in ("topic-config", "custom_placeholders", "http-config", "jms-config")):
+            if any(d in yaml_file.parts for d in ("topic-config", "custom_placeholders", "http-config", "jms-config", "db-config")):
                 logger.debug(f"Skipping {yaml_file.name} (handled by specialized loader)")
                 continue
             yaml_files.append(yaml_file)
@@ -291,6 +291,26 @@ class ConfigLoader:
         for then_item in then_block:
             output_msg_type = then_item.get('type', 'kafka').lower()
             output_destination = then_item.get('destination', '')
+
+            # DB outputs: no destination/payload required
+            if output_msg_type == 'db':
+                if not then_item.get('db'):
+                    raise ValueError("DB output requires 'db' field (database reference)")
+                if not then_item.get('query'):
+                    raise ValueError("DB output requires 'query' field")
+                output = Output(
+                    destination='',
+                    msg_type='db',
+                    delay_ms=then_item.get('delay_ms', 0),
+                    db_ref=then_item.get('db'),
+                    db_operation=str(then_item.get('operation', 'insert')).lower(),
+                    db_query=then_item.get('query'),
+                    db_params=then_item.get('params'),
+                    db_step_id=then_item.get('id'),
+                )
+                outputs.append(output)
+                continue
+
             # http_response outputs return data to the caller — no external destination needed
             if output_msg_type != 'http_response' and not output_destination:
                 raise ValueError("'destination' is required in output")

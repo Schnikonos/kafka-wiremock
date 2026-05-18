@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from jsonpath_ng import parse as jsonpath_parse
 from jsonpath_ng.exceptions import JSONPathError
 
-from .loader import TestDefinition, TestInjection, TestExpectation, TestScript, HttpInjectionResult
+from .loader import TestDefinition, TestInjection, TestExpectation, TestScript, HttpInjectionResult, TestDBAction
 from ..kafka.client import KafkaClientWrapper
 from ..rules.matcher import MatcherFactory
 from ..rules.templater import TemplateRenderer
@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..http.executor import HttpExecutor
     from ..http.stub_cache import HttpStub, HttpStubCache
+    from ..db.executor import DBExecutor
 logger = logging.getLogger(__name__)
 
 
@@ -183,6 +184,7 @@ class WhenResult:
     faulted_injections: List[str] = field(default_factory=list)  # message_ids with faults (and check_result=False)
     script_error: Optional[str] = None
     http_results: Dict[str, Any] = field(default_factory=dict)  # message_id → HttpInjectionResult
+    context: Dict[str, Any] = field(default_factory=dict)       # accumulated DB/script context for use in 'then' phase
 
 
 @dataclass
@@ -209,6 +211,7 @@ class TestExecutor:
         jms_registry = None,  # Optional JMS registry for JMS injection/expectation support
         http_executor: Optional["HttpExecutor"] = None,  # Optional HTTP executor for HTTP requests
         stub_cache: Optional["HttpStubCache"] = None,  # Optional HTTP stub cache for http-stub expectations
+        db_executor: Optional["DBExecutor"] = None,     # Optional DB executor for type=db actions
     ):
         """Initialize test executor."""
         self.kafka_client = kafka_client
@@ -220,6 +223,7 @@ class TestExecutor:
         self.jms_registry = jms_registry
         self.http_executor = http_executor  # Optional; HTTP calls skipped if None
         self.stub_cache = stub_cache        # Optional; http-stub expectations skipped if None
+        self.db_executor = db_executor      # Optional; DB actions skipped if None
 
     async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None, verbose: bool = False, force_run: bool = False) -> TestResult:
         """Execute a single test."""
@@ -361,27 +365,29 @@ class TestExecutor:
         injected_messages = []
         context = {}
 
+        # Build template context once, shared across all item types in the when phase
+        template_context = {
+            "testId": test.name,
+            "uuid": str(__import__('uuid').uuid4()),
+            "now": datetime.now(timezone.utc).isoformat() + "Z",
+            "randomInt": lambda min_val=0, max_val=100: __import__('random').randint(min_val, max_val)
+        }
+        if self.custom_placeholder_registry:
+            placeholders = self.custom_placeholder_registry.get_all_placeholders()
+            for name, func in placeholders.items():
+                try:
+                    template_context[name] = func(template_context)
+                except Exception as e:
+                    logger.warning(f"Failed to execute custom placeholder {name}: {e}")
+
         try:
             # Process items sequentially
             for item in test.when.items:
                 if isinstance(item, TestInjection):
                     try:
-                        # Build template context
-                        template_context = {
-                            "testId": test.name,
-                            "uuid": str(__import__('uuid').uuid4()),
-                            "now": datetime.now(timezone.utc).isoformat() + "Z",
-                            "randomInt": lambda min_val=0, max_val=100: __import__('random').randint(min_val, max_val)
-                        }
-
-                        # Add custom placeholders
-                        if self.custom_placeholder_registry:
-                            placeholders = self.custom_placeholder_registry.get_all_placeholders()
-                            for name, func in placeholders.items():
-                                try:
-                                    template_context[name] = func(template_context)
-                                except Exception as e:
-                                    logger.warning(f"Failed to execute custom placeholder {name}: {e}")
+                        # Refresh dynamic placeholders and merge current context
+                        template_context["uuid"] = str(__import__('uuid').uuid4())
+                        template_context["now"] = datetime.now(timezone.utc).isoformat() + "Z"
 
                         template_context.update(context)
 
@@ -540,10 +546,55 @@ class TestExecutor:
                         result.script_error = str(e)
                         break
 
+                elif isinstance(item, TestDBAction):
+                    # Execute DB action (insert/update/delete/select for test data setup)
+                    if self.db_executor is None:
+                        logger.warning(
+                            f"test={test.name!r} DB action '{item.id}' skipped: "
+                            f"no db_registry configured"
+                        )
+                        continue
+                    try:
+                        if item.delay_ms > 0:
+                            await asyncio.sleep(item.delay_ms / 1000.0)
+                        # Render query and params with current template context
+                        rendered_query = TemplateRenderer.render(item.query, template_context)
+                        rendered_params: Optional[Dict[str, Any]] = None
+                        if item.params:
+                            rendered_params = {
+                                k: TemplateRenderer.render(str(v), template_context)
+                                for k, v in item.params.items()
+                            }
+                        db_context = self.db_executor.execute(
+                            db_ref=item.db_ref,
+                            operation=item.operation,
+                            query=rendered_query,
+                            params=rendered_params,
+                            step_id=item.id,
+                        )
+                        context.update(db_context)
+                        template_context.update(db_context)
+                        logger.info(
+                            f"test={test.name!r} DB {item.operation} step='{item.id}' "
+                            f"db='{item.db_ref}' → context keys: {list(db_context.keys())}"
+                        )
+                        _vtest(verbose, (
+                            f"test={test.name!r} DB-ACTION step='{item.id}' "
+                            f"db='{item.db_ref}' operation='{item.operation}' "
+                            f"query={rendered_query!r} context={list(db_context.keys())}"
+                        ))
+                    except Exception as e:
+                        logger.error(
+                            f"test={test.name!r} DB action '{item.id}' failed: {e}"
+                        )
+                        result.script_error = str(e)
+                        break
+
             result.injected = [
                 {"message_id": m.message_id, "topic": m.topic, "status": m.status, "payload": m.payload}
                 for m in injected_messages
             ]
+            result.context = context
 
         except Exception as e:
             logger.error(f"When phase failed: {e}")
@@ -554,7 +605,7 @@ class TestExecutor:
     async def _execute_then(self, test: TestDefinition, when_result: WhenResult, test_logger: Optional[TestLogger] = None, test_start_time: float = None, verbose: bool = False) -> ThenResult:
         """Execute 'then' phase: expectations and scripts, sequential."""
         result = ThenResult()
-        context = {}
+        context = dict(when_result.context)  # seed with DB/script context from 'when' phase
         collected_results = []
 
         try:
@@ -590,11 +641,121 @@ class TestExecutor:
                         result.script_error = str(e)
                         break
 
+                elif isinstance(item, TestDBAction):
+                    # Execute DB action (cleanup, assertion, etc.)
+                    if self.db_executor is None:
+                        logger.warning(
+                            f"test={test.name!r} DB action '{item.id}' skipped: "
+                            f"no db_registry configured"
+                        )
+                        continue
+                    try:
+                        if item.delay_ms > 0:
+                            await asyncio.sleep(item.delay_ms / 1000.0)
+                        # Build template context from accumlated when/then context
+                        template_ctx = dict(context)
+                        rendered_query = TemplateRenderer.render(item.query, template_ctx)
+                        rendered_params: Optional[Dict[str, Any]] = None
+                        if item.params:
+                            rendered_params = {
+                                k: TemplateRenderer.render(str(v), template_ctx)
+                                for k, v in item.params.items()
+                            }
+                        db_context = self.db_executor.execute(
+                            db_ref=item.db_ref,
+                            operation=item.operation,
+                            query=rendered_query,
+                            params=rendered_params,
+                            step_id=item.id,
+                        )
+                        context.update(db_context)
+
+                        # For select: optionally validate row count and match conditions
+                        exp_result = self._evaluate_db_assertion(item, db_context, len(collected_results))
+                        if exp_result is not None:
+                            result.expectations.append(exp_result)
+                            collected_results.append(exp_result)
+
+                        logger.info(
+                            f"test={test.name!r} DB {item.operation} step='{item.id}' "
+                            f"db='{item.db_ref}' → context keys: {list(db_context.keys())}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"test={test.name!r} DB action '{item.id}' failed: {e}"
+                        )
+                        result.script_error = str(e)
+                        break
+
         except Exception as e:
             logger.error(f"Then phase failed: {e}")
             result.script_error = str(e)
 
         return result
+
+    def _evaluate_db_assertion(
+        self,
+        item: TestDBAction,
+        db_context: Dict[str, Any],
+        exp_idx: int,
+    ) -> Optional[ExpectationResult]:
+        """
+        Evaluate optional assertion conditions on a DB action result (then phase).
+
+        Returns an ExpectationResult if the action has match conditions or
+        expected_row_count set; None otherwise (pure side-effect, no assertion).
+        """
+        has_assertion = bool(item.match) or item.expected_row_count is not None
+        if not has_assertion:
+            return None
+
+        prefix = f"db.{item.id}"
+        row_count = db_context.get(f"{prefix}.row_count", db_context.get(f"{prefix}.rows_affected", 0))
+        rows = db_context.get(f"{prefix}.rows", [])
+        first_row = rows[0] if rows else {}
+
+        errors: List[str] = []
+
+        # Row count assertion
+        if item.expected_row_count is not None:
+            if row_count != item.expected_row_count:
+                errors.append(
+                    f"DB assertion '{item.id}': expected {item.expected_row_count} row(s), "
+                    f"got {row_count}"
+                )
+
+        # Match condition assertions (applied to first row as a dict)
+        for cond in item.match:
+            try:
+                matcher = self.matcher_factory.create(cond.type)
+                if cond.type == "jsonpath":
+                    match_condition = {
+                        "path": cond.expression,
+                        "value": cond.value,
+                        "regex": cond.regex,
+                    }
+                    match_result = matcher.match(first_row, match_condition)
+                else:
+                    mc = cond.regex if cond.regex else cond.value
+                    match_result = matcher.match(first_row, mc)
+                if not match_result.matched:
+                    errors.append(
+                        f"DB assertion '{item.id}': condition {cond.type} "
+                        f"expression={cond.expression!r} expected={cond.value!r} → NO MATCH "
+                        f"(actual row: {first_row})"
+                    )
+            except Exception as e:
+                errors.append(f"DB assertion '{item.id}': condition evaluation error: {e}")
+
+        status = "MATCHED" if not errors else "NO_MATCH"
+        return ExpectationResult(
+            index=exp_idx,
+            topic=f"db:{item.db_ref}:{item.operation}",
+            expected=1,
+            received=1 if not errors else 0,
+            status=status,
+            error="; ".join(errors) if errors else None,
+        )
 
     async def _collect_expectation_messages(
         self,
@@ -679,7 +840,7 @@ class TestExecutor:
                                     header_name = corr.source["header"]
                                     headers = injected_data.get("headers", {})
                                     correlation_value = headers.get(header_name)
-                                
+
                                 if correlation_value is None:
                                     logger.warning(f"Could not extract correlation from source {corr.source}")
                             else:
@@ -1326,6 +1487,7 @@ class TestSuiteRunner:
         jms_registry = None,          # Optional JMS registry for JMS injection/expectation support
         http_executor = None,         # Optional HttpExecutor for HTTP injection/expectation support
         stub_cache: Optional["HttpStubCache"] = None,  # Optional HTTP stub cache
+        db_executor = None,           # Optional DBExecutor for type=db actions
     ):
         """Initialize test suite runner."""
         self.kafka_client = kafka_client
@@ -1340,6 +1502,7 @@ class TestSuiteRunner:
             jms_registry=jms_registry,
             http_executor=http_executor,
             stub_cache=stub_cache,
+            db_executor=db_executor,
         )
 
     async def run_tests_sequential(self, tests: List[TestDefinition], verbose: bool = False) -> List[TestResult]:

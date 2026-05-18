@@ -29,4 +29,10 @@ correlation:
     - from: jsonpath
       expression: $.targetId
       priority: 1
+    - from: jsonpath
+      expression: $.targetId
+      priority: 2
 
+  propagate:
+    to_headers:
+      X-Correlation-Id: "{{correlationId}}"

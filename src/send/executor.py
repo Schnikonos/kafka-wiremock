@@ -53,6 +53,7 @@ class SendExecutor:
         send_dir: str = "/send",
         jms_registry=None,        # Optional JMS registry for JMS support
         http_executor=None,       # Optional HttpExecutor for HTTP sends
+        db_executor=None,         # Optional DBExecutor for type=db sends
     ):
         """Initialize send executor."""
         self.kafka_client = kafka_client
@@ -60,6 +61,7 @@ class SendExecutor:
         self.send_dir = send_dir
         self.jms_registry = jms_registry
         self.http_executor = http_executor  # Optional; HTTP sends skipped if None
+        self.db_executor = db_executor      # Optional; DB sends skipped if None
 
     async def run_send(self, send: SendDefinition, verbose: bool = False) -> SendResult:
         """Execute a single send definition."""
@@ -263,6 +265,49 @@ class SendExecutor:
                             context.update(script_context["context"])
                     except Exception as e:
                         logger.error(f"Send script failed: {e}")
+                        raise
+
+                elif hasattr(item, 'db_ref'):
+                    # DB action (TestDBAction) in send
+                    if self.db_executor is None:
+                        logger.warning(
+                            f"send={send.name!r} DB action '{item.id}' skipped: "
+                            f"no db_executor configured"
+                        )
+                        continue
+                    try:
+                        if item.delay_ms > 0:
+                            await asyncio.sleep(item.delay_ms / 1000.0)
+                        # Need a template_context here — build from current context
+                        _tctx: Dict[str, Any] = {
+                            "sendId": send.name,
+                            "uuid": str(__import__('uuid').uuid4()),
+                            "now": datetime.now(timezone.utc).isoformat() + "Z",
+                        }
+                        _tctx.update(context)
+                        rendered_query = TemplateRenderer.render(item.query, _tctx)
+                        rendered_params = None
+                        if item.params:
+                            rendered_params = {
+                                k: TemplateRenderer.render(str(v), _tctx)
+                                for k, v in item.params.items()
+                            }
+                        db_ctx = self.db_executor.execute(
+                            db_ref=item.db_ref,
+                            operation=item.operation,
+                            query=rendered_query,
+                            params=rendered_params,
+                            step_id=item.id,
+                        )
+                        context.update(db_ctx)
+                        logger.info(
+                            f"send={send.name!r} DB {item.operation} step='{item.id}' "
+                            f"db='{item.db_ref}' done"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"send={send.name!r} DB action '{item.id}' failed: {e}"
+                        )
                         raise
 
         except Exception as e:

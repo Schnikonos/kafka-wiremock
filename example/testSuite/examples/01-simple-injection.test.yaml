@@ -9,6 +9,7 @@ when:
     - message_id: "order1"
       destination: "users.commands"
       headers:
+        X-Correlation-Id: "{{uuid}}"
         my-test-header: "HeaderValue123"
       key: "myMessageKey"
       payload: |

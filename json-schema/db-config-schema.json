@@ -1,0 +1,152 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "db-config-schema.json",
+  "title": "kafka-wiremock DB Configuration",
+  "description": "Schema for example/config/db-config/databases.yaml",
+  "type": "object",
+  "required": ["databases"],
+  "additionalProperties": false,
+  "properties": {
+    "databases": {
+      "type": "object",
+      "description": "Named database connections. Each key is the db_ref used in YAML rules/tests.",
+      "additionalProperties": { "$ref": "#/definitions/database" }
+    }
+  },
+  "definitions": {
+    "database": {
+      "type": "object",
+      "required": ["provider"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider type. Built-ins: oracle, mysql, cassandra. Custom: any registered name.",
+          "examples": ["oracle", "mysql", "cassandra", "postgresql"]
+        },
+        "host": {
+          "type": "string",
+          "description": "Hostname or IP of the database server."
+        },
+        "port": {
+          "type": "integer",
+          "description": "Port number. Defaults: Oracle=1521, MySQL=3306, Cassandra=9042."
+        },
+        "username": {
+          "type": "string",
+          "description": "Database username."
+        },
+        "password": {
+          "type": "string",
+          "description": "Password. Prefer env var DB_<NAME_UPPER>_PASSWORD over storing here."
+        },
+        "service_name": {
+          "type": "string",
+          "description": "[Oracle only] Oracle service name (alternative to dsn)."
+        },
+        "dsn": {
+          "type": "string",
+          "description": "[Oracle only] Full DSN string (alternative to host+service_name)."
+        },
+        "database": {
+          "type": "string",
+          "description": "[MySQL only] Database / schema name to connect to."
+        },
+        "contact_points": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ],
+          "description": "[Cassandra only] One or more contact point hostnames."
+        },
+        "keyspace": {
+          "type": "string",
+          "description": "[Cassandra only] Default keyspace to use after connecting."
+        },
+        "ssl": {
+          "$ref": "#/definitions/ssl_config"
+        },
+        "pool": {
+          "$ref": "#/definitions/pool_config"
+        }
+      }
+    },
+    "ssl_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "TLS/SSL settings for the database connection.",
+      "properties": {
+        "ca_certs": {
+          "type": "string",
+          "description": "Path to CA certificate bundle (PEM). Used by MySQL and Cassandra."
+        },
+        "certfile": {
+          "type": "string",
+          "description": "Path to client certificate file (PEM). Used by MySQL and Cassandra."
+        },
+        "keyfile": {
+          "type": "string",
+          "description": "Path to client private key file (PEM). Used by MySQL and Cassandra."
+        },
+        "verify_cert": {
+          "type": "boolean",
+          "default": true,
+          "description": "[MySQL] Whether to verify the server certificate."
+        },
+        "check_hostname": {
+          "type": "boolean",
+          "default": false,
+          "description": "[Cassandra] Whether to check the server hostname against the certificate."
+        },
+        "wallet_location": {
+          "type": "string",
+          "description": "[Oracle] Path to Oracle wallet directory."
+        },
+        "wallet_password": {
+          "type": "string",
+          "description": "[Oracle] Wallet password. Prefer env var DB_<NAME_UPPER>_WALLET_PASSWORD."
+        },
+        "ssl_server_dn_match": {
+          "type": "boolean",
+          "default": true,
+          "description": "[Oracle] Whether to match the server certificate DN."
+        },
+        "ssl_server_cert_dn": {
+          "type": "string",
+          "description": "[Oracle] Expected Distinguished Name of the server certificate."
+        }
+      }
+    },
+    "pool_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Connection pool settings.",
+      "properties": {
+        "min_size": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "Minimum connections to keep open."
+        },
+        "max_size": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Maximum simultaneous connections."
+        },
+        "acquire_timeout_s": {
+          "type": "number",
+          "minimum": 0.1,
+          "default": 10.0,
+          "description": "Seconds to wait for a free connection before raising TimeoutError."
+        },
+        "validate_on_borrow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check is_connected() before lending a connection; reconnect if stale."
+        }
+      }
+    }
+  }
+}
+

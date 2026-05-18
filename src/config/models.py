@@ -31,9 +31,9 @@ class Fault:
 
 @dataclass
 class Output:
-    """Output message to a destination (Kafka topic, JMS queue, HTTP endpoint, or HTTP response)."""
-    destination: str  # Kafka topic name, JMS queue name, HTTP URL, or empty string for http_response
-    msg_type: str = "kafka"  # YAML key: 'type'. Values: kafka | jms | http | http_response
+    """Output message to a destination (Kafka topic, JMS queue, HTTP endpoint, HTTP response, or DB)."""
+    destination: str  # Kafka topic name, JMS queue name, HTTP URL, or empty string for http_response/db
+    msg_type: str = "kafka"  # YAML key: 'type'. Values: kafka | jms | http | http_response | db
     payload: Optional[str] = None  # Inline payload / HTTP request body / HTTP response body
     payload_file: Optional[str] = None  # External payload file path
     delay_ms: int = 0
@@ -52,6 +52,12 @@ class Output:
     # HTTP response fields (type=http_response — used in HTTP listener rules)
     status_code: int = 200           # HTTP response status code
     response_content_type: Optional[str] = None  # Response Content-Type (default: application/json)
+    # DB-specific fields (type=db)
+    db_ref: Optional[str] = None          # Database reference name (from databases.yaml)
+    db_operation: str = "insert"          # select | insert | update | delete
+    db_query: Optional[str] = None        # Raw SQL/CQL (template placeholders supported)
+    db_params: Optional[Dict[str, Any]] = None  # Optional named bind parameters
+    db_step_id: Optional[str] = None      # Step ID for context storage (db.<id>.*)
 
     @property
     def message_template(self):

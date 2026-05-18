@@ -41,7 +41,8 @@ class KafkaListenerEngine:
                  message_cache = None,
                  topic_metadata_manager: TopicMetadataManager = None,
                  schema_registry: SchemaRegistry = None,
-                 http_executor=None):  # Optional HttpExecutor for type=http rule outputs
+                 http_executor=None,     # Optional HttpExecutor for type=http rule outputs
+                 db_registry=None):      # Optional DBRegistry for type=db rule outputs
         """
         Initialize the listener engine.
 
@@ -64,6 +65,7 @@ class KafkaListenerEngine:
         self.topic_metadata_manager = topic_metadata_manager
         self.schema_registry = schema_registry
         self.http_executor = http_executor  # Optional; HTTP outputs skipped if None
+        self.db_registry = db_registry       # Optional; DB outputs skipped if None
 
         self.consumer: Optional[Consumer] = None
         self.listener_thread: Optional[threading.Thread] = None
@@ -662,7 +664,48 @@ class KafkaListenerEngine:
 
                     # Produce to correct destination based on output type
                     output_type = getattr(output, 'msg_type', 'kafka').lower()
-                    if output_type == 'http':
+                    if output_type == 'db':
+                        # Execute DB action as rule side-effect
+                        if not self.db_registry:
+                            logger.error(
+                                f"DB registry not initialized; cannot execute db output "
+                                f"(rule: {rule.rule_name}). Wire db_registry into KafkaListenerEngine."
+                            )
+                        else:
+                            if not output.db_query:
+                                logger.error(
+                                    f"DB output in rule {rule.rule_name} missing 'query' field"
+                                )
+                            else:
+                                from ..db.executor import DBExecutor as _DBExecutor
+                                _db_exec = _DBExecutor(self.db_registry)
+                                rendered_db_query = TemplateRenderer.render(
+                                    output.db_query, matcher_contexts
+                                )
+                                rendered_db_params = None
+                                if output.db_params:
+                                    rendered_db_params = {
+                                        k: TemplateRenderer.render(str(v), matcher_contexts)
+                                        for k, v in output.db_params.items()
+                                    }
+                                try:
+                                    db_ctx = _db_exec.execute(
+                                        db_ref=output.db_ref,
+                                        operation=output.db_operation,
+                                        query=rendered_db_query,
+                                        params=rendered_db_params,
+                                        step_id=output.db_step_id,
+                                    )
+                                    matcher_contexts.update(db_ctx)
+                                    logger.info(
+                                        f"DB {output.db_operation} executed "
+                                        f"(rule: {rule.rule_name}, db: {output.db_ref})"
+                                    )
+                                except Exception as db_err:
+                                    logger.error(
+                                        f"DB output failed for rule {rule.rule_name}: {db_err}"
+                                    )
+                    elif output_type == 'http':
                         # Fire HTTP call (synchronous bridge from listener thread)
                         if not self.http_executor:
                             logger.error(
