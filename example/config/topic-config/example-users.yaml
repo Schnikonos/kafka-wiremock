@@ -26,8 +26,8 @@ message:
 
 correlation:
   extract:
-    - from: jsonpath
-      expression: $.targetId
+    - from: header
+      expression: X-Correlation-Id
       priority: 1
     - from: jsonpath
       expression: $.targetId

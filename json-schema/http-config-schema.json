@@ -1,0 +1,452 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Schnikonos/kafka-wiremock/blob/main/json-schema/http-config-schema.json",
+  "title": "HTTP Configuration",
+  "description": "Unified schema for all HTTP-related configuration files under config/http-config/. Covers three file types: auth.yaml (authentication profiles), tls.yaml (TLS/mTLS profiles), and mock-servers/*.yaml (inbound mock server definitions). Each file type is identified by its top-level key: 'profiles' with auth entries → authConfig; 'default' or 'profiles' with TLS entries → tlsConfig; 'name' + 'port' → mockServerConfig.",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/authConfig",
+      "title": "Auth Config (config/http-config/auth.yaml)"
+    },
+    {
+      "$ref": "#/definitions/tlsConfig",
+      "title": "TLS Config (config/http-config/tls.yaml)"
+    },
+    {
+      "$ref": "#/definitions/mockServerConfig",
+      "title": "Mock Server Config (config/http-config/mock-servers/*.yaml)"
+    }
+  ],
+  "definitions": {
+
+    "authConfig": {
+      "type": "object",
+      "title": "Authentication Configuration",
+      "description": "config/http-config/auth.yaml — defines named authentication profiles for outbound HTTP calls and optional host-based profile overrides.",
+      "required": ["profiles"],
+      "additionalProperties": false,
+      "properties": {
+        "profiles": {
+          "type": "object",
+          "description": "Named authentication profiles. Each key is a profile name referenced by auth_ref in rules and test injections.",
+          "additionalProperties": { "$ref": "#/definitions/authProfile" }
+        },
+        "host_overrides": {
+          "type": "object",
+          "description": "Map of host (or glob pattern, optionally with port/port-range) to auth profile. Matched top-to-bottom; first match wins.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["profile"],
+            "properties": {
+              "profile": {
+                "type": "string",
+                "description": "Name of the auth profile to apply for matching hosts.",
+                "examples": ["orders_api", "partner_api", "internal_mtls"]
+              }
+            }
+          },
+          "examples": [
+            {
+              "orders-api.internal.corp.com": { "profile": "orders_api" },
+              "*.internal.corp.com": { "profile": "internal_mtls" }
+            }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "profiles": {
+            "orders_api": { "type": "basic", "username": "kafka-wiremock" },
+            "internal_service": { "type": "bearer", "token": "my-static-token" },
+            "partner_api": { "type": "bearer", "token_env": "PARTNER_API_TOKEN" },
+            "oauth_prod": {
+              "type": "token_fetch",
+              "token_url": "https://auth.example.com/oauth/token",
+              "method": "POST",
+              "body": "{\"grant_type\":\"client_credentials\",\"client_id\":\"{{username}}\",\"client_secret\":\"{{password}}\"}",
+              "username": "my-client-id",
+              "token_response_path": "$.access_token",
+              "token_cache_ttl_s": 3600
+            },
+            "internal_mtls": { "type": "certificate", "tls_profile": "mtls_internal" }
+          },
+          "host_overrides": {
+            "orders-api.internal.corp.com": { "profile": "orders_api" },
+            "*.internal.corp.com": { "profile": "internal_mtls" }
+          }
+        }
+      ]
+    },
+
+    "authProfile": {
+      "type": "object",
+      "description": "A single authentication profile. The 'type' field determines which additional fields are required.",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Authentication method to use.",
+          "enum": ["basic", "bearer", "token_fetch", "certificate"],
+          "examples": ["basic", "bearer", "token_fetch", "certificate"]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "basic" } } },
+          "then": { "$ref": "#/definitions/basicAuthProfile" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "bearer" } } },
+          "then": { "$ref": "#/definitions/bearerAuthProfile" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "token_fetch" } } },
+          "then": { "$ref": "#/definitions/tokenFetchAuthProfile" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "certificate" } } },
+          "then": { "$ref": "#/definitions/certificateAuthProfile" }
+        }
+      ]
+    },
+
+    "basicAuthProfile": {
+      "type": "object",
+      "description": "HTTP Basic authentication profile. Password is loaded from env var HTTP_AUTH_<PROFILE_NAME_UPPER>_PASSWORD.",
+      "required": ["type", "username"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "basic" },
+        "username": {
+          "type": "string",
+          "description": "Username for Basic authentication.",
+          "minLength": 1,
+          "examples": ["kafka-wiremock", "api-user"]
+        }
+      }
+    },
+
+    "bearerAuthProfile": {
+      "type": "object",
+      "description": "Bearer token authentication. Provide either 'token' (inline) or 'token_env' (env var name).",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "bearer" },
+        "token": {
+          "type": "string",
+          "description": "Static bearer token value (inline). Mutually exclusive with 'token_env'.",
+          "minLength": 1,
+          "examples": ["my-static-internal-token"]
+        },
+        "token_env": {
+          "type": "string",
+          "description": "Name of the environment variable holding the bearer token. Mutually exclusive with 'token'.",
+          "minLength": 1,
+          "examples": ["PARTNER_API_TOKEN", "SERVICE_TOKEN"]
+        }
+      },
+      "oneOf": [
+        { "required": ["token"], "not": { "required": ["token_env"] } },
+        { "required": ["token_env"], "not": { "required": ["token"] } }
+      ]
+    },
+
+    "tokenFetchAuthProfile": {
+      "type": "object",
+      "description": "OAuth2 / token-fetch authentication. Calls an auth endpoint to obtain a bearer token and caches it.",
+      "required": ["type", "token_url", "token_response_path"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "token_fetch" },
+        "token_url": {
+          "type": "string",
+          "description": "URL of the token endpoint.",
+          "format": "uri",
+          "examples": ["https://auth.example.com/oauth/token"]
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method for the token request. Defaults to POST.",
+          "enum": ["GET", "POST"],
+          "default": "POST"
+        },
+        "body": {
+          "type": "string",
+          "description": "Request body for the token request. Supports {{username}} and {{password}} placeholders (resolved from 'username' field and env var).",
+          "examples": ["{\"grant_type\":\"client_credentials\",\"client_id\":\"{{username}}\",\"client_secret\":\"{{password}}\"}"]
+        },
+        "username": {
+          "type": "string",
+          "description": "Client ID or username. Password / client secret is loaded from env var HTTP_AUTH_<PROFILE_NAME_UPPER>_PASSWORD.",
+          "examples": ["my-client-id"]
+        },
+        "token_response_path": {
+          "type": "string",
+          "description": "JSONPath expression to extract the token from the response body.",
+          "examples": ["$.access_token", "$.token"]
+        },
+        "token_cache_ttl_s": {
+          "type": "integer",
+          "description": "Seconds to cache the fetched token before re-fetching. Defaults to 3600.",
+          "minimum": 0,
+          "default": 3600,
+          "examples": [900, 1800, 3600]
+        }
+      }
+    },
+
+    "certificateAuthProfile": {
+      "type": "object",
+      "description": "mTLS certificate-based authentication. No extra Authorization header; the client certificate is set via the referenced TLS profile.",
+      "required": ["type", "tls_profile"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "certificate" },
+        "tls_profile": {
+          "type": "string",
+          "description": "Name of the TLS profile (from tls.yaml) that provides the client certificate.",
+          "minLength": 1,
+          "examples": ["mtls_internal", "corp_client"]
+        }
+      }
+    },
+
+    "tlsConfig": {
+      "type": "object",
+      "title": "TLS/mTLS Configuration",
+      "description": "config/http-config/tls.yaml — defines TLS/mTLS profiles for outbound HTTPS calls and optional host-based profile overrides.",
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "$ref": "#/definitions/tlsProfile",
+          "description": "Default TLS settings applied when no host_override matches. Omit to use system defaults (no client cert, standard CA verification)."
+        },
+        "profiles": {
+          "type": "object",
+          "description": "Named TLS profiles. Each key is a profile name referenced by tls_ref in rules and test injections.",
+          "additionalProperties": { "$ref": "#/definitions/tlsProfile" }
+        },
+        "host_overrides": {
+          "type": "object",
+          "description": "Map of host (or glob pattern, optionally with port/port-range) to TLS settings. Matched top-to-bottom; first match wins. Values can be an inline TLS profile OR an object with a 'profile' key referencing a named profile.",
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "#/definitions/tlsProfile" },
+              {
+                "type": "object",
+                "required": ["profile"],
+                "additionalProperties": false,
+                "properties": {
+                  "profile": {
+                    "type": "string",
+                    "description": "Reference to a named profile in the 'profiles' map.",
+                    "examples": ["no_cert", "cert_c2", "corp_ca"]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "examples": [
+        {
+          "default": { "verify": false, "client_cert": "/certs/c1.pem", "client_key": "/certs/c1.key" },
+          "profiles": {
+            "no_cert": { "verify": false },
+            "corp_ca": { "verify": "/certs/corp-ca-bundle.pem" }
+          },
+          "host_overrides": {
+            "*.internal.corp.com": { "profile": "corp_ca" },
+            "localhost:9081": { "verify": false }
+          }
+        }
+      ]
+    },
+
+    "tlsProfile": {
+      "type": "object",
+      "description": "A single TLS/mTLS profile configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "verify": {
+          "description": "Server certificate verification. false = skip verification; true = use system CA bundle; string = path to custom CA bundle (PEM).",
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "string", "minLength": 1 }
+          ],
+          "examples": [false, true, "/certs/corp-ca-bundle.pem", "/certs/internal-ca.pem"]
+        },
+        "client_cert": {
+          "type": "string",
+          "description": "Path to the client certificate file (PEM format) for mTLS.",
+          "minLength": 1,
+          "examples": ["/certs/client.pem", "/certs/kafka-wiremock-client.pem"]
+        },
+        "client_key": {
+          "type": "string",
+          "description": "Path to the client private key file (PEM format) for mTLS.",
+          "minLength": 1,
+          "examples": ["/certs/client.key", "/certs/kafka-wiremock-client.key"]
+        },
+        "client_key_password_env": {
+          "type": "string",
+          "description": "Name of the environment variable holding the passphrase for the client private key.",
+          "examples": ["MTLS_CLIENT_KEY_PASSWORD", "TLS_KEY_PW"]
+        }
+      }
+    },
+
+    "mockServerConfig": {
+      "type": "object",
+      "title": "Mock Server Configuration",
+      "description": "config/http-config/mock-servers/*.yaml — defines a single inbound HTTP mock server. Rules with when.type=http and when.connection_ref matching this server's name will be matched against requests received here.",
+      "required": ["name", "port"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique name for this mock server, referenced by connection_ref in rules and http-stub expectations.",
+          "minLength": 1,
+          "examples": ["payment-api", "notification-service", "orders-api"]
+        },
+        "port": {
+          "type": "integer",
+          "description": "TCP port on which this mock server listens.",
+          "minimum": 1,
+          "maximum": 65535,
+          "examples": [8081, 8082, 9090]
+        },
+        "tls": {
+          "type": "object",
+          "description": "Optional TLS configuration to enable HTTPS / mTLS on this server.",
+          "additionalProperties": false,
+          "properties": {
+            "cert": {
+              "type": "string",
+              "description": "Path to the server certificate file (PEM).",
+              "minLength": 1,
+              "examples": ["/certs/server.pem"]
+            },
+            "key": {
+              "type": "string",
+              "description": "Path to the server private key file (PEM).",
+              "minLength": 1,
+              "examples": ["/certs/server.key"]
+            },
+            "ca": {
+              "type": "string",
+              "description": "Path to the CA bundle (PEM) used to verify client certificates in mTLS mode. Omit for plain TLS (no client cert required).",
+              "examples": ["/certs/ca.pem"]
+            },
+            "key_password_env": {
+              "type": "string",
+              "description": "Environment variable name holding the passphrase for the server private key.",
+              "examples": ["TLS_KEY_PW", "SERVER_KEY_PASSWORD"]
+            }
+          }
+        },
+        "default_response": {
+          "type": "object",
+          "description": "Default response returned when no rule or endpoint default matches the incoming request.",
+          "additionalProperties": false,
+          "properties": {
+            "status_code": {
+              "type": "integer",
+              "description": "HTTP status code for the default response.",
+              "minimum": 100,
+              "maximum": 599,
+              "default": 404,
+              "examples": [200, 404, 500]
+            },
+            "payload": {
+              "type": "string",
+              "description": "Response body. Supports template placeholders.",
+              "examples": ["{\"error\": \"not found\"}", "Not Found"]
+            },
+            "headers": {
+              "type": "object",
+              "description": "Response headers to include.",
+              "additionalProperties": { "type": "string" },
+              "examples": [{ "Content-Type": "application/json" }]
+            }
+          }
+        },
+        "endpoints": {
+          "type": "array",
+          "description": "Optional path-specific defaults. Lower priority than matching rules, higher than the server default_response.",
+          "items": { "$ref": "#/definitions/endpointDefault" }
+        }
+      },
+      "examples": [
+        {
+          "name": "payment-api",
+          "port": 8081,
+          "default_response": {
+            "status_code": 404,
+            "payload": "{\"error\": \"not found\", \"server\": \"payment-api\"}",
+            "headers": { "Content-Type": "application/json" }
+          },
+          "endpoints": [
+            {
+              "path": "/health",
+              "method": "GET",
+              "response": {
+                "status_code": 200,
+                "payload": "{\"status\": \"healthy\"}",
+                "headers": { "Content-Type": "application/json" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+
+    "endpointDefault": {
+      "type": "object",
+      "description": "A path-specific default response for a mock server endpoint.",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "URL path pattern (may include {param} placeholders).",
+          "minLength": 1,
+          "examples": ["/health", "/orders/{orderId}", "/payments/{paymentId}"]
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method to match. Omit or use '*' to match any method.",
+          "examples": ["GET", "POST", "PUT", "PATCH", "DELETE", "*"]
+        },
+        "response": {
+          "type": "object",
+          "description": "Default response for this endpoint.",
+          "additionalProperties": false,
+          "properties": {
+            "status_code": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599,
+              "default": 200,
+              "examples": [200, 201, 404]
+            },
+            "payload": {
+              "type": "string",
+              "description": "Response body. Supports template placeholders.",
+              "examples": ["{\"status\": \"ok\"}", "Not Found"]
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "examples": [{ "Content-Type": "application/json" }]
+            }
+          }
+        }
+      }
+    }
+
+  }
+}
+

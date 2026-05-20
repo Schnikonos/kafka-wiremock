@@ -42,7 +42,8 @@ class KafkaListenerEngine:
                  topic_metadata_manager: TopicMetadataManager = None,
                  schema_registry: SchemaRegistry = None,
                  http_executor=None,     # Optional HttpExecutor for type=http rule outputs
-                 db_registry=None):      # Optional DBRegistry for type=db rule outputs
+                 db_registry=None,       # Optional DBRegistry for type=db rule outputs
+                 topic_config_loader=None):  # Optional TopicConfigLoader for correlation
         """
         Initialize the listener engine.
 
@@ -55,6 +56,8 @@ class KafkaListenerEngine:
             topic_metadata_manager: Optional TopicMetadataManager for dynamic topics
             schema_registry: Optional SchemaRegistry for AVRO decoding
             http_executor: Optional HttpExecutor for type=http rule outputs
+            db_registry: Optional DBRegistry for type=db rule outputs
+            topic_config_loader: Optional TopicConfigLoader for correlation extraction/propagation
         """
         self.config_loader = config_loader
         self.kafka_client = kafka_client
@@ -66,6 +69,7 @@ class KafkaListenerEngine:
         self.schema_registry = schema_registry
         self.http_executor = http_executor  # Optional; HTTP outputs skipped if None
         self.db_registry = db_registry       # Optional; DB outputs skipped if None
+        self.topic_config_loader = topic_config_loader  # Optional; correlation skipped if None
 
         self.consumer: Optional[Consumer] = None
         self.listener_thread: Optional[threading.Thread] = None
@@ -588,6 +592,38 @@ class KafkaListenerEngine:
                 for header_name, header_value in message_headers.items():
                     matcher_contexts[f'header.{header_name}'] = header_value
 
+            # Extract correlation ID from input message using topic-config or rule-level override
+            correlation_id = None
+            if self.topic_config_loader:
+                try:
+                    from ..config.topic_config import CorrelationConfig, CorrelationExtractRule
+                    from ..messaging.correlation import extract_correlation_id as _extract_corr
+
+                    corr_config = None
+                    # Rule-level correlation.extract overrides topic-level config
+                    if rule.correlation and rule.correlation.extract:
+                        extract_rules = []
+                        for idx, r in enumerate(rule.correlation.extract):
+                            extract_rules.append(CorrelationExtractRule(
+                                from_type=r.get("from", "header"),
+                                name=r.get("name"),
+                                expression=r.get("expression"),
+                                priority=r.get("priority", idx),
+                            ))
+                        corr_config = CorrelationConfig(extract=extract_rules)
+                    else:
+                        topic_cfg = self.topic_config_loader.get_topic_config(rule.input_destination)
+                        if topic_cfg and topic_cfg.correlation:
+                            corr_config = topic_cfg.correlation
+
+                    if corr_config:
+                        correlation_id = _extract_corr(message_data, message_headers, corr_config)
+                        if correlation_id:
+                            matcher_contexts['correlationId'] = correlation_id
+                            logger.debug(f"Extracted correlationId={correlation_id!r} for rule {rule.rule_name}")
+                except Exception as _corr_err:
+                    logger.debug(f"Correlation extraction skipped: {_corr_err}")
+
             logger.debug(f"Context before custom placeholders: {list(matcher_contexts.keys())}")
             logger.debug(f"Context values: {matcher_contexts}")
 
@@ -647,6 +683,36 @@ class KafkaListenerEngine:
                             rendered_header = TemplateRenderer.render(header_value, matcher_contexts)
                             headers_to_send[header_key] = rendered_header
 
+                    # Determine output type early so correlation propagation can check it
+                    output_type = getattr(output, 'msg_type', 'kafka').lower()
+
+                    # Apply correlation propagation for Kafka/JMS outputs (not HTTP/DB)
+                    if correlation_id and output_type not in ('http', 'db'):
+                        try:
+                            from ..messaging.correlation import apply_propagation as _apply_prop
+                            from ..config.topic_config import CorrelationConfig, CorrelationPropagateRule
+
+                            out_corr_config = None
+                            # Output-level override takes precedence
+                            if output.correlation and output.correlation.to_headers:
+                                out_corr_config = CorrelationConfig(
+                                    propagate=CorrelationPropagateRule(
+                                        to_headers=output.correlation.to_headers
+                                    )
+                                )
+                            elif self.topic_config_loader:
+                                _dest_for_lookup = output.destination
+                                out_topic_cfg = self.topic_config_loader.get_topic_config(_dest_for_lookup)
+                                if out_topic_cfg and out_topic_cfg.correlation:
+                                    out_corr_config = out_topic_cfg.correlation
+
+                            if out_corr_config:
+                                headers_to_send = _apply_prop(
+                                    headers_to_send, correlation_id, out_corr_config
+                                )
+                        except Exception as _prop_err:
+                            logger.debug(f"Correlation propagation skipped: {_prop_err}")
+
                     # Render key if present
                     key_to_send = None
                     if output.key:
@@ -662,8 +728,7 @@ class KafkaListenerEngine:
                         if FaultInjector._should_fault(output.fault.poison_pill):
                             key_to_send = FaultInjector.apply_messagekey_poison_pill(key_to_send)
 
-                    # Produce to correct destination based on output type
-                    output_type = getattr(output, 'msg_type', 'kafka').lower()
+                    # Produce to correct destination based on output type (already set above)
                     if output_type == 'db':
                         # Execute DB action as rule side-effect
                         if not self.db_registry:
@@ -697,8 +762,25 @@ class KafkaListenerEngine:
                                         step_id=output.db_step_id,
                                     )
                                     matcher_contexts.update(db_ctx)
+                                    _result_summary = ""
+                                    if output.db_step_id:
+                                        _pfx = f"db.{output.db_step_id}"
+                                        _ra = db_ctx.get(f"{_pfx}.rows_affected")
+                                        _rc = db_ctx.get(f"{_pfx}.row_count")
+                                        _gk = db_ctx.get(f"{_pfx}.generated_key")
+                                        if _ra is not None:
+                                            _result_summary = f" rows_affected={_ra}"
+                                        if _rc is not None:
+                                            _result_summary += f" row_count={_rc}"
+                                        if _gk is not None:
+                                            _result_summary += f" generated_key={_gk!r}"
+                                        if _matcher_is_verbose():
+                                            _rows = db_ctx.get(f"{_pfx}.rows")
+                                            if _rows is not None:
+                                                _result_summary += f" rows={_rows}"
                                     logger.info(
-                                        f"DB {output.db_operation} executed "
+                                        f"DB {output.db_operation} executed"
+                                        f"{_result_summary} "
                                         f"(rule: {rule.rule_name}, db: {output.db_ref})"
                                     )
                                 except Exception as db_err:

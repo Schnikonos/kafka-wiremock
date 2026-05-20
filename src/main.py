@@ -219,7 +219,8 @@ async def lifespan(app: FastAPI):
             message_cache=message_cache,
             topic_metadata_manager=topic_metadata_manager,
             schema_registry=schema_registry,
-            http_executor=http_executor  # wired after creation below
+            http_executor=http_executor,  # wired after creation below
+            topic_config_loader=config_loader.topic_config_loader,  # correlation support
         )
          # Start listener engines
         listener_engine.start()
@@ -358,6 +359,8 @@ async def lifespan(app: FastAPI):
             http_executor=http_executor,
             stub_cache=http_stub_cache,
             db_executor=db_executor_instance,
+            topic_config_loader=config_loader.topic_config_loader,  # correlation support
+            jms_config_loader=jms_config_loader,                    # correlation support
         )
         test_job_manager = TestJobManager()
 

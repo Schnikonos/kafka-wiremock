@@ -104,6 +104,10 @@ class TestExpectation:
     msg_type: str = "kafka"            # YAML key: 'type'. Values: kafka | jms | http | http-stub
     connection_ref: Optional[str] = None  # JMS queue manager ref (formerly queue_manager_ref)
     source_id: Optional[str] = None    # For type=http: references the message_id of the HTTP injection
+    # Optional name for this expectation result.  When set, the first matched
+    # message's payload fields are exposed as {{expect.<message_id>.<field>}}
+    # template placeholders in subsequent then-phase items.
+    message_id: Optional[str] = None
 
     # HTTP stub fields (type=http-stub only)
     server: Optional[str] = None       # Mock server name (from http-config/mock-servers/)
@@ -434,6 +438,7 @@ class TestValidator:
                     msg_type=msg_type,
                     connection_ref=item_dict.get("connection_ref"),
                     source_id=item_dict.get("source_id"),
+                    message_id=item_dict.get("message_id"),
                     # HTTP stub fields (type=http-stub)
                     server=item_dict.get("server"),
                     path=item_dict.get("path"),

@@ -65,9 +65,9 @@
             [color]="isQueuePaused(q) ? 'primary' : 'warn'"
             [disabled]="togglingQueue.has(q)"
             (click)="toggleQueue(q)"
-            [matTooltip]="isQueuePaused(q) ? 'Resume listening (process accumulated messages)' : 'Pause (messages stay on broker)'">
+            [matTooltip]="isQueuePaused(q) ? 'Resume queue listening (process accumulated messages)' : 'Pause queue (messages stay on broker)'">
             <mat-icon>{{ isQueuePaused(q) ? 'play_arrow' : 'pause' }}</mat-icon>
-            {{ isQueuePaused(q) ? 'Resume' : 'Pause' }}
+            {{ isQueuePaused(q) ? 'Resume queue' : 'Pause queue' }}
           </button>
         </div>
       </div>
@@ -84,9 +84,9 @@
         [color]="listenerStatus.running ? 'warn' : 'primary'"
         [disabled]="togglingListener"
         (click)="toggleListener()"
-        [matTooltip]="listenerStatus.running ? 'Stop the JMS listener engine' : 'Start the JMS listener engine'">
+        [matTooltip]="listenerStatus.running ? 'Pause the JMS listener engine (pause listening to all queues)' : 'Resume the JMS listener engine (resume listening to all queues)'">
         <mat-icon>{{ listenerStatus.running ? 'stop' : 'play_arrow' }}</mat-icon>
-        {{ listenerStatus.running ? 'Stop Listener' : 'Start Listener' }}
+        {{ listenerStatus.running ? 'Pause JMS Listener' : 'Resume JMS Listener' }}
       </button>
     </mat-card-actions>
   </mat-card>

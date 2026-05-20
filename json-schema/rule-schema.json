@@ -333,22 +333,21 @@
     },
     "output": {
       "type": "object",
-      "description": "A single output action when the rule matches (Kafka message, JMS message, or HTTP call).",
-      "required": ["destination"],
+      "description": "A single output action when the rule matches (Kafka message, JMS message, HTTP call, or DB operation).",
       "additionalProperties": false,
       "properties": {
         "destination": {
           "type": "string",
-          "description": "Kafka topic name, JMS queue/topic name, or HTTP(S) URL depending on 'type'.",
+          "description": "Kafka topic name, JMS queue/topic name, or HTTP(S) URL depending on 'type'. Not required for type=http_response or type=db.",
           "minLength": 1,
           "examples": ["payments.input", "shipments.output", "ORDERS_QUEUE", "https://api.example.com/notify"]
         },
         "type": {
           "type": "string",
-          "description": "Output type: kafka (default), jms, http (outbound call), or http_response (return to HTTP caller).",
-          "enum": ["kafka", "jms", "http", "http_response"],
+          "description": "Output type: kafka (default), jms, http (outbound call), http_response (return to HTTP caller), or db (database operation).",
+          "enum": ["kafka", "jms", "http", "http_response", "db"],
           "default": "kafka",
-          "examples": ["kafka", "jms", "http", "http_response"]
+          "examples": ["kafka", "jms", "http", "http_response", "db"]
         },
         "connection_ref": {
           "type": "string",
@@ -457,20 +456,71 @@
           "type": "string",
           "description": "Response Content-Type header value (type=http_response only). Defaults to application/json.",
           "examples": ["application/json", "text/plain", "application/xml"]
+        },
+        "db": {
+          "type": "string",
+          "description": "Database reference name from databases.yaml (type=db only).",
+          "minLength": 1,
+          "examples": ["my_oracle", "cassandra_prod", "mysql_orders"]
+        },
+        "operation": {
+          "type": "string",
+          "description": "Database operation to execute (type=db only).",
+          "enum": ["insert", "update", "delete", "select"],
+          "default": "insert",
+          "examples": ["insert", "update", "delete", "select"]
+        },
+        "query": {
+          "type": "string",
+          "description": "SQL or CQL query to execute (type=db only). Supports template placeholders.",
+          "minLength": 1,
+          "examples": [
+            "INSERT INTO orders (id, status) VALUES (:id, :status)",
+            "UPDATE orders SET status = :status WHERE id = :id"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "description": "Named bind parameters for the query (type=db only). Values support template placeholders.",
+          "additionalProperties": true,
+          "examples": [{ "id": "{{$.orderId}}", "status": "PROCESSED" }]
+        },
+        "id": {
+          "type": "string",
+          "description": "Step ID for this DB output (type=db only). Result rows are stored as db.<id>.* in the rule context for subsequent steps.",
+          "minLength": 1,
+          "examples": ["insert_order", "update_status", "fetch_result"]
         }
       },
-      "oneOf": [
+      "allOf": [
         {
-          "required": ["payload"],
-          "not": { "required": ["payload_file"] }
+          "if": {
+            "not": {
+              "properties": { "type": { "enum": ["http_response", "db"] } },
+              "required": ["type"]
+            }
+          },
+          "then": { "required": ["destination"] }
         },
         {
-          "required": ["payload_file"],
-          "not": { "required": ["payload"] }
-        },
-        {
-          "properties": { "type": { "enum": ["http_response", "http"] } },
-          "not": { "anyOf": [{ "required": ["payload"] }, { "required": ["payload_file"] }] }
+          "if": {
+            "not": {
+              "properties": { "type": { "enum": ["http", "http_response", "db"] } },
+              "required": ["type"]
+            }
+          },
+          "then": {
+            "oneOf": [
+              {
+                "required": ["payload"],
+                "not": { "required": ["payload_file"] }
+              },
+              {
+                "required": ["payload_file"],
+                "not": { "required": ["payload"] }
+              }
+            ]
+          }
         }
       ]
     },

@@ -169,26 +169,93 @@ export class ExportService {
          </div>`
       : '';
 
-    const sentHtml = (run.sent_messages?.length)
+    const sentHtml = '';   // merged into whenHtml below
+    const recvHtml = '';   // merged into thenHtml below
+
+    // Helper: build a single DB action item HTML (no phase badge needed — context gives phase)
+    const dbActionItemHtml = (a: any): string => {
+      const opColor: Record<string,string> = {select:'#1b5e20',insert:'#0d47a1',update:'#e65100',delete:'#b71c1c'};
+      const opBg: Record<string,string> = {select:'#e8f5e9',insert:'#e3f2fd',update:'#fff3e0',delete:'#ffebee'};
+      const resultParts: string[] = [];
+      if (a.rows_affected != null) resultParts.push(`rows affected: <strong>${a.rows_affected}</strong>`);
+      if (a.row_count != null) resultParts.push(`rows returned: <strong>${a.row_count}</strong>`);
+      if (a.generated_key != null) resultParts.push(`generated key: <code>${this.esc(String(a.generated_key))}</code>`);
+      const queryHtml = a.query
+        ? `<pre style="font-size:11px;background:#f5f5f5;padding:4px 8px;border-radius:3px;margin:4px 0;white-space:pre-wrap;word-break:break-all;color:#333">${this.esc(a.query)}</pre>`
+        : '';
+      const paramsHtml = a.params
+        ? `<div style="font-size:11px;color:#666;margin:2px 0">params: <code>${this.esc(JSON.stringify(a.params))}</code></div>`
+        : '';
+      const rowsHtml = (a.rows?.length)
+        ? `<pre style="background:#1e1e1e;color:#d4d4d4;padding:6px;border-radius:3px;font-size:11px;margin:4px 0;overflow-x:auto">${this.esc(JSON.stringify(a.rows, null, 2))}</pre>`
+        : '';
+      return `<div style="border:1px solid #eee;border-left:3px solid #ff9800;border-radius:4px;padding:8px 10px;margin-bottom:8px">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+          <span style="background:${opBg[a.operation]||'#eee'};color:${opColor[a.operation]||'#333'};font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px">${this.esc(a.operation?.toUpperCase())}</span>
+          <span style="font-size:11px;color:#777">step: <code>${this.esc(a.step_id)}</code></span>
+          <span style="font-size:11px;color:#777">db: <code>${this.esc(a.db_ref)}</code></span>
+        </div>
+        ${queryHtml}${paramsHtml}
+        <div style="font-size:12px;color:#555">${resultParts.join(' &nbsp;|&nbsp; ')}</div>
+        ${rowsHtml}
+      </div>`;
+    };
+
+    // Build interleaved When items (sent msgs + when DB actions), sorted by timestamp
+    const whenItems: any[] = [
+      ...(run.sent_messages || []).map((m: any) => ({ ...m, _type: 'sent' })),
+      ...(run.db_actions || []).filter((a: any) => a.phase === 'when').map((a: any) => ({ ...a, _type: 'db_action' })),
+    ].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+
+    const whenHtml = whenItems.length
       ? `<div class="section">
-           <h4>Sent Messages (${run.sent_messages.length})</h4>
-           ${run.sent_messages.map((msg: any) => `
-             <div class="msg sent">
-               <div class="msg-topic">→ ${this.esc(msg.topic || '')}</div>
-               <pre>${this.esc(JSON.stringify(msg.payload, null, 2))}</pre>
-               ${msg.headers ? `<div style="font-size:11px;color:#888;margin-top:4px">Headers: ${this.esc(JSON.stringify(msg.headers))}</div>` : ''}
-             </div>`).join('')}
+           <h4>When (${whenItems.length} item${whenItems.length !== 1 ? 's' : ''})</h4>
+           ${whenItems.map((item: any) => {
+             if (item._type === 'sent') {
+               return `<div class="msg sent">
+                 <div class="msg-topic">→ ${this.esc(item.topic || '')}</div>
+                 <pre>${this.esc(JSON.stringify(item.payload, null, 2))}</pre>
+                 ${item.headers && Object.keys(item.headers).length > 0 ? `<div style="font-size:11px;color:#888;margin-top:4px">Headers: ${this.esc(JSON.stringify(item.headers))}</div>` : ''}
+               </div>`;
+             } else {
+               return dbActionItemHtml(item);
+             }
+           }).join('')}
          </div>`
       : '';
 
-    const recvHtml = (run.received_messages?.length)
+    // Build interleaved Then items (received msgs + then DB actions), sorted by timestamp
+    const thenItems: any[] = [
+      ...(run.received_messages || []).map((m: any) => ({ ...m, _type: 'received' })),
+      ...(run.db_actions || []).filter((a: any) => a.phase === 'then').map((a: any) => ({ ...a, _type: 'db_action' })),
+    ].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+
+    const thenHtml = thenItems.length
       ? `<div class="section">
-           <h4>Received Messages (${run.received_messages.length})</h4>
-           ${run.received_messages.map((msg: any) => {
-             const condOk = msg.conditions_matched === msg.total_conditions;
-             const condBadge = msg.conditions_matched !== undefined
-               ? `<span style="background:${condOk ? '#c8e6c9' : '#ffcdd2'};color:${condOk ? '#1b5e20' : '#b71c1c'};padding:1px 5px;border-radius:3px;font-size:11px;">${msg.conditions_matched}/${msg.total_conditions} cond</span>`
+           <h4>Then (${thenItems.length} item${thenItems.length !== 1 ? 's' : ''})</h4>
+           ${thenItems.map((item: any) => {
+             if (item._type === 'db_action') {
+               return dbActionItemHtml(item);
+             }
+             // received message
+             const msg = item;
+             const corrMismatch = msg.correlation_mismatch;
+             const corrMismatchHtml = corrMismatch
+               ? `<div style="font-size:11px;background:#fff8f0;border:1px solid #ffcc80;border-radius:4px;padding:5px 8px;margin:4px 0;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+                    <strong style="color:#e65100">Correlation mismatch</strong>
+                    ${corrMismatch.target?.header ? `header: <code>${this.esc(corrMismatch.target.header)}</code>` : ''}
+                    ${corrMismatch.target?.jsonpath ? `jsonpath: <code>${this.esc(corrMismatch.target.jsonpath)}</code>` : ''}
+                    expected: <code style="color:#2e7d32">${this.esc(corrMismatch.expected || '')}</code>
+                    actual: <code style="color:#c62828">${this.esc(corrMismatch.actual ?? '(not found)')}</code>
+                    ${corrMismatch.error ? `<span style="color:#b71c1c;font-style:italic">error: ${this.esc(corrMismatch.error)}</span>` : ''}
+                  </div>`
                : '';
+             const condOk = !corrMismatch && msg.conditions_matched === msg.total_conditions;
+             const condBadge = corrMismatch
+               ? `<span style="background:#fff3e0;color:#e65100;border:1px solid #ffb74d;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">correlation mismatch</span>`
+               : msg.conditions_matched !== undefined
+                 ? `<span style="background:${condOk ? '#c8e6c9' : '#ffcdd2'};color:${condOk ? '#1b5e20' : '#b71c1c'};padding:1px 5px;border-radius:3px;font-size:11px;">${msg.conditions_matched}/${msg.total_conditions} cond</span>`
+                 : '';
              const failedConds = (msg.failed_conditions?.length)
                ? `<div class="failed-cond"><strong>Failed conditions:</strong>
                     ${msg.failed_conditions.map((fc: any) => {
@@ -207,15 +274,18 @@ export class ExportService {
                     }).join('')}
                   </div>`
                : '';
-             return `
-               <div class="msg received">
-                 <div class="msg-topic">← ${this.esc(msg.topic || '')} ${condBadge}</div>
-                 <pre>${this.esc(JSON.stringify(msg.payload, null, 2))}</pre>
-                 ${failedConds}
-               </div>`;
+             return `<div class="msg received">
+               <div class="msg-topic">← ${this.esc(msg.topic || '')} ${condBadge}</div>
+               ${corrMismatchHtml}
+               <pre>${this.esc(JSON.stringify(msg.payload, null, 2))}</pre>
+               ${msg.headers && Object.keys(msg.headers).length > 0 ? `<div style="font-size:11px;color:#888;margin-top:4px">Headers: ${this.esc(JSON.stringify(msg.headers))}</div>` : ''}
+               ${failedConds}
+             </div>`;
            }).join('')}
          </div>`
       : '';
+
+    const dbActionsHtml = '';  // merged into whenHtml / thenHtml above
 
     const closestHtml = run.closest_match
       ? (() => {
@@ -250,7 +320,7 @@ export class ExportService {
       ? `<div class="section"><pre>${this.esc(run.raw)}</pre></div>`
       : '';
 
-    return errorsHtml + expHtml + sentHtml + recvHtml + closestHtml + rawHtml;
+    return errorsHtml + expHtml + whenHtml + closestHtml + thenHtml + rawHtml;
   }
 
   // ─── Test Suite Results ───────────────────────────────────────────────────────

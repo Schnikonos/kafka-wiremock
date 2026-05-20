@@ -168,16 +168,24 @@
           "$ref": "#/definitions/faultInjection"
         }
       },
-      "oneOf": [
-        {
-          "required": ["payload"],
-          "not": { "required": ["payload_file"] }
-        },
-        {
-          "required": ["payload_file"],
-          "not": { "required": ["payload"] }
+      "if": {
+        "not": {
+          "properties": { "type": { "const": "http" } },
+          "required": ["type"]
         }
-      ]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "required": ["payload"],
+            "not": { "required": ["payload_file"] }
+          },
+          {
+            "required": ["payload_file"],
+            "not": { "required": ["payload"] }
+          }
+        ]
+      }
     },
     "inlineScript": {
       "type": "object",

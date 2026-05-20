@@ -429,6 +429,42 @@ class JMSListenerEngine:
                     matcher_contexts[key] = value
                     matcher_contexts[f"$.{key}"] = value
 
+            # Add headers to context
+            if message_headers:
+                matcher_contexts["headerMap"] = message_headers
+                for header_name, header_value in message_headers.items():
+                    matcher_contexts[f"header.{header_name}"] = header_value
+
+            # Extract correlation ID from input message using JMS config
+            correlation_id = None
+            try:
+                from ..messaging.correlation import extract_correlation_id as _extract_corr
+                corr_config = None
+                # Rule-level correlation.extract overrides queue-level config
+                if rule.correlation and rule.correlation.extract:
+                    from ..config.topic_config import CorrelationConfig, CorrelationExtractRule
+                    extract_rules = []
+                    for idx, r in enumerate(rule.correlation.extract):
+                        extract_rules.append(CorrelationExtractRule(
+                            from_type=r.get("from", "header"),
+                            name=r.get("name"),
+                            expression=r.get("expression"),
+                            priority=r.get("priority", idx),
+                        ))
+                    corr_config = CorrelationConfig(extract=extract_rules)
+                else:
+                    jms_cfg = self.jms_config_loader.get_config(rule.input_destination)
+                    if jms_cfg and jms_cfg.correlation:
+                        corr_config = jms_cfg.correlation  # raw dict — normalised inside helper
+
+                if corr_config is not None:
+                    correlation_id = _extract_corr(message_data, message_headers, corr_config)
+                    if correlation_id:
+                        matcher_contexts["correlationId"] = correlation_id
+                        logger.debug(f"Extracted correlationId={correlation_id!r} for JMS rule {rule.rule_name}")
+            except Exception as _corr_err:
+                logger.debug(f"JMS correlation extraction skipped: {_corr_err}")
+
             # Execute custom placeholders
             if self.custom_placeholder_registry:
                 try:
@@ -478,6 +514,33 @@ class JMSListenerEngine:
                     # Determine target client (Kafka, JMS, or HTTP)
                     msg_type = output.msg_type.lower()
 
+                    # Apply correlation propagation for non-HTTP outputs
+                    output_headers = dict(output.headers or {})
+                    if correlation_id and msg_type != "http":
+                        try:
+                            from ..messaging.correlation import apply_propagation as _apply_prop
+                            from ..config.topic_config import CorrelationConfig, CorrelationPropagateRule
+
+                            out_corr_config = None
+                            # Output-level override
+                            if output.correlation and output.correlation.to_headers:
+                                out_corr_config = CorrelationConfig(
+                                    propagate=CorrelationPropagateRule(
+                                        to_headers=output.correlation.to_headers
+                                    )
+                                )
+                            elif msg_type == "jms":
+                                # JMS output → look up jms-config
+                                out_jms_cfg = self.jms_config_loader.get_config(rendered_destination)
+                                if out_jms_cfg and out_jms_cfg.correlation:
+                                    out_corr_config = out_jms_cfg.correlation
+                            # (kafka outputs: no topic_config_loader available in JMS listener)
+
+                            if out_corr_config is not None:
+                                output_headers = _apply_prop(output_headers, correlation_id, out_corr_config)
+                        except Exception as _prop_err:
+                            logger.debug(f"JMS correlation propagation skipped: {_prop_err}")
+
                     if msg_type == "http":
                         # Fire HTTP call (sync bridge from listener thread via asyncio.run)
                         if not self.http_executor:
@@ -525,17 +588,14 @@ class JMSListenerEngine:
                             message_id = client.put_message(
                                 destination=rendered_destination,
                                 payload=json.dumps(message_payload) if isinstance(message_payload, dict) else message_payload,
-                                headers=output.headers,
+                                headers=output_headers,
                             )
                             if message_id:
                                 logger.info(
                                     f"Output {message_id} sent to JMS queue {rendered_destination} "
                                     f"(queue_manager={qm_ref})"
                                 )
-                                # Cache the produced message so test expectations can
-                                # observe it from the in-memory cache rather than
-                                # polling IBM MQ directly (which would race with the
-                                # listener's own MQGET on the shared hConn).
+                                # Cache the produced message
                                 if self.message_cache:
                                     try:
                                         self.message_cache.add_message(
@@ -543,7 +603,7 @@ class JMSListenerEngine:
                                             value=message_payload,
                                             message_format="json",
                                             timestamp=int(time.time() * 1000),
-                                            headers=output.headers or {},
+                                            headers=output_headers or {},
                                             key=None,
                                         )
                                     except Exception as cache_err:
