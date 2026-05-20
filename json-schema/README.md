@@ -14,6 +14,8 @@ Use them in your IDE for auto-complete and inline validation, or in CI/CD pipeli
 | [`jms-schema.json`](#jms-schemajson) | JMS queue-manager connections **and** per-destination config | `config/queue-managers.yaml` · `config/jms-config/**/*.yaml` |
 | [`test-suite-schema.json`](#test-suite-schemajson) | Test suite definitions | `testSuite/**/*.test.yaml` |
 | [`send-schema.json`](#send-schemajson) | Send (injection-only) definitions | `send/**/*.send.yaml` |
+| [`db-config-schema.json`](#db-config-schemajson) | Database connection definitions | `config/db-config/databases.yaml` |
+| [`http-config-schema.json`](#http-config-schemajson) | HTTP auth, TLS, and mock-server configuration | `config/http-config/auth.yaml` · `config/http-config/tls.yaml` · `config/http-config/mock-servers/*.yaml` |
 
 > **Deprecated files** – `jms-config-schema.json` and `jms-queue-config-schema.json` have been merged into `jms-schema.json`.  
 > They still exist for backwards compatibility but point all definitions to the unified schema.
@@ -228,7 +230,9 @@ Add to your workspace settings (`.vscode/settings.json`):
     "./json-schema/topic-config-schema.json":  "config/topic-config/**/*.yaml",
     "./json-schema/jms-schema.json":           ["config/queue-managers.yaml", "config/jms-config/**/*.yaml"],
     "./json-schema/test-suite-schema.json":    "testSuite/**/*.test.yaml",
-    "./json-schema/send-schema.json":          "send/**/*.send.yaml"
+    "./json-schema/send-schema.json":          "send/**/*.send.yaml",
+    "./json-schema/db-config-schema.json":     "config/db-config/databases.yaml",
+    "./json-schema/http-config-schema.json":   ["config/http-config/auth.yaml", "config/http-config/tls.yaml", "config/http-config/mock-servers/*.yaml"]
   }
 }
 ```

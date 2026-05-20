@@ -10,6 +10,8 @@ import { SnackBarService } from '../../core/services/snack-bar.service';
 import { TopicConfigComponent } from './topic-config.component';
 import { JmsConfigComponent } from './jms-config.component';
 import { ProvidersInfoComponent } from './providers-info.component';
+import { DbConfigComponent } from './db-config.component';
+import {MatTooltip} from '@angular/material/tooltip';
 
 @Component({
   selector: 'app-config-view',
@@ -25,7 +27,9 @@ import { ProvidersInfoComponent } from './providers-info.component';
     MatProgressSpinnerModule,
     TopicConfigComponent,
     JmsConfigComponent,
-    ProvidersInfoComponent
+    ProvidersInfoComponent,
+    DbConfigComponent,
+    MatTooltip,
   ]
 })
 export class ConfigViewComponent implements OnInit {
@@ -43,6 +47,10 @@ export class ConfigViewComponent implements OnInit {
   providers: any = null;
   providersLoading = false;
 
+  // Databases
+  dbConfig: any = null;
+  dbLoading = false;
+
   constructor(
     private configService: ConfigService,
     private snackBar: SnackBarService
@@ -56,6 +64,7 @@ export class ConfigViewComponent implements OnInit {
     this.loadTopics();
     this.loadQueueManagers();
     this.loadProviders();
+    this.loadDatabases();
   }
 
   loadTopics(): void {
@@ -100,6 +109,20 @@ export class ConfigViewComponent implements OnInit {
     );
   }
 
+  loadDatabases(): void {
+    this.dbLoading = true;
+    this.configService.getDatabaseStatus().subscribe(
+      (data) => {
+        this.dbConfig = data;
+        this.dbLoading = false;
+      },
+      (error) => {
+        // DB is optional — don't show error if not configured
+        this.dbLoading = false;
+      }
+    );
+  }
+
   onTabChange(index: number): void {
     this.selectedTab = index;
   }
@@ -121,6 +144,7 @@ export class ConfigViewComponent implements OnInit {
       topics: this.topicConfig,
       queueManagers: this.jmsConfig,
       providers: this.providers,
+      databases: this.dbConfig,
       timestamp: new Date().toISOString()
     };
 
@@ -136,5 +160,3 @@ export class ConfigViewComponent implements OnInit {
     this.snackBar.success('Configuration downloaded');
   }
 }
-
-

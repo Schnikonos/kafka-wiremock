@@ -23,13 +23,19 @@ def set_custom_placeholder_registry(registry):
 class TemplateRenderer:
     """Renders message templates with context substitution."""
 
-    # ...existing code...
-    PLACEHOLDER_PATTERN = re.compile(r'\{\{[\s]*([a-zA-Z0-9_.$\[\](),\-+]+)[\s]*\}\}')
+    # Lazy match between {{ }} — allows | pipes, quoted literals, and spaces
+    # e.g. {{$.field}}, {{a.b | a.c | "default"}}, {{uuid}}
+    PLACEHOLDER_PATTERN = re.compile(r'\{\{\s*(.*?)\s*\}\}', re.DOTALL)
 
     @staticmethod
     def render(template: Any, context: Dict[str, Any]) -> str:
         """
         Render a template with context substitution.
+
+        Supports fallback / OR syntax:  {{expr1 | expr2 | "literal default"}}
+        Expressions are tried left-to-right; the first one that resolves to a
+        non-None value is used.  A token wrapped in single or double quotes is
+        treated as a literal string default.
 
         Args:
             template: The template string (or object to convert to string)
@@ -44,19 +50,14 @@ class TemplateRenderer:
         template_str = str(template)
 
         def replace_placeholder(match):
-            key = match.group(1).strip()
-            value = TemplateRenderer._resolve_placeholder(context, key)
+            expression = match.group(1).strip()
+            value = TemplateRenderer._resolve_with_fallbacks(context, expression)
 
-            # Check if key actually exists in context (even if value is None)
-            key_exists = (key in context or
-                         key.startswith('header.') or
-                         key == 'uuid' or key == 'now' or
-                         key.startswith('now') or
-                         key.startswith('randomInt(') or
-                         (hasattr(context, 'get') and context.get(key) is not None))
-
-            if value is None and not key_exists:
-                logger.warning(f"Template placeholder '{{{{ {key} }}}}' not found in context. Available keys: {list(context.keys())}")
+            if value is None:
+                logger.warning(
+                    f"Template placeholder '{{{{ {expression} }}}}' not found in context. "
+                    f"Available keys: {list(context.keys())}"
+                )
                 # Return the original placeholder if not found
                 return match.group(0)
 
@@ -68,6 +69,49 @@ class TemplateRenderer:
             return str(value) if value is not None else ""
 
         return TemplateRenderer.PLACEHOLDER_PATTERN.sub(replace_placeholder, template_str)
+
+    @staticmethod
+    def _resolve_with_fallbacks(context: Dict[str, Any], expression: str) -> Optional[Any]:
+        """
+        Resolve a placeholder expression that may contain pipe-separated fallbacks.
+
+        Syntax: ``expr1 | expr2 | "literal default"``
+
+        Tokens are tried left-to-right.  A token enclosed in single or double
+        quotes is treated as a literal string value and is always returned (it
+        acts as the final fallback).  Bare numeric tokens (e.g. ``99.99``,
+        ``0``, ``-3``) are also treated as literal values when no preceding
+        token resolves, so the natural Python type (int/float) is preserved
+        and renders as bare text in JSON templates (not quoted).
+
+        Args:
+            context: Context dictionary for substitution.
+            expression: The raw expression string (between {{ and }}).
+
+        Returns:
+            The first resolved non-None value, or None if all alternatives fail.
+        """
+        import ast as _ast
+        tokens = [t.strip() for t in expression.split('|')]
+        for token in tokens:
+            # Quoted literal — return immediately as-is (string)
+            if (token.startswith('"') and token.endswith('"')) or \
+               (token.startswith("'") and token.endswith("'")):
+                return token[1:-1]
+            # Bare numeric literal (int or float, with optional leading minus)
+            # e.g. 99.99  0  -3  — use ast.literal_eval so only real numeric
+            # literals are matched; booleans are excluded intentionally.
+            try:
+                parsed = _ast.literal_eval(token)
+                if isinstance(parsed, (int, float)) and not isinstance(parsed, bool):
+                    return parsed
+            except (ValueError, SyntaxError):
+                pass
+            # Context / built-in lookup
+            value = TemplateRenderer._resolve_placeholder(context, token)
+            if value is not None:
+                return value
+        return None
 
     @staticmethod
     def _resolve_placeholder(context: Dict[str, Any], key: str) -> Optional[Any]:

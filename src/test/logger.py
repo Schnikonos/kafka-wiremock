@@ -30,6 +30,23 @@ class LogMessage:
     conditions_matched: int = 0
     total_conditions: int = 0
     failed_conditions: Optional[List[Dict[str, Any]]] = None  # Details of failed conditions
+    correlation_mismatch: Optional[Dict[str, Any]] = None  # {target, expected, actual} when correlation fails
+
+
+@dataclass
+class LogDBAction:
+    """A logged DB action (when or then phase)."""
+    timestamp: str
+    phase: str          # "when" or "then"
+    step_id: str
+    db_ref: str
+    operation: str      # select | insert | update | delete
+    query: Optional[str] = None         # Rendered SQL query
+    params: Optional[Dict[str, Any]] = None  # Rendered params (if any)
+    rows_affected: Optional[int] = None
+    row_count: Optional[int] = None
+    generated_key: Optional[Any] = None
+    rows: Optional[List[Any]] = None    # Only populated in verbose mode
 
 
 class TestLogger:
@@ -60,6 +77,7 @@ class TestLogger:
         self.sent_messages: List[LogMessage] = []
         self.received_messages: List[LogMessage] = []
         self.skipped_messages: List[LogMessage] = []
+        self.db_actions: List[LogDBAction] = []
         self.expectations_results: List[Dict[str, Any]] = []
 
     def log_sent_message(
@@ -92,7 +110,8 @@ class TestLogger:
         total_conditions: int = 0,
         headers: Optional[Dict[str, str]] = None,
         key: Optional[str] = None,
-        failed_conditions: Optional[List[Dict[str, Any]]] = None
+        failed_conditions: Optional[List[Dict[str, Any]]] = None,
+        correlation_mismatch: Optional[Dict[str, Any]] = None,
     ):
         """Log a message received during test validation (then phase)."""
         msg = LogMessage(
@@ -106,7 +125,8 @@ class TestLogger:
             correlation_matched=correlation_matched,
             conditions_matched=conditions_matched,
             total_conditions=total_conditions,
-            failed_conditions=failed_conditions
+            failed_conditions=failed_conditions,
+            correlation_mismatch=correlation_mismatch,
         )
         self.received_messages.append(msg)
 
@@ -153,6 +173,38 @@ class TestLogger:
             key=key
         )
         self.skipped_messages.append(msg)
+
+    def log_db_action(
+        self,
+        phase: str,
+        step_id: str,
+        db_ref: str,
+        operation: str,
+        db_context: Dict[str, Any],
+        query: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ):
+        """Log the result of a DB action step (when or then phase).
+        rows_affected is always stored; full rows data only in verbose mode."""
+        prefix = f"db.{step_id}"
+        rows_affected = db_context.get(f"{prefix}.rows_affected")
+        row_count = db_context.get(f"{prefix}.row_count")
+        generated_key = db_context.get(f"{prefix}.generated_key")
+        rows = db_context.get(f"{prefix}.rows") if self.verbose else None
+        action = LogDBAction(
+            timestamp=datetime.now(timezone.utc).isoformat() + "Z",
+            phase=phase,
+            step_id=step_id,
+            db_ref=db_ref,
+            operation=operation,
+            query=query,
+            params=params if params else None,
+            rows_affected=rows_affected,
+            row_count=row_count,
+            generated_key=generated_key,
+            rows=rows,
+        )
+        self.db_actions.append(action)
 
     def log_expectation_result(self, result: Dict[str, Any]):
         """Log expectation result."""
@@ -268,6 +320,11 @@ class TestLogger:
                 run_entry["received_messages"] = [self._msg_to_dict(m) for m in self.received_messages]
             if self.verbose and self.skipped_messages:
                 run_entry["skipped_messages"] = [self._msg_to_dict(m) for m in self.skipped_messages]
+            if self.db_actions:
+                run_entry["db_actions"] = [
+                    {k: v for k, v in asdict(a).items() if v is not None}
+                    for a in self.db_actions
+                ]
 
             # Match summary
             if status == "PASSED":

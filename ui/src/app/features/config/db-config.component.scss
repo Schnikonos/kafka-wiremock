@@ -1,0 +1,209 @@
+.db-config-container {
+  padding: 0;
+}
+
+.section-toolbar {
+  border-radius: 4px 4px 0 0;
+  margin-bottom: 0;
+
+  .toolbar-icon {
+    margin-right: 8px;
+  }
+
+  .spacer {
+    flex: 1;
+  }
+}
+
+/* ── Loading / empty states ─────────────────────────────── */
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 16px;
+
+  .loading-text {
+    margin-top: 16px;
+    color: #666;
+    font-size: 14px;
+  }
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 16px;
+  text-align: center;
+
+  .empty-icon {
+    font-size: 56px;
+    height: 56px;
+    width: 56px;
+    color: #ccc;
+    margin-bottom: 16px;
+  }
+
+  .empty-message {
+    font-size: 16px;
+    color: #555;
+    margin: 0 0 8px;
+  }
+
+  .empty-hint {
+    font-size: 13px;
+    color: #999;
+    margin: 0;
+
+    code {
+      background: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+    }
+  }
+}
+
+/* ── Table ───────────────────────────────────────────────── */
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.db-table {
+  width: 100%;
+
+  th.mat-header-cell {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    white-space: nowrap;
+  }
+
+  td.mat-cell {
+    font-size: 13px;
+    padding: 10px 16px;
+  }
+
+  .db-row:hover {
+    background: #f9f9f9;
+  }
+}
+
+.num-col {
+  text-align: center;
+  width: 80px;
+}
+
+/* ── Cell styles ─────────────────────────────────────────── */
+
+.db-name {
+  font-weight: 600;
+  color: #333;
+}
+
+.host-label {
+  font-family: monospace;
+  font-size: 12px;
+  color: #555;
+}
+
+.provider-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #e3f2fd;
+  color: #1565c0;
+
+  &.provider-unavailable {
+    background: #fff3e0;
+    color: #e65100;
+  }
+}
+
+.pool-value {
+  display: inline-block;
+  min-width: 28px;
+  text-align: center;
+  font-weight: 500;
+  font-size: 14px;
+  border-radius: 4px;
+  padding: 2px 6px;
+
+  &.pool-available {
+    background: #e8f5e9;
+    color: #2e7d32;
+  }
+
+  &.pool-in-use {
+    background: #fff8e1;
+    color: #f57f17;
+  }
+
+  &.pool-max {
+    background: #f5f5f5;
+    color: #424242;
+  }
+}
+
+/* ── Status badge ────────────────────────────────────────── */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
+
+  .status-icon {
+    font-size: 16px;
+    height: 16px;
+    width: 16px;
+  }
+
+  &.status-active {
+    background: #e8f5e9;
+    color: #2e7d32;
+  }
+
+  &.status-unknown {
+    background: #f5f5f5;
+    color: #757575;
+  }
+}
+
+/* ── Pool legend ─────────────────────────────────────────── */
+
+.pool-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 12px 16px;
+  border-top: 1px solid #e0e0e0;
+  background: #fafafa;
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #777;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+
+    &.available-dot { background: #4caf50; }
+    &.in-use-dot    { background: #ff9800; }
+    &.max-dot       { background: #9e9e9e; }
+  }
+}
+

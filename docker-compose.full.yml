@@ -86,6 +86,26 @@ services:
         --partitions 2 \
         --replication-factor 1 \
         --config retention.ms=43200000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic orders.input \
+        --partitions 2 \
+        --replication-factor 1 \
+        --config retention.ms=43200000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic orders.output \
+        --partitions 2 \
+        --replication-factor 1 \
+        --config retention.ms=43200000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic payments.avro \
+        --partitions 2 \
+        --replication-factor 1 \
+        --config retention.ms=43200000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+        --topic audit.avro \
+        --partitions 2 \
+        --replication-factor 1 \
+        --config retention.ms=43200000
       echo "Topics created successfully"
       kafka-topics --bootstrap-server kafka:29092 --list
       '
@@ -184,6 +204,94 @@ services:
     networks:
       - wiremock-network
 
+  # ── MySQL 8.0 ───────────────────────────────────────────────────────────────
+  mysql-db:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: orders_db
+      MYSQL_USER: orders_user
+      MYSQL_PASSWORD: orders_pass
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./example/db-init/mysql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
+             "-u", "orders_user", "--password=orders_pass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - wiremock-network
+
+  # ── Oracle 23c Free ─────────────────────────────────────────────────────────
+  # Uses gvenzl/oracle-free — lightweight Oracle 23c, no licence required.
+  # First startup takes ~60–90 s while the database is created.
+  # APP_USER / APP_USER_PASSWORD create a schema-owning user; init scripts
+  # under /container-entrypoint-initdb.d are run as that user afterwards.
+  oracle-db:
+    image: gvenzl/oracle-free:23-slim-faststart
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: oraclepass       # SYS / SYSTEM password
+      APP_USER: myuser                  # Application user (= onepam.username in databases.yaml)
+      APP_USER_PASSWORD: oracleapppass  # DB_ONEPAM_PASSWORD must match this
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+      - ./example/db-init/oracle:/container-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL",
+             "echo 'SELECT 1 FROM DUAL;' | sqlplus -S myuser/oracleapppass@//localhost:1521/FREE | grep -q 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+    networks:
+      - wiremock-network
+
+  # ── Cassandra 4.1 ───────────────────────────────────────────────────────────
+  # Uses AllowAllAuthenticator (no credentials required) for the local dev stack.
+  # For production, mount a custom cassandra.yaml with PasswordAuthenticator enabled.
+  cassandra-db:
+    image: cassandra:4.1
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: wiremock-cluster
+      CASSANDRA_DC: dc1
+      CASSANDRA_RACK: rack1
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE keyspaces' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    networks:
+      - wiremock-network
+
+  # Cassandra does not have a built-in /docker-entrypoint-initdb.d mechanism,
+  # so a one-shot init container runs after the cluster is healthy.
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra-db:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/init/init.sh"]
+    volumes:
+      - ./example/db-init/cassandra:/init:ro
+    networks:
+      - wiremock-network
+
   # ── kafka-wiremock ──────────────────────────────────────────────────────────
   kafka-wiremock:
     build:
@@ -202,6 +310,12 @@ services:
         condition: service_healthy
       dummy-app-https-t2:
         condition: service_healthy
+      mysql-db:
+        condition: service_healthy
+      oracle-db:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     environment:
@@ -210,12 +324,17 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       WORKERS: 1
-      # Passwords for queue managers (config/jms-config/queue-managers.yaml)
+      # ── JMS passwords (config/jms-config/queue-managers.yaml) ─────────────
       # Format: JMS_{QM_NAME_UPPERCASE}_PASSWORD
       JMS_QM_DEV_LOCAL_PASSWORD: passw0rd
       JMS_QM_US_EAST_PASSWORD: passw0rd
       JMS_QM_EU_WEST_PASSWORD: passw0rd
       JMS_QM_BACKUP_PASSWORD: passw0rd
+      # ── DB passwords (config/db-config/databases.yaml) ────────────────────
+      # Format: DB_{NAME_UPPERCASE}_PASSWORD — must match container credentials above
+      DB_ONEPAM_PASSWORD: oracleapppass        # oracle-db APP_USER_PASSWORD
+      DB_MYSQL_ORDERS_PASSWORD: orders_pass    # mysql-db MYSQL_PASSWORD
+      # DB_SOMECASSANDRA_PASSWORD not needed — local Cassandra uses AllowAllAuthenticator
     volumes:
       - ./example/config:/config
       - ./example/testSuite:/testSuite
@@ -239,3 +358,6 @@ networks:
 
 volumes:
   mq-data:
+  mysql-data:
+  oracle-data:
+  cassandra-data:

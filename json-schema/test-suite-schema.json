@@ -49,11 +49,12 @@
       "properties": {
         "inject": {
           "type": "array",
-          "description": "List of messages to inject or inline/file-based setup scripts.",
+          "description": "List of messages/actions to inject: Kafka, JMS, HTTP, DB operations, or scripts.",
           "minItems": 1,
           "items": {
             "oneOf": [
               { "$ref": "#/definitions/injectionMessage" },
+              { "$ref": "#/definitions/dbInjection" },
               { "$ref": "#/definitions/inlineScript" },
               { "$ref": "#/definitions/fileScript" }
             ]
@@ -69,11 +70,13 @@
       "properties": {
         "expectations": {
           "type": "array",
-          "description": "List of expected messages to receive from Kafka/JMS or validation scripts.",
+          "description": "List of expected messages, DB assertions, HTTP stub setups, or validation scripts.",
           "minItems": 1,
           "items": {
             "oneOf": [
               { "$ref": "#/definitions/expectation" },
+              { "$ref": "#/definitions/httpStubExpectation" },
+              { "$ref": "#/definitions/dbExpectation" },
               { "$ref": "#/definitions/inlineScript" },
               { "$ref": "#/definitions/fileScript" }
             ]
@@ -85,7 +88,7 @@
   "definitions": {
     "injectionMessage": {
       "type": "object",
-      "description": "A message/request to inject: Kafka, JMS, or HTTP.",
+      "description": "A message/request to inject: Kafka, JMS, or HTTP. For DB injections use the dbInjection variant.",
       "required": ["message_id", "destination"],
       "additionalProperties": false,
       "properties": {
@@ -103,7 +106,7 @@
         },
         "type": {
           "type": "string",
-          "description": "Destination type - kafka (default), jms, or http.",
+          "description": "Destination type - kafka (default), jms, or http. For DB use a separate dbInjection item.",
           "enum": ["kafka", "jms", "http"],
           "default": "kafka",
           "examples": ["kafka", "jms", "http"]
@@ -143,7 +146,7 @@
         },
         "payload": {
           "type": "string",
-          "description": "JSON message payload. Supports template placeholders: {{uuid}}, {{now}}, {{now+5m}}, {{randomInt(1,100)}}, {{testId}}, {{$.fieldName}}. Mutually exclusive with 'payload_file'.",
+          "description": "JSON message payload. Supports template placeholders: {{uuid}}, {{now}}, {{now+5m}}, {{randomInt(1,100)}}, {{testId}}, {{$.fieldName}}. Mutually exclusive with 'payload_file'. Optional for type=http (e.g. GET requests).",
           "minLength": 1,
           "examples": [
             "{\"orderId\": \"ORD-{{testId}}-{{uuid}}\", \"amount\": 100.50}",
@@ -191,22 +194,43 @@
           "$ref": "#/definitions/faultInjection"
         }
       },
-      "oneOf": [
-        {
-          "required": ["payload"],
-          "not": { "required": ["payload_file"] }
-        },
-        {
-          "required": ["payload_file"],
-          "not": { "required": ["payload"] }
+      "if": {
+        "not": {
+          "properties": { "type": { "const": "http" } },
+          "required": ["type"]
         }
-      ]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "required": ["payload"],
+            "not": { "required": ["payload_file"] }
+          },
+          {
+            "required": ["payload_file"],
+            "not": { "required": ["payload"] }
+          }
+        ]
+      }
     },
     "expectation": {
       "type": "object",
-      "description": "An expected message or HTTP response to validate.",
+      "description": "An expected Kafka, JMS, or HTTP response message to validate. For DB assertions use dbExpectation; for HTTP stub setup use httpStubExpectation.",
       "additionalProperties": false,
+      "if": {
+        "not": {
+          "properties": { "type": { "const": "http" } },
+          "required": ["type"]
+        }
+      },
+      "then": { "required": ["destination"] },
       "properties": {
+        "message_id": {
+          "type": "string",
+          "description": "Optional identifier for this expectation. When set, the first matched message's payload fields are available as {{expect.<message_id>.<field>}} template placeholders in subsequent expectations. The message key and headers are accessible via {{expect.<message_id>._key}} and {{expect.<message_id>._header.<headerName>}} respectively.",
+          "minLength": 1,
+          "examples": ["orderResult", "paymentResult", "myResult"]
+        },
         "destination": {
           "type": "string",
           "description": "Kafka topic or JMS queue/topic name to consume messages from. Not required for type=http (use source_id instead).",
@@ -310,7 +334,6 @@
           "examples": ["conditions/payment-validation.yaml", "../shared/status-checks.yaml"]
         }
       },
-      "required": ["destination"],
       "not": {
         "required": ["match", "match_file"]
       }
@@ -350,7 +373,7 @@
         "type": {
           "type": "string",
           "description": "Matching strategy to apply.",
-          "enum": ["jsonpath", "exact", "partial", "regex", "header", "key", "status_code", "response_header"]
+          "enum": ["jsonpath", "exact", "partial", "regex", "header", "key", "status_code", "response_header", "path_param", "query_param"]
         }
       },
       "allOf": [
@@ -401,6 +424,18 @@
             "properties": { "type": { "const": "response_header" } }
           },
           "then": { "$ref": "#/definitions/responseHeaderCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "path_param" } }
+          },
+          "then": { "$ref": "#/definitions/pathParamCondition" }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "query_param" } }
+          },
+          "then": { "$ref": "#/definitions/queryParamCondition" }
         }
       ]
     },
@@ -612,9 +647,278 @@
         }
       ]
     },
-    "faultInjection": {
+    "pathParamCondition": {
       "type": "object",
-      "description": "Optional fault injection configuration to simulate message failures during test injection. When a fault is injected and check_result=false, correlated expectations are skipped.",
+      "description": "Matches an extracted URL path parameter (from {param} patterns in the URL path).",
+      "required": ["type", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "path_param" },
+        "expression": {
+          "type": "string",
+          "description": "Path parameter name (e.g. orderId for /orders/{orderId}).",
+          "minLength": 1,
+          "examples": ["orderId", "userId", "paymentId"]
+        },
+        "value": {
+          "description": "Expected exact value of the path parameter. Mutually exclusive with 'regex'."
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to validate the path parameter value.",
+          "examples": ["^ORD-.*", "^[0-9]+$", "^PAY-ORD-.*$"]
+        }
+      }
+    },
+    "queryParamCondition": {
+      "type": "object",
+      "description": "Matches an HTTP query string parameter.",
+      "required": ["type", "expression"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "const": "query_param" },
+        "expression": {
+          "type": "string",
+          "description": "Query parameter name (e.g. page for ?page=2).",
+          "minLength": 1,
+          "examples": ["page", "status", "filter"]
+        },
+        "value": {
+          "description": "Expected exact value of the query parameter. Mutually exclusive with 'regex'."
+        },
+        "regex": {
+          "type": "string",
+          "description": "Regular expression to validate the query parameter value.",
+          "examples": ["^(active|inactive)$", "^[0-9]+$"]
+        }
+      }
+    },
+    "dbInjection": {
+      "type": "object",
+      "description": "A database action in the when phase (e.g., insert test data, truncate tables, run setup queries). Must have type=db.",
+      "required": ["type", "db", "query"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "db",
+          "description": "Must be 'db' to distinguish from message injections."
+        },
+        "db": {
+          "type": "string",
+          "description": "Database reference name from databases.yaml.",
+          "minLength": 1,
+          "examples": ["my_oracle", "cassandra_prod", "mysql_orders"]
+        },
+        "operation": {
+          "type": "string",
+          "description": "Database operation to execute.",
+          "enum": ["insert", "update", "delete", "select"],
+          "default": "insert",
+          "examples": ["insert", "update", "delete", "select"]
+        },
+        "query": {
+          "type": "string",
+          "description": "SQL or CQL query. Supports template placeholders ({{uuid}}, {{testId}}, etc.).",
+          "minLength": 1,
+          "examples": [
+            "INSERT INTO orders (id, status) VALUES (:id, :status)",
+            "DELETE FROM orders WHERE test_id = :testId"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "description": "Named bind parameters for the query. Values support template placeholders.",
+          "additionalProperties": true,
+          "examples": [{ "id": "{{uuid}}", "testId": "{{testId}}", "status": "NEW" }]
+        },
+        "id": {
+          "type": "string",
+          "description": "Optional step ID. Query results are stored as db.<id>.* in the template context for subsequent steps.",
+          "minLength": 1,
+          "examples": ["setup_order", "insert_payment"]
+        },
+        "delay_ms": {
+          "type": "integer",
+          "description": "Optional delay in milliseconds before executing this action.",
+          "minimum": 0,
+          "default": 0,
+          "examples": [0, 100, 500]
+        }
+      }
+    },
+    "dbExpectation": {
+      "type": "object",
+      "description": "A database assertion in the then phase (e.g., verify inserted rows, check updated status). Must have type=db.",
+      "required": ["type", "db", "query"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "db",
+          "description": "Must be 'db' to distinguish from message expectations."
+        },
+        "message_id": {
+          "type": "string",
+          "description": "Optional identifier for this DB assertion. When set, result rows are available as {{expect.<message_id>.<field>}} in subsequent items.",
+          "minLength": 1,
+          "examples": ["orderInserted", "paymentVerified"]
+        },
+        "db": {
+          "type": "string",
+          "description": "Database reference name from databases.yaml.",
+          "minLength": 1,
+          "examples": ["my_oracle", "cassandra_prod", "mysql_orders"]
+        },
+        "operation": {
+          "type": "string",
+          "description": "Database operation to execute. Defaults to 'select' for assertion queries.",
+          "enum": ["insert", "update", "delete", "select"],
+          "default": "select",
+          "examples": ["select", "insert", "update", "delete"]
+        },
+        "query": {
+          "type": "string",
+          "description": "SQL or CQL query. Supports template placeholders ({{uuid}}, {{testId}}, {{inject.<id>.<field>}}, etc.).",
+          "minLength": 1,
+          "examples": [
+            "SELECT * FROM orders WHERE id = :id",
+            "SELECT COUNT(*) FROM payments WHERE test_id = :testId"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "description": "Named bind parameters for the query. Values support template placeholders.",
+          "additionalProperties": true,
+          "examples": [{ "id": "{{inject.order1.orderId}}", "testId": "{{testId}}" }]
+        },
+        "id": {
+          "type": "string",
+          "description": "Optional step ID. Query results are stored as db.<id>.* for use in later steps.",
+          "minLength": 1,
+          "examples": ["verify_order", "check_payment"]
+        },
+        "expected_row_count": {
+          "type": "integer",
+          "description": "Expected number of rows returned by the query. Assertion fails if actual count differs.",
+          "minimum": 0,
+          "examples": [0, 1, 5]
+        },
+        "match": {
+          "type": "array",
+          "description": "Optional conditions to validate against the first result row.",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/matchCondition"
+          }
+        },
+        "delay_ms": {
+          "type": "integer",
+          "description": "Optional delay in milliseconds before executing this assertion.",
+          "minimum": 0,
+          "default": 0,
+          "examples": [0, 100, 500]
+        }
+      }
+    },
+    "httpStubExpectation": {
+      "type": "object",
+      "description": "An HTTP stub expectation: registers a path/method on a mock server and waits for it to be called the expected number of times. Must have type=http-stub.",
+      "required": ["type", "server", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "http-stub",
+          "description": "Must be 'http-stub' to register this as an HTTP mock stub."
+        },
+        "message_id": {
+          "type": "string",
+          "description": "Optional identifier for this stub expectation.",
+          "minLength": 1,
+          "examples": ["paymentStub", "notificationStub"]
+        },
+        "server": {
+          "type": "string",
+          "description": "Name of the mock server (must match the 'name' field in a config/http-config/mock-servers/*.yaml file).",
+          "minLength": 1,
+          "examples": ["payment-api", "notification-service"]
+        },
+        "path": {
+          "type": "string",
+          "description": "URL path pattern to match, with optional path parameter placeholders (e.g. /orders/{orderId}).",
+          "minLength": 1,
+          "examples": ["/payments", "/orders/{orderId}", "/notifications"]
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP method filter. Use '*' to match any method. Defaults to '*'.",
+          "examples": ["GET", "POST", "PUT", "PATCH", "DELETE", "*"],
+          "default": "*"
+        },
+        "times": {
+          "type": "integer",
+          "description": "Expected number of times the stub should be called. Assertion fails if actual call count differs.",
+          "minimum": 0,
+          "default": 1,
+          "examples": [0, 1, 2, 3]
+        },
+        "wait_ms": {
+          "type": "integer",
+          "description": "Maximum time in milliseconds to wait for the stub to be called.",
+          "minimum": 0,
+          "maximum": 60000,
+          "default": 2000,
+          "examples": [1000, 2000, 5000]
+        },
+        "match": {
+          "type": "array",
+          "description": "Optional conditions to validate against the requests received by this stub. Mutually exclusive with 'match_file'.",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/matchCondition"
+          }
+        },
+        "match_file": {
+          "type": "string",
+          "description": "Path to external YAML file containing match conditions (relative to test file). Mutually exclusive with 'match'.",
+          "minLength": 1
+        },
+        "response": {
+          "type": "object",
+          "description": "HTTP response to return when the stub is called.",
+          "additionalProperties": false,
+          "properties": {
+            "status_code": {
+              "type": "integer",
+              "description": "HTTP response status code.",
+              "minimum": 100,
+              "maximum": 599,
+              "default": 200,
+              "examples": [200, 201, 400, 404, 500]
+            },
+            "payload": {
+              "type": "string",
+              "description": "Response body. Supports template placeholders.",
+              "examples": ["{\"status\": \"ok\"}", "{\"error\": \"not found\"}"]
+            },
+            "headers": {
+              "type": "object",
+              "description": "Response headers to include.",
+              "additionalProperties": { "type": "string" },
+              "examples": [{ "Content-Type": "application/json", "X-Request-ID": "{{uuid}}" }]
+            },
+            "content_type": {
+              "type": "string",
+              "description": "Shorthand for the Content-Type response header. Defaults to application/json.",
+              "default": "application/json",
+              "examples": ["application/json", "text/plain", "application/xml"]
+            }
+          }
+        }
+      }
+    },
+    "faultInjection": {
       "additionalProperties": false,
       "properties": {
         "drop": {

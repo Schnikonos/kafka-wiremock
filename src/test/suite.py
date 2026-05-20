@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from jsonpath_ng import parse as jsonpath_parse
 from jsonpath_ng.exceptions import JSONPathError
 
-from .loader import TestDefinition, TestInjection, TestExpectation, TestScript, HttpInjectionResult
+from .loader import TestDefinition, TestInjection, TestExpectation, TestScript, HttpInjectionResult, TestDBAction
 from ..kafka.client import KafkaClientWrapper
 from ..rules.matcher import MatcherFactory
 from ..rules.templater import TemplateRenderer
@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..http.executor import HttpExecutor
     from ..http.stub_cache import HttpStub, HttpStubCache
+    from ..db.executor import DBExecutor
 logger = logging.getLogger(__name__)
 
 
@@ -183,6 +184,7 @@ class WhenResult:
     faulted_injections: List[str] = field(default_factory=list)  # message_ids with faults (and check_result=False)
     script_error: Optional[str] = None
     http_results: Dict[str, Any] = field(default_factory=dict)  # message_id → HttpInjectionResult
+    context: Dict[str, Any] = field(default_factory=dict)       # accumulated DB/script context for use in 'then' phase
 
 
 @dataclass
@@ -209,6 +211,9 @@ class TestExecutor:
         jms_registry = None,  # Optional JMS registry for JMS injection/expectation support
         http_executor: Optional["HttpExecutor"] = None,  # Optional HTTP executor for HTTP requests
         stub_cache: Optional["HttpStubCache"] = None,  # Optional HTTP stub cache for http-stub expectations
+        db_executor: Optional["DBExecutor"] = None,     # Optional DB executor for type=db actions
+        topic_config_loader = None,   # Optional TopicConfigLoader for auto correlation
+        jms_config_loader = None,     # Optional JMSConfigLoader for auto correlation
     ):
         """Initialize test executor."""
         self.kafka_client = kafka_client
@@ -220,6 +225,30 @@ class TestExecutor:
         self.jms_registry = jms_registry
         self.http_executor = http_executor  # Optional; HTTP calls skipped if None
         self.stub_cache = stub_cache        # Optional; http-stub expectations skipped if None
+        self.db_executor = db_executor      # Optional; DB actions skipped if None
+        self.topic_config_loader = topic_config_loader  # Optional; correlation skipped if None
+        self.jms_config_loader = jms_config_loader      # Optional; correlation skipped if None
+
+    def _get_corr_config(self, destination: str, msg_type: str):
+        """
+        Return a CorrelationConfig for a destination (topic or JMS queue), or None.
+
+        Picks the correct loader based on msg_type.
+        Returns a CorrelationConfig dataclass (or None if not configured).
+        """
+        try:
+            if msg_type == "jms" and self.jms_config_loader:
+                jms_cfg = self.jms_config_loader.get_config(destination)
+                if jms_cfg and jms_cfg.correlation:
+                    from ..messaging.correlation import _normalise_corr_config
+                    return _normalise_corr_config(jms_cfg.correlation)
+            elif msg_type == "kafka" and self.topic_config_loader:
+                topic_cfg = self.topic_config_loader.get_topic_config(destination)
+                if topic_cfg and topic_cfg.correlation:
+                    return topic_cfg.correlation
+        except Exception as e:
+            logger.debug(f"_get_corr_config({destination!r}, {msg_type!r}) failed: {e}")
+        return None
 
     async def run_test(self, test: TestDefinition, test_file_path: Optional[Path] = None, verbose: bool = False, force_run: bool = False) -> TestResult:
         """Execute a single test."""
@@ -360,28 +389,33 @@ class TestExecutor:
         result = WhenResult()
         injected_messages = []
         context = {}
+        # Track whether we have already seeded the bare-field shorthand keys
+        # ({{$.fieldName}} resolves to the first injection's payload fields).
+        _first_injection_added = False
+
+        # Build template context once, shared across all item types in the when phase
+        template_context = {
+            "testId": test.name,
+            "uuid": str(__import__('uuid').uuid4()),
+            "now": datetime.now(timezone.utc).isoformat() + "Z",
+            "randomInt": lambda min_val=0, max_val=100: __import__('random').randint(min_val, max_val)
+        }
+        if self.custom_placeholder_registry:
+            placeholders = self.custom_placeholder_registry.get_all_placeholders()
+            for name, func in placeholders.items():
+                try:
+                    template_context[name] = func(template_context)
+                except Exception as e:
+                    logger.warning(f"Failed to execute custom placeholder {name}: {e}")
 
         try:
             # Process items sequentially
             for item in test.when.items:
                 if isinstance(item, TestInjection):
                     try:
-                        # Build template context
-                        template_context = {
-                            "testId": test.name,
-                            "uuid": str(__import__('uuid').uuid4()),
-                            "now": datetime.now(timezone.utc).isoformat() + "Z",
-                            "randomInt": lambda min_val=0, max_val=100: __import__('random').randint(min_val, max_val)
-                        }
-
-                        # Add custom placeholders
-                        if self.custom_placeholder_registry:
-                            placeholders = self.custom_placeholder_registry.get_all_placeholders()
-                            for name, func in placeholders.items():
-                                try:
-                                    template_context[name] = func(template_context)
-                                except Exception as e:
-                                    logger.warning(f"Failed to execute custom placeholder {name}: {e}")
+                        # Refresh dynamic placeholders and merge current context
+                        template_context["uuid"] = str(__import__('uuid').uuid4())
+                        template_context["now"] = datetime.now(timezone.utc).isoformat() + "Z"
 
                         template_context.update(context)
 
@@ -426,6 +460,36 @@ class TestExecutor:
                         if item.fault and item.fault.poison_pill > 0 and 'messageKey' in item.fault.poison_pill_type:
                             if FaultInjector._should_fault(item.fault.poison_pill):
                                 rendered_key = FaultInjector.apply_messagekey_poison_pill(rendered_key)
+
+                        # Auto-inject correlation ID if not explicitly set and
+                        # the destination has correlation extract rules configured.
+                        if not item.correlation_id and item.msg_type in ("kafka", "jms"):
+                            try:
+                                _corr_cfg = self._get_corr_config(item.destination, item.msg_type)
+                                if _corr_cfg and _corr_cfg.extract:
+                                    import uuid as _uuid_mod
+                                    auto_corr_id = str(_uuid_mod.uuid4())
+                                    # Inject into headers via apply_propagation helper
+                                    from ..messaging.correlation import apply_propagation as _apply_prop
+                                    rendered_headers = _apply_prop(
+                                        rendered_headers, auto_corr_id, _corr_cfg
+                                    )
+                                    # For jsonpath extract rules, also set the field in the payload
+                                    if isinstance(payload_obj, dict):
+                                        for _r in _corr_cfg.extract:
+                                            if getattr(_r, 'from_type', None) == 'jsonpath' and _r.expression:
+                                                _path = _r.expression.lstrip('$').lstrip('.')
+                                                if _path and '.' not in _path:
+                                                    payload_obj[_path] = auto_corr_id
+                                    # Store effective correlation ID for expectation phase
+                                    context[f"inject.{item.message_id}._correlation_id"] = auto_corr_id
+                                    template_context[f"inject.{item.message_id}._correlation_id"] = auto_corr_id
+                                    logger.debug(
+                                        f"Auto-injected correlationId={auto_corr_id!r} "
+                                        f"for message_id={item.message_id!r}"
+                                    )
+                            except Exception as _auto_corr_err:
+                                logger.debug(f"Auto-inject correlation skipped: {_auto_corr_err}")
 
                         # Route to appropriate client based on message type
                         if item.msg_type == "http":
@@ -494,6 +558,19 @@ class TestExecutor:
                         )
                         injected_messages.append(injected_msg)
 
+                        # Expose this injection's payload fields in the shared template
+                        # context so later injections (and the then-phase) can reference
+                        # them via {{inject.<message_id>.<field>}}.
+                        # The first injection's fields are also added as bare keys so that
+                        # {{$.fieldName}} resolves to the first injection's payload.
+                        if isinstance(payload_obj, dict):
+                            for _f, _v in payload_obj.items():
+                                template_context[f"inject.{item.message_id}.{_f}"] = _v
+                            if not _first_injection_added:
+                                for _f, _v in payload_obj.items():
+                                    template_context[_f] = _v
+                                _first_injection_added = True
+
                         # Track if this injection had fault with check_result=False
                         if item.fault and not item.fault.check_result:
                             result.faulted_injections.append(item.message_id)
@@ -540,10 +617,78 @@ class TestExecutor:
                         result.script_error = str(e)
                         break
 
+                elif isinstance(item, TestDBAction):
+                    # Execute DB action (insert/update/delete/select for test data setup)
+                    if self.db_executor is None:
+                        logger.warning(
+                            f"test={test.name!r} DB action '{item.id}' skipped: "
+                            f"no db_registry configured"
+                        )
+                        continue
+                    try:
+                        if item.delay_ms > 0:
+                            await asyncio.sleep(item.delay_ms / 1000.0)
+                        # Render query and params with current template context
+                        rendered_query = TemplateRenderer.render(item.query, template_context)
+                        rendered_params: Optional[Dict[str, Any]] = None
+                        if item.params:
+                            rendered_params = {
+                                k: TemplateRenderer.render(str(v), template_context)
+                                for k, v in item.params.items()
+                            }
+                        db_context = self.db_executor.execute(
+                            db_ref=item.db_ref,
+                            operation=item.operation,
+                            query=rendered_query,
+                            params=rendered_params,
+                            step_id=item.id,
+                        )
+                        context.update(db_context)
+                        template_context.update(db_context)
+                        if test_logger:
+                            test_logger.log_db_action(
+                                phase="when",
+                                step_id=item.id,
+                                db_ref=item.db_ref,
+                                operation=item.operation,
+                                db_context=db_context,
+                                query=rendered_query,
+                                params=rendered_params,
+                            )
+                        _pfx = f"db.{item.id}"
+                        _summary_parts = []
+                        if db_context.get(f"{_pfx}.rows_affected") is not None:
+                            _summary_parts.append(f"rows_affected={db_context[f'{_pfx}.rows_affected']}")
+                        if db_context.get(f"{_pfx}.row_count") is not None:
+                            _summary_parts.append(f"row_count={db_context[f'{_pfx}.row_count']}")
+                        if db_context.get(f"{_pfx}.generated_key") is not None:
+                            _summary_parts.append(f"generated_key={db_context[f'{_pfx}.generated_key']!r}")
+                        _result_summary = " → " + ", ".join(_summary_parts) if _summary_parts else f" → context keys: {list(db_context.keys())}"
+                        logger.info(
+                            f"test={test.name!r} DB {item.operation} step='{item.id}' "
+                            f"db='{item.db_ref}'{_result_summary}"
+                        )
+                        _rows_val = db_context.get(f"{_pfx}.rows")
+                        _vtest(verbose, (
+                            f"test={test.name!r} DB-ACTION step='{item.id}' "
+                            f"db='{item.db_ref}' operation='{item.operation}' "
+                            f"query={rendered_query!r}"
+                            + (f" params={rendered_params!r}" if rendered_params else "")
+                            + (f" rows={_rows_val!r}" if _rows_val is not None else f" context={list(db_context.keys())}")
+                        ))
+                    except Exception as e:
+                        logger.error(
+                            f"test={test.name!r} DB action '{item.id}' failed: {e}"
+                        )
+                        result.script_error = str(e)
+                        break
+
             result.injected = [
-                {"message_id": m.message_id, "topic": m.topic, "status": m.status, "payload": m.payload}
+                {"message_id": m.message_id, "topic": m.topic, "status": m.status,
+                 "payload": m.payload, "headers": m.headers}
                 for m in injected_messages
             ]
+            result.context = context
 
         except Exception as e:
             logger.error(f"When phase failed: {e}")
@@ -554,7 +699,7 @@ class TestExecutor:
     async def _execute_then(self, test: TestDefinition, when_result: WhenResult, test_logger: Optional[TestLogger] = None, test_start_time: float = None, verbose: bool = False) -> ThenResult:
         """Execute 'then' phase: expectations and scripts, sequential."""
         result = ThenResult()
-        context = {}
+        context = dict(when_result.context)  # seed with DB/script context from 'when' phase
         collected_results = []
 
         try:
@@ -566,10 +711,29 @@ class TestExecutor:
                 if isinstance(item, TestExpectation):
                     # Collect expectation messages
                     exp_result = await self._collect_expectation_messages(
-                        item, len(collected_results), when_result, injections_dict, context, test_logger, test_start_time=test_start_time, verbose=verbose
+                        item, len(collected_results), when_result, injections_dict, context,
+                        test_logger, test_start_time=test_start_time, verbose=verbose,
+                        test_id=test.name
                     )
                     result.expectations.append(exp_result)
                     collected_results.append(exp_result)
+
+                    # If this expectation has a message_id and matched successfully,
+                    # expose the first matched message's payload as
+                    # {{expect.<message_id>.<field>}} for use in subsequent items.
+                    if item.message_id and exp_result.status == "MATCHED" and exp_result.received_messages:
+                        _matched_msg = exp_result.received_messages[0]
+                        _matched_val = _matched_msg.get("value")
+                        if isinstance(_matched_val, dict):
+                            for _ef, _ev in _matched_val.items():
+                                context[f"expect.{item.message_id}.{_ef}"] = _ev
+                        # Also expose message key and headers under reserved names
+                        _mk = _matched_msg.get("key")
+                        if _mk is not None:
+                            context[f"expect.{item.message_id}._key"] = _mk
+                        _hdrs = _matched_msg.get("headers") or {}
+                        for _hk, _hv in _hdrs.items():
+                            context[f"expect.{item.message_id}._header.{_hk}"] = _hv
 
                 elif isinstance(item, TestScript):
                     # Execute script
@@ -588,11 +752,148 @@ class TestExecutor:
                         result.script_error = str(e)
                         break
 
+                elif isinstance(item, TestDBAction):
+                    # Execute DB action (cleanup, assertion, etc.)
+                    if self.db_executor is None:
+                        logger.warning(
+                            f"test={test.name!r} DB action '{item.id}' skipped: "
+                            f"no db_registry configured"
+                        )
+                        continue
+                    try:
+                        if item.delay_ms > 0:
+                            await asyncio.sleep(item.delay_ms / 1000.0)
+                        # Build template context from accumlated when/then context
+                        template_ctx = dict(context)
+                        rendered_query = TemplateRenderer.render(item.query, template_ctx)
+                        rendered_params: Optional[Dict[str, Any]] = None
+                        if item.params:
+                            rendered_params = {
+                                k: TemplateRenderer.render(str(v), template_ctx)
+                                for k, v in item.params.items()
+                            }
+                        db_context = self.db_executor.execute(
+                            db_ref=item.db_ref,
+                            operation=item.operation,
+                            query=rendered_query,
+                            params=rendered_params,
+                            step_id=item.id,
+                        )
+                        context.update(db_context)
+
+                        # For select: optionally validate row count and match conditions
+                        exp_result = self._evaluate_db_assertion(item, db_context, len(collected_results))
+                        if exp_result is not None:
+                            result.expectations.append(exp_result)
+                            collected_results.append(exp_result)
+
+                        if test_logger:
+                            test_logger.log_db_action(
+                                phase="then",
+                                step_id=item.id,
+                                db_ref=item.db_ref,
+                                operation=item.operation,
+                                db_context=db_context,
+                                query=rendered_query,
+                                params=rendered_params,
+                            )
+                        _pfx = f"db.{item.id}"
+                        _summary_parts = []
+                        if db_context.get(f"{_pfx}.rows_affected") is not None:
+                            _summary_parts.append(f"rows_affected={db_context[f'{_pfx}.rows_affected']}")
+                        if db_context.get(f"{_pfx}.row_count") is not None:
+                            _summary_parts.append(f"row_count={db_context[f'{_pfx}.row_count']}")
+                        if db_context.get(f"{_pfx}.generated_key") is not None:
+                            _summary_parts.append(f"generated_key={db_context[f'{_pfx}.generated_key']!r}")
+                        _result_summary = " → " + ", ".join(_summary_parts) if _summary_parts else f" → context keys: {list(db_context.keys())}"
+                        logger.info(
+                            f"test={test.name!r} DB {item.operation} step='{item.id}' "
+                            f"db='{item.db_ref}'{_result_summary}"
+                        )
+                        _rows_val = db_context.get(f"{_pfx}.rows")
+                        _vtest(verbose, (
+                            f"test={test.name!r} DB-ACTION step='{item.id}' "
+                            f"db='{item.db_ref}' operation='{item.operation}' "
+                            f"query={rendered_query!r}"
+                            + (f" params={rendered_params!r}" if rendered_params else "")
+                            + (f" rows={_rows_val!r}" if _rows_val is not None else f" context={list(db_context.keys())}")
+                        ))
+                    except Exception as e:
+                        logger.error(
+                            f"test={test.name!r} DB action '{item.id}' failed: {e}"
+                        )
+                        result.script_error = str(e)
+                        break
+
         except Exception as e:
             logger.error(f"Then phase failed: {e}")
             result.script_error = str(e)
 
         return result
+
+    def _evaluate_db_assertion(
+        self,
+        item: TestDBAction,
+        db_context: Dict[str, Any],
+        exp_idx: int,
+    ) -> Optional[ExpectationResult]:
+        """
+        Evaluate optional assertion conditions on a DB action result (then phase).
+
+        Returns an ExpectationResult if the action has match conditions or
+        expected_row_count set; None otherwise (pure side-effect, no assertion).
+        """
+        has_assertion = bool(item.match) or item.expected_row_count is not None
+        if not has_assertion:
+            return None
+
+        prefix = f"db.{item.id}"
+        row_count = db_context.get(f"{prefix}.row_count", db_context.get(f"{prefix}.rows_affected", 0))
+        rows = db_context.get(f"{prefix}.rows", [])
+        first_row = rows[0] if rows else {}
+
+        errors: List[str] = []
+
+        # Row count assertion
+        if item.expected_row_count is not None:
+            if row_count != item.expected_row_count:
+                errors.append(
+                    f"DB assertion '{item.id}': expected {item.expected_row_count} row(s), "
+                    f"got {row_count}"
+                )
+
+        # Match condition assertions (applied to first row as a dict)
+        for cond in item.match:
+            try:
+                matcher = self.matcher_factory.create(cond.type)
+                if cond.type == "jsonpath":
+                    match_condition = {
+                        "path": cond.expression,
+                        "value": cond.value,
+                        "regex": cond.regex,
+                    }
+                    match_result = matcher.match(first_row, match_condition)
+                else:
+                    mc = cond.regex if cond.regex else cond.value
+                    match_result = matcher.match(first_row, mc)
+                if not match_result.matched:
+                    errors.append(
+                        f"DB assertion '{item.id}': condition {cond.type} "
+                        f"expression={cond.expression!r} expected={cond.value!r} → NO MATCH "
+                        f"(actual row: {first_row})"
+                    )
+            except Exception as e:
+                errors.append(f"DB assertion '{item.id}': condition evaluation error: {e}")
+
+        status = "MATCHED" if not errors else "NO_MATCH"
+        return ExpectationResult(
+            index=exp_idx,
+            topic=f"db:{item.db_ref}:{item.operation}",
+            expected=1,
+            received=1 if not errors else 0,
+            status=status,
+            error="; ".join(errors) if errors else None,
+        )
 
     async def _collect_expectation_messages(
         self,
@@ -603,9 +904,45 @@ class TestExecutor:
         context: Dict[str, Any],
         test_logger: Optional[TestLogger] = None,
         test_start_time: float = None,
-        verbose: bool = False
+        verbose: bool = False,
+        test_id: str = "",
     ) -> ExpectationResult:
         """Collect messages for a single expectation with correlation."""
+
+        # Build template context for rendering condition values in this expectation.
+        # Priority (highest first): script context > injected payloads > testId / builtins.
+        _template_ctx: Dict[str, Any] = {
+            "testId": test_id,
+        }
+        # Add custom placeholder results (uuid/now/etc. are resolved on-demand by
+        # TemplateRenderer itself via the global registry, no need to add them here)
+        if self.custom_placeholder_registry:
+            try:
+                all_placeholders = self.custom_placeholder_registry.get_all_placeholders()
+                for _ph_name, _ph_func in all_placeholders.items():
+                    try:
+                        _template_ctx[_ph_name] = _ph_func(_template_ctx)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        # Expose injected message payloads as inject.<message_id>.<field> flat keys.
+        # The first injection's fields are also added as bare keys so that
+        # {{$.fieldName}} resolves to the first injection's payload.
+        _first_inj_added = False
+        for _msg_id, _msg_data in injections_dict.items():
+            _payload = _msg_data.get("payload")
+            if isinstance(_payload, dict):
+                for _field, _val in _payload.items():
+                    _template_ctx[f"inject.{_msg_id}.{_field}"] = _val
+                if not _first_inj_added:
+                    for _field, _val in _payload.items():
+                        _template_ctx[_field] = _val   # {{$.fieldName}} shorthand
+                    _first_inj_added = True
+        # Script-accumulated context values (including expect.<id>.<field> from
+        # previously resolved expectations) override everything else.
+        _template_ctx.update(context)
+
         exp_result = ExpectationResult(
             index=exp_idx,
             topic=expectation.topic,
@@ -649,7 +986,7 @@ class TestExecutor:
                                     header_name = corr.source["header"]
                                     headers = injected_data.get("headers", {})
                                     correlation_value = headers.get(header_name)
-                                
+
                                 if correlation_value is None:
                                     logger.warning(f"Could not extract correlation from source {corr.source}")
                             else:
@@ -658,13 +995,116 @@ class TestExecutor:
                             logger.warning(f"Failed to extract correlation value: {e}")
                             correlation_value = None
                     else:
-                        exp_result.error = f"Message not found: {corr.message_id}"
+                        available_ids = sorted(injections_dict.keys())
+                        _err = (
+                            f"Correlation failed: message_id '{corr.message_id}' not found "
+                            f"among injected messages {available_ids}"
+                        )
+                        logger.error(f"test expectation #{exp_idx}: {_err}")
+                        exp_result.error = _err
                         exp_result.status = "NO_MATCH"
                         exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
                         return exp_result
                 elif corr.message_id:
-                    # message_id without source - will match any message from that injection
-                    logger.debug(f"Using message_id {corr.message_id} without source for correlation")
+                    # message_id without source/target — try to auto-derive correlation
+                    # from topic-config / jms-config extract + propagate rules.
+                    try:
+                        # 1. Look for auto-injected correlation ID stored in context
+                        auto_corr_id = context.get(f"inject.{corr.message_id}._correlation_id")
+                        inj_dest = ""
+
+                        if auto_corr_id is None:
+                            # 2. Try to extract from the injected message's payload/headers
+                            inj_data = injections_dict.get(corr.message_id)
+                            if inj_data:
+                                inj_dest = inj_data.get("topic") or inj_data.get("destination", "")
+                                inj_msg_type = "kafka"  # default; JMS injections still valid
+                                inj_cfg = self._get_corr_config(inj_dest, inj_msg_type) or \
+                                           self._get_corr_config(inj_dest, "jms")
+                                if inj_cfg and inj_cfg.extract:
+                                    from ..messaging.correlation import extract_correlation_id as _extract_corr
+                                    auto_corr_id = _extract_corr(
+                                        inj_data.get("payload"),
+                                        inj_data.get("headers"),
+                                        inj_cfg,
+                                    )
+
+                        if auto_corr_id:
+                            correlation_value = auto_corr_id
+                            # Derive target from expectation destination's extract/propagate rules
+                            derived_target = None
+                            exp_cfg = self._get_corr_config(expectation.topic, expectation.msg_type)
+                            if exp_cfg:
+                                # Use extract rules FIRST: these define how to read the
+                                # correlation ID FROM a received message on this topic.
+                                if exp_cfg.extract:
+                                    first_rule = exp_cfg.extract[0]
+                                    if first_rule.from_type == "header" and first_rule.name:
+                                        derived_target = {"header": first_rule.name}
+                                    elif first_rule.from_type == "jsonpath" and first_rule.expression:
+                                        derived_target = {"jsonpath": first_rule.expression}
+                                # Fallback: propagate.to_headers (where producer puts correlation ID)
+                                if derived_target is None and exp_cfg.propagate and exp_cfg.propagate.to_headers:
+                                    header_name = next(iter(exp_cfg.propagate.to_headers.keys()), None)
+                                    if header_name:
+                                        derived_target = {"header": header_name}
+
+                            if derived_target:
+                                # Patch the correlate object with derived target for
+                                # the message-scanning loop below.
+                                from .loader import TestCorrelation as _TC
+                                from dataclasses import replace as _dc_replace_exp
+                                expectation = _dc_replace_exp(
+                                    expectation,
+                                    correlate=_TC(
+                                        message_id=corr.message_id,
+                                        source=None,
+                                        target=derived_target,
+                                    ),
+                                )
+                                logger.info(
+                                    f"Auto-derived correlation: value={auto_corr_id!r} "
+                                    f"target={derived_target!r} "
+                                    f"for expectation topic={expectation.topic!r}"
+                                )
+                            else:
+                                # Have a correlation value but no target field — hard fail
+                                _err = (
+                                    f"Correlation auto-derive failed for message_id='{corr.message_id}': "
+                                    f"extracted value={auto_corr_id!r} from '{inj_dest}' "
+                                    f"but could not determine target field in topic '{expectation.topic}'. "
+                                    f"Check topic-config for '{expectation.topic}' has "
+                                    f"'correlation.propagate.to_headers' or 'correlation.extract' rules."
+                                )
+                                logger.error(f"test expectation #{exp_idx}: {_err}")
+                                exp_result.error = _err
+                                exp_result.status = "NO_MATCH"
+                                exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                                return exp_result
+                        else:
+                            # Could not extract correlation ID from injected message — hard fail
+                            _err = (
+                                f"Correlation auto-derive failed for message_id='{corr.message_id}': "
+                                f"could not extract correlation ID from injected message "
+                                f"(topic '{inj_dest}'). "
+                                f"Check topic-config for '{inj_dest}' has valid "
+                                f"'correlation.extract' rules, or use explicit correlate.source/target."
+                            )
+                            logger.error(f"test expectation #{exp_idx}: {_err}")
+                            exp_result.error = _err
+                            exp_result.status = "NO_MATCH"
+                            exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                            return exp_result
+                    except Exception as _auto_exp_err:
+                        _err = (
+                            f"Correlation auto-derive error for message_id='{corr.message_id}': "
+                            f"{_auto_exp_err}"
+                        )
+                        logger.error(f"test expectation #{exp_idx}: {_err}")
+                        exp_result.error = _err
+                        exp_result.status = "NO_MATCH"
+                        exp_result.elapsed_ms = int((time.time() - start_time) * 1000)
+                        return exp_result
 
             # Note: We don't check if listener is subscribed to this topic
             # because the listener only listens to INPUT topics (from rules),
@@ -1014,6 +1454,11 @@ class TestExecutor:
                             
                             if target_value != correlation_value:
                                 # Log this non-matching message for debugging
+                                _vtest(verbose, (
+                                    f"topic={expectation.topic!r} [expectation #{exp_idx}] "
+                                    f"correlation MISMATCH: target={target!r} "
+                                    f"expected={correlation_value!r} actual={target_value!r}"
+                                ))
                                 if test_logger:
                                     test_logger.log_received_message(
                                         topic=expectation.topic,
@@ -1022,11 +1467,20 @@ class TestExecutor:
                                         conditions_matched=0,
                                         total_conditions=len(expectation.match) if expectation.match else 0,
                                         headers=msg.get("headers"),
-                                        key=msg.get("key")
+                                        key=msg.get("key"),
+                                        correlation_mismatch={
+                                            "target": target,
+                                            "expected": str(correlation_value),
+                                            "actual": str(target_value) if target_value is not None else None,
+                                        },
                                     )
                                 all_received_messages.append(msg_for_logging)
                                 continue
                             correlation_matched = True
+                            _vtest(verbose, (
+                                f"topic={expectation.topic!r} [expectation #{exp_idx}] "
+                                f"correlation MATCH: target={target!r} value={correlation_value!r}"
+                            ))
                         except Exception as e:
                             logger.warning(f"Failed to extract/match target correlation: {e}")
                             if test_logger:
@@ -1037,7 +1491,8 @@ class TestExecutor:
                                     conditions_matched=0,
                                     total_conditions=len(expectation.match) if expectation.match else 0,
                                     headers=msg.get("headers"),
-                                    key=msg.get("key")
+                                    key=msg.get("key"),
+                                    correlation_mismatch={"target": target, "error": str(e)},
                                 )
                             all_received_messages.append(msg_for_logging)
                             continue
@@ -1057,22 +1512,49 @@ class TestExecutor:
                                 condition_matched = False
                                 match_result = None
 
+                                # ── Render condition value/regex with then-block template context ──
+                                # This allows placeholders like {{testId}}, {{inject.order1.field}},
+                                # {{myCustomPlaceholder}}, {{uuid}}, {{a | b | "default"}} in match values.
+                                def _render_condition_val(raw_val):
+                                    if raw_val is None:
+                                        return None
+                                    rendered_str = TemplateRenderer.render(str(raw_val), _template_ctx)
+                                    # Try to recover natural type (float/int/bool) so numeric
+                                    # comparisons still work after rendering.
+                                    try:
+                                        import json as _json
+                                        return _json.loads(rendered_str)
+                                    except (ValueError, TypeError):
+                                        return rendered_str
+
+                                rendered_val = _render_condition_val(condition.value)
+                                rendered_regex = (
+                                    TemplateRenderer.render(str(condition.regex), _template_ctx)
+                                    if condition.regex is not None else None
+                                )
+                                # Create a rendered copy of the condition for matchers that
+                                # accept the condition object directly (header, key, etc.)
+                                from dataclasses import replace as _dc_replace
+                                rendered_condition = _dc_replace(
+                                    condition, value=rendered_val, regex=rendered_regex
+                                )
+
                                 # Build matcher-specific condition dict and run match
                                 if condition.type == 'jsonpath':
                                     matcher_condition = {
                                         'path': condition.expression,
-                                        'value': condition.value,
-                                        'regex': condition.regex
+                                        'value': rendered_val,
+                                        'regex': rendered_regex
                                     }
                                     match_result = matcher.match(msg_value, matcher_condition) if matcher else None
                                 elif condition.type == 'header':
                                     headers_dict = msg.get('headers', {})
-                                    match_result = matcher.match(headers_dict, condition) if matcher else None
+                                    match_result = matcher.match(headers_dict, rendered_condition) if matcher else None
                                 elif condition.type == 'key':
                                     msg_key = msg.get('key')
-                                    match_result = matcher.match(msg_key, condition) if matcher else None
+                                    match_result = matcher.match(msg_key, rendered_condition) if matcher else None
                                 else:
-                                    match_result = matcher.match(msg_value, condition) if matcher else None
+                                    match_result = matcher.match(msg_value, rendered_condition) if matcher else None
 
                                 condition_matched = bool(match_result and match_result.matched)
                                 if condition_matched:
@@ -1102,6 +1584,26 @@ class TestExecutor:
 
                                 # Track failed conditions
                                 if not condition_matched:
+                                    # Determine the actual received value for useful display
+                                    def _actual_value(ctype, expression, mv, m):
+                                        if ctype == 'jsonpath' and expression:
+                                            try:
+                                                from jsonpath_ng import parse as _jp_parse
+                                                _matches = _jp_parse(expression).find(
+                                                    json.loads(mv) if isinstance(mv, str) else mv
+                                                )
+                                                if _matches:
+                                                    return _matches[0].value
+                                                return "(field not found)"
+                                            except Exception:
+                                                return "(field not found)"
+                                        elif ctype == 'header':
+                                            return (m.get('headers') or {}).get(expression)
+                                        elif ctype == 'key':
+                                            return m.get('key')
+                                        else:
+                                            return mv
+
                                     failed_conditions_details.append({
                                         'position': idx,
                                         'type': condition.type,
@@ -1110,7 +1612,12 @@ class TestExecutor:
                                             'value': getattr(condition, 'value', None),
                                             'regex': getattr(condition, 'regex', None)
                                         },
-                                        'received': msg_value if condition.type == 'jsonpath' else msg.get(condition.type)
+                                        'actual': _actual_value(
+                                            condition.type,
+                                            getattr(condition, 'expression', None),
+                                            msg_value,
+                                            msg
+                                        )
                                     })
                             except Exception as e:
                                 logger.debug(f"Error matching condition: {e}")
@@ -1244,6 +1751,9 @@ class TestSuiteRunner:
         jms_registry = None,          # Optional JMS registry for JMS injection/expectation support
         http_executor = None,         # Optional HttpExecutor for HTTP injection/expectation support
         stub_cache: Optional["HttpStubCache"] = None,  # Optional HTTP stub cache
+        db_executor = None,           # Optional DBExecutor for type=db actions
+        topic_config_loader = None,   # Optional TopicConfigLoader for auto correlation
+        jms_config_loader = None,     # Optional JMSConfigLoader for auto correlation
     ):
         """Initialize test suite runner."""
         self.kafka_client = kafka_client
@@ -1258,6 +1768,9 @@ class TestSuiteRunner:
             jms_registry=jms_registry,
             http_executor=http_executor,
             stub_cache=stub_cache,
+            db_executor=db_executor,
+            topic_config_loader=topic_config_loader,
+            jms_config_loader=jms_config_loader,
         )
 
     async def run_tests_sequential(self, tests: List[TestDefinition], verbose: bool = False) -> List[TestResult]:

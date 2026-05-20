@@ -57,7 +57,8 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ build-essential \
-    libffi-dev libssl-dev libxml2-dev libstdc++6 && \
+    libffi-dev libssl-dev libxml2-dev libstdc++6 \
+    libev4 libev-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=mq-builder /opt/mqm/inc   /opt/mqm/inc
@@ -82,12 +83,16 @@ RUN echo "=== Verifying IBM MQ headers ===" && \
     pip install --no-cache-dir \
         fastapi uvicorn confluent-kafka PyYAML jsonpath-ng \
         pydantic pydantic-settings six fastavro requests httpx \
-        stomp.py pika && \
+        stomp.py pika \
+        oracledb mysql-connector-python cassandra-driver && \
     echo "" && \
     echo "=== Verifying imports ===" && \
     python -c "import pymqi; print('✅ pymqi OK')" && \
     python -c "import stomp;  print('✅ stomp.py OK')" && \
-    python -c "import pika;   print('✅ pika OK')"
+    python -c "import pika;   print('✅ pika OK')" && \
+    python -c "import oracledb; print('✅ oracledb OK')" && \
+    python -c "import mysql.connector; print('✅ mysql-connector-python OK')" && \
+    python -c "import cassandra; print('✅ cassandra-driver OK')"
 
 COPY src/ src/
 COPY run.py .

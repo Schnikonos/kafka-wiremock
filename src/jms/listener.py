@@ -429,6 +429,42 @@ class JMSListenerEngine:
                     matcher_contexts[key] = value
                     matcher_contexts[f"$.{key}"] = value
 
+            # Add headers to context
+            if message_headers:
+                matcher_contexts["headerMap"] = message_headers
+                for header_name, header_value in message_headers.items():
+                    matcher_contexts[f"header.{header_name}"] = header_value
+
+            # Extract correlation ID from input message using JMS config
+            correlation_id = None
+            try:
+                from ..messaging.correlation import extract_correlation_id as _extract_corr
+                corr_config = None
+                # Rule-level correlation.extract overrides queue-level config
+                if rule.correlation and rule.correlation.extract:
+                    from ..config.topic_config import CorrelationConfig, CorrelationExtractRule
+                    extract_rules = []
+                    for idx, r in enumerate(rule.correlation.extract):
+                        extract_rules.append(CorrelationExtractRule(
+                            from_type=r.get("from", "header"),
+                            name=r.get("name"),
+                            expression=r.get("expression"),
+                            priority=r.get("priority", idx),
+                        ))
+                    corr_config = CorrelationConfig(extract=extract_rules)
+                else:
+                    jms_cfg = self.jms_config_loader.get_config(rule.input_destination)
+                    if jms_cfg and jms_cfg.correlation:
+                        corr_config = jms_cfg.correlation  # raw dict — normalised inside helper
+
+                if corr_config is not None:
+                    correlation_id = _extract_corr(message_data, message_headers, corr_config)
+                    if correlation_id:
+                        matcher_contexts["correlationId"] = correlation_id
+                        logger.debug(f"Extracted correlationId={correlation_id!r} for JMS rule {rule.rule_name}")
+            except Exception as _corr_err:
+                logger.debug(f"JMS correlation extraction skipped: {_corr_err}")
+
             # Execute custom placeholders
             if self.custom_placeholder_registry:
                 try:
@@ -445,6 +481,10 @@ class JMSListenerEngine:
                 try:
                     if output.delay_ms and output.delay_ms > 0:
                         time.sleep(output.delay_ms / 1000.0)
+
+                    # Render destination first (supports dynamic topic/queue names)
+                    from ..rules.templater import TemplateRenderer as _TR
+                    rendered_destination = _TR.render(output.destination, matcher_contexts)
 
                     # Render template
                     rendered_payload = (
@@ -474,17 +514,43 @@ class JMSListenerEngine:
                     # Determine target client (Kafka, JMS, or HTTP)
                     msg_type = output.msg_type.lower()
 
+                    # Apply correlation propagation for non-HTTP outputs
+                    output_headers = dict(output.headers or {})
+                    if correlation_id and msg_type != "http":
+                        try:
+                            from ..messaging.correlation import apply_propagation as _apply_prop
+                            from ..config.topic_config import CorrelationConfig, CorrelationPropagateRule
+
+                            out_corr_config = None
+                            # Output-level override
+                            if output.correlation and output.correlation.to_headers:
+                                out_corr_config = CorrelationConfig(
+                                    propagate=CorrelationPropagateRule(
+                                        to_headers=output.correlation.to_headers
+                                    )
+                                )
+                            elif msg_type == "jms":
+                                # JMS output → look up jms-config
+                                out_jms_cfg = self.jms_config_loader.get_config(rendered_destination)
+                                if out_jms_cfg and out_jms_cfg.correlation:
+                                    out_corr_config = out_jms_cfg.correlation
+                            # (kafka outputs: no topic_config_loader available in JMS listener)
+
+                            if out_corr_config is not None:
+                                output_headers = _apply_prop(output_headers, correlation_id, out_corr_config)
+                        except Exception as _prop_err:
+                            logger.debug(f"JMS correlation propagation skipped: {_prop_err}")
+
                     if msg_type == "http":
                         # Fire HTTP call (sync bridge from listener thread via asyncio.run)
                         if not self.http_executor:
                             logger.error(
-                                f"HTTP executor not initialized; cannot call {output.destination} "
+                                f"HTTP executor not initialized; cannot call {rendered_destination} "
                                 f"(rule: {rule.rule_name}). Wire http_executor into JMSListenerEngine."
                             )
                         else:
                             import asyncio as _asyncio
-                            from ..rules.templater import TemplateRenderer as _TR
-                            rendered_url = _TR.render(output.destination, matcher_contexts)
+                            rendered_url = rendered_destination
                             rendered_query = None
                             if output.query_params:
                                 rendered_query = {k: _TR.render(v, matcher_contexts) for k, v in output.query_params.items()}
@@ -509,7 +575,7 @@ class JMSListenerEngine:
                                 logger.error(f"HTTP output failed for {rendered_url}: {http_err}")
                     elif msg_type == "jms":
                         # Get JMS config to find which queue manager
-                        jms_config = self.jms_config_loader.get_config(output.destination)
+                        jms_config = self.jms_config_loader.get_config(rendered_destination)
                         qm_ref = jms_config.queue_manager_ref if jms_config else "default"
 
                         # Override with explicit connection_ref if provided in rule
@@ -520,27 +586,24 @@ class JMSListenerEngine:
                             client = self.jms_registry.get_client(qm_ref)
 
                             message_id = client.put_message(
-                                destination=output.destination,
+                                destination=rendered_destination,
                                 payload=json.dumps(message_payload) if isinstance(message_payload, dict) else message_payload,
-                                headers=output.headers,
+                                headers=output_headers,
                             )
                             if message_id:
                                 logger.info(
-                                    f"Output {message_id} sent to JMS queue {output.destination} "
+                                    f"Output {message_id} sent to JMS queue {rendered_destination} "
                                     f"(queue_manager={qm_ref})"
                                 )
-                                # Cache the produced message so test expectations can
-                                # observe it from the in-memory cache rather than
-                                # polling IBM MQ directly (which would race with the
-                                # listener's own MQGET on the shared hConn).
+                                # Cache the produced message
                                 if self.message_cache:
                                     try:
                                         self.message_cache.add_message(
-                                            topic=output.destination,
+                                            topic=rendered_destination,
                                             value=message_payload,
                                             message_format="json",
                                             timestamp=int(time.time() * 1000),
-                                            headers=output.headers or {},
+                                            headers=output_headers or {},
                                             key=None,
                                         )
                                     except Exception as cache_err:
@@ -553,24 +616,24 @@ class JMSListenerEngine:
                         # Send to Kafka topic via the kafka_client passed at construction.
                         if self.kafka_client is None:
                             logger.error(
-                                f"Cannot send to Kafka topic {output.destination}: "
+                                f"Cannot send to Kafka topic {rendered_destination}: "
                                 f"no kafka_client was provided to JMSListenerEngine. "
                                 f"Pass kafka_client= when constructing JMSListenerEngine."
                             )
                         else:
                             try:
                                 message_id = self.kafka_client.produce(
-                                    topic=output.destination,
+                                    topic=rendered_destination,
                                     message=message_payload,
                                     schema_id=output.schema_id,
                                 )
                                 if message_id:
                                     logger.info(
-                                        f"Output {message_id} sent to Kafka topic {output.destination}"
+                                        f"Output {message_id} sent to Kafka topic {rendered_destination}"
                                     )
                             except Exception as e:
                                 logger.error(
-                                    f"Error sending to Kafka topic {output.destination}: {e}"
+                                    f"Error sending to Kafka topic {rendered_destination}: {e}"
                                 )
 
                 except Exception as e:

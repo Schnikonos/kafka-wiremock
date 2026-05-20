@@ -26,7 +26,13 @@ message:
 
 correlation:
   extract:
+    - from: header
+      expression: X-Correlation-Id
+      priority: 1
     - from: jsonpath
       expression: $.targetId
-      priority: 1
+      priority: 2
 
+  propagate:
+    to_headers:
+      X-Correlation-Id: "{{correlationId}}"

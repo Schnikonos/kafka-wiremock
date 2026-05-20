@@ -209,10 +209,16 @@ class TopicConfigLoader:
         extract_rules = []
         if "extract" in corr_data:
             for idx, rule_data in enumerate(corr_data["extract"]):
+                from_type = rule_data.get("from")
+                # Accept 'expression' as alias for 'name' when from=header (common mistake)
+                name_val = rule_data.get("name") or (
+                    rule_data.get("expression") if from_type == "header" else None
+                )
+                expr_val = rule_data.get("expression") if from_type != "header" else None
                 rule = CorrelationExtractRule(
-                    from_type=rule_data.get("from"),
-                    name=rule_data.get("name"),
-                    expression=rule_data.get("expression"),
+                    from_type=from_type,
+                    name=name_val,
+                    expression=expr_val,
                     priority=rule_data.get("priority", idx)  # Default to order in list
                 )
                 extract_rules.append(rule)

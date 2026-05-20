@@ -1,0 +1,25 @@
+priority: 10
+name: "order-create"
+# Rule triggered by the db-example.test.yaml test suite.
+# Catch-all for orders.input: insert an order row into mysql_orders
+# and confirm the creation on orders.output.
+# The db-audit-rule (priority 20) handles ORDER_CREATED events separately.
+when:
+  destination: orders.input
+then:
+  # 1. Write the order into the orders table in MySQL
+  - type: db
+    id: create_order
+    db: mysql_orders
+    operation: insert
+    query: "INSERT INTO orders (product_id, status) VALUES ({{$.productId}}, 'CREATED')"
+  # 2. Confirm on Kafka output
+  - type: kafka
+    destination: orders.output
+    payload: |
+      {
+        "productId": "{{$.productId}}",
+        "name": "{{$.name}}",
+        "status": "CREATED",
+        "orderId": "{{db.create_order.generated_key}}"
+      }

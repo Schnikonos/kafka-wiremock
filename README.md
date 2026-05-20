@@ -8,10 +8,14 @@ Event-driven Kafka and JMS mock container for testing, similar to Pact for APIs.
 
 - ✅ **Kafka & JMS Support**: Use with Kafka topics and IBM MQ queues simultaneously
 - ✅ **HTTP(S) Support**: Call REST APIs as rule outputs, test injections, and sends
+- ✅ **DB Support**: Insert / select / update / delete rows in Oracle, MySQL, Cassandra (and custom providers) from rules, tests, and sends — with results available as template context variables
 - ✅ **Mixed Message Flows**: Input from Kafka → Output to JMS or HTTP (or vice versa)
 - ✅ **Multiple Matching Strategies**: JSONPath, Regex, Exact, Partial matching
 - ✅ **Rich Templating**: UUID, timestamps, random data, JSONPath extraction
 - ✅ **Custom Placeholders**: User-defined functions with ordered pipeline execution
+- ✅ **OR / Fallback Syntax**: `{{expr1 | expr2 | "default"}}` in any template expression — rules and test expectations
+- ✅ **Dynamic Destinations**: Rule `then` topic names support template placeholders (e.g. `{{$.replyTopic}}`)
+- ✅ **Template Placeholders in Test `then`**: Reference injected fields (`{{inject.order1.orderId}}`), custom placeholders, and built-ins inside match `value`/`regex` conditions
 - ✅ **Multiple Outputs**: Single rule → multiple messages to different topics/queues
 - ✅ **Message Headers**: Custom correlation IDs and headers
 - ✅ **Execution Delays**: Simulate processing latency
@@ -501,6 +505,182 @@ then:
 See [docs/RULES.md — HTTP Listener Rules](docs/RULES.md#http-listener-rules) and
 [docs/TEST_SUITE.md — HTTP Stub Expectations](docs/TEST_SUITE.md#http-stub-expectations) for full
 details.
+
+---
+
+## Database (DB) Support (May 2026)
+
+kafka-wiremock can interact with databases directly from rules, test suites, and sends.
+This is useful for:
+
+- **Test set-up**: seed rows before injecting Kafka messages
+- **Test tear-down**: delete test data after assertions
+- **DB assertions**: verify data was written correctly by the service under test
+- **Rule side-effects**: audit-log Kafka events to a DB as they arrive
+
+### Built-in providers
+
+| Provider | Library | Install |
+|---|---|---|
+| Oracle | `oracledb` (thin, no client) or `cx_Oracle` | `pip install oracledb` |
+| MySQL / MariaDB | `mysql-connector-python` | `pip install mysql-connector-python` |
+| Cassandra / ScyllaDB | `cassandra-driver` | `pip install cassandra-driver` |
+| Custom | User-defined | See `example/config/db_provider/` |
+
+Add libraries to `example/config/python-requirements/requirements.txt`; they are installed automatically.
+
+### `db-config/databases.yaml`
+
+```yaml
+databases:
+  onepam:
+    provider: oracle
+    host: oracle-host
+    port: 1521
+    service_name: MYPAM
+    username: myuser
+    # password: set env DB_ONEPAM_PASSWORD
+    ssl:
+      wallet_location: /opt/oracle/wallet
+      # wallet_password: set env DB_ONEPAM_WALLET_PASSWORD
+    pool:
+      min_size: 1
+      max_size: 5
+
+  mysql_orders:
+    provider: mysql
+    host: mysql-host
+    port: 3306
+    database: orders_db
+    username: orders_user
+    # password: set env DB_MYSQL_ORDERS_PASSWORD
+
+  someCassandra:
+    provider: cassandra
+    contact_points: [cassandra-host]
+    keyspace: mykeyspace
+    username: cass_user
+    # password: set env DB_SOMECASSANDRA_PASSWORD
+```
+
+**Password convention**: never stored in YAML. Set `DB_<NAME_UPPER>_PASSWORD` env vars
+(e.g. `DB_ONEPAM_PASSWORD`, `DB_MYSQL_ORDERS_PASSWORD`, `DB_SOMECASSANDRA_PASSWORD`).
+Oracle wallet passwords use `DB_<NAME_UPPER>_WALLET_PASSWORD`.
+
+### Using DB actions in tests
+
+```yaml
+when:
+  inject:
+    # Insert test data; generated_key available as {{db.seed_product.generated_key}}
+    - id: seed_product
+      type: db
+      db: mysql_orders
+      operation: insert
+      query: "INSERT INTO products (name, price) VALUES ('Widget', 9.99)"
+
+    # Select it back; first-row columns available as {{db.fetch_product.id}}, {{db.fetch_product.name}}, …
+    - id: fetch_product
+      type: db
+      db: mysql_orders
+      operation: select
+      query: "SELECT id, name, price FROM products WHERE id = {{db.seed_product.generated_key}}"
+
+    # Inject a Kafka message referencing the seeded data
+    - message_id: inject_order
+      type: kafka
+      destination: orders.input
+      payload: |
+        { "productId": "{{db.fetch_product.id}}", "name": "{{db.fetch_product.name}}" }
+
+then:
+  expectations:
+    # Assert Kafka output
+    - type: kafka
+      destination: orders.output
+      wait_ms: 3000
+      match:
+        - type: jsonpath
+          expression: "$.status"
+          value: "CREATED"
+
+    # Assert DB state written by the service under test
+    - id: verify_order
+      type: db
+      db: mysql_orders
+      operation: select
+      query: "SELECT status FROM orders WHERE product_id = {{db.fetch_product.id}}"
+      expected_row_count: 1
+      match:
+        - type: jsonpath
+          expression: "$.status"
+          value: "CREATED"
+
+    # Clean up
+    - id: cleanup
+      type: db
+      db: mysql_orders
+      operation: delete
+      query: "DELETE FROM products WHERE id = {{db.fetch_product.id}}"
+```
+
+### Using DB actions in rules (`then` block)
+
+```yaml
+then:
+  - type: db
+    id: audit_log
+    db: onepam
+    operation: insert
+    query: "INSERT INTO order_audit (order_id, event_type) VALUES ('{{$.orderId}}', 'ORDER_CREATED')"
+
+  # generated_key from the insert is available for subsequent outputs
+  - type: kafka
+    destination: orders.output
+    payload: '{"auditId": "{{db.audit_log.generated_key}}", "orderId": "{{$.orderId}}"}'
+```
+
+### Context keys populated by DB steps
+
+| Operation | Context keys |
+|---|---|
+| `select` | `db.<id>.<column>` (first row), `db.<id>.rows` (all rows list), `db.<id>.row_count` |
+| `insert` | `db.<id>.generated_key`, `db.<id>.rows_affected` |
+| `update` | `db.<id>.rows_affected` |
+| `delete` | `db.<id>.rows_affected` |
+
+### Adding a custom provider
+
+1. Create `example/config/db_provider/my_provider.py` (see the example stub for a full template)
+2. Implement `DBProvider` (four abstract methods: `select`, `insert`, `update`, `delete`)
+3. Call `DBProviderFactory.register_external_provider("my_name", MyClass)` at the end of the file
+4. Reference it in `databases.yaml` with `provider: my_name`
+
+The file is auto-loaded at startup and hot-reloaded every 30 seconds.
+
+### Security
+
+- Passwords always via env vars — never in YAML files
+- Oracle wallet passwords via `DB_<NAME_UPPER>_WALLET_PASSWORD`
+- Full TLS/SSL support per provider (CA certs, client certs, hostname verification)
+- Pool `validate_on_borrow: true` (default) avoids stale connections
+
+### API Endpoints
+
+```
+GET  /api/db/status           # List configured databases and pool stats
+GET  /api/db/providers        # List available (installed) DB driver libraries
+POST /api/db/{db_ref}/query   # Ad-hoc query for debugging
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_CONFIG_DIR` | `{CONFIG_DIR}/db-config` | Directory containing `databases.yaml` |
+| `DB_PROVIDER_DIR` | `{CONFIG_DIR}/db_provider` | Directory for custom provider `.py` files |
+| `DB_<NAME_UPPER>_PASSWORD` | — | Password for named database |
+| `DB_<NAME_UPPER>_WALLET_PASSWORD` | — | Oracle wallet password |
 
 ---
 

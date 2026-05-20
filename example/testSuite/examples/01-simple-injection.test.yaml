@@ -9,6 +9,7 @@ when:
     - message_id: "order1"
       destination: "users.commands"
       headers:
+        X-Correlation-Id: "{{uuid}}"
         my-test-header: "HeaderValue123"
       key: "myMessageKey"
       payload: |
@@ -38,7 +39,10 @@ then:
           value: "MyCustomHeader"
         - type: jsonpath
           expression: "$.source"
-          value: "SomeSource"
+          value: "{{inject.order1.source}}"
+        - type: jsonpath
+          expression: "$.amount"
+          value: "{{inject.order1.amount}}"
         - type: jsonpath
           expression: "$.status"
           regex: "PROCESSED|ACCEPTED"

@@ -21,3 +21,12 @@ httpx==0.27.0
 # pika: RabbitMQ (pure Python, always compiles)
 stomp.py==8.1.0
 pika==1.3.0
+
+# DB Providers (built-in — installed in Docker image)
+# oracledb: Oracle Database — thin mode (no Oracle Client required)
+oracledb==2.5.0
+# mysql-connector-python: MySQL / MariaDB
+mysql-connector-python==9.3.0
+# cassandra-driver: Apache Cassandra / ScyllaDB
+cassandra-driver==3.29.2
+

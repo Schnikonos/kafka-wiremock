@@ -1,0 +1,103 @@
+<div class="db-config-container">
+  <mat-toolbar color="accent" class="section-toolbar">
+    <mat-icon class="toolbar-icon">storage</mat-icon>
+    <span>Database Connections</span>
+    <span class="spacer"></span>
+    <button mat-icon-button (click)="refresh()" matTooltip="Refresh" [disabled]="loading">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <!-- Loading spinner -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <p class="loading-text">Loading database status…</p>
+  </div>
+
+  <!-- Empty state -->
+  <div *ngIf="!loading && hasNoDatabases" class="empty-state">
+    <mat-icon class="empty-icon">storage</mat-icon>
+    <p class="empty-message">{{ message || 'No databases configured.' }}</p>
+    <p class="empty-hint">To configure databases, add a <code>db-config/databases.yaml</code> file to your config directory.</p>
+  </div>
+
+  <!-- Database table -->
+  <div *ngIf="!loading && !hasNoDatabases" class="table-wrapper">
+    <table mat-table [dataSource]="dataSource" class="db-table">
+
+      <!-- Name -->
+      <ng-container matColumnDef="name">
+        <th mat-header-cell *matHeaderCellDef>Database</th>
+        <td mat-cell *matCellDef="let db">
+          <span class="db-name">{{ db.name }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Provider -->
+      <ng-container matColumnDef="provider">
+        <th mat-header-cell *matHeaderCellDef>Provider</th>
+        <td mat-cell *matCellDef="let db">
+          <span class="provider-badge" [class.provider-unavailable]="!db.providerInstalled"
+                [matTooltip]="db.providerInstalled ? 'Driver installed' : 'Driver NOT installed'">
+            {{ db.provider || '—' }}
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Host -->
+      <ng-container matColumnDef="host">
+        <th mat-header-cell *matHeaderCellDef>Host</th>
+        <td mat-cell *matCellDef="let db">
+          <span class="host-label">{{ db.host }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Pool: available -->
+      <ng-container matColumnDef="pool_available">
+        <th mat-header-cell *matHeaderCellDef class="num-col">Available</th>
+        <td mat-cell *matCellDef="let db" class="num-col">
+          <span class="pool-value pool-available">{{ db.available }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Pool: in use -->
+      <ng-container matColumnDef="pool_in_use">
+        <th mat-header-cell *matHeaderCellDef class="num-col">In Use</th>
+        <td mat-cell *matCellDef="let db" class="num-col">
+          <span class="pool-value pool-in-use">{{ db.in_use }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Pool: max size -->
+      <ng-container matColumnDef="pool_max">
+        <th mat-header-cell *matHeaderCellDef class="num-col">Max Size</th>
+        <td mat-cell *matCellDef="let db" class="num-col">
+          <span class="pool-value pool-max">{{ db.max_size }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Status badge -->
+      <ng-container matColumnDef="status">
+        <th mat-header-cell *matHeaderCellDef>Status</th>
+        <td mat-cell *matCellDef="let db">
+          <span class="status-badge" [ngClass]="getConnectionStatusClass(db)"
+                [matTooltip]="'Pool usage: ' + db.in_use + '/' + db.max_size + ' (' + getPoolUsagePercent(db) + '%)'">
+            <mat-icon class="status-icon">{{ getConnectionStatusClass(db) === 'status-active' ? 'check_circle' : 'help_outline' }}</mat-icon>
+            {{ getConnectionStatusLabel(db) }}
+          </span>
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+      <tr mat-row *matRowDef="let row; columns: displayedColumns;" class="db-row"></tr>
+    </table>
+
+    <!-- Pool legend -->
+    <div class="pool-legend">
+      <span class="legend-item"><span class="dot available-dot"></span> Available — idle connections ready to use</span>
+      <span class="legend-item"><span class="dot in-use-dot"></span> In Use — connections currently executing queries</span>
+      <span class="legend-item"><span class="dot max-dot"></span> Max Size — pool capacity ceiling</span>
+    </div>
+  </div>
+</div>
+

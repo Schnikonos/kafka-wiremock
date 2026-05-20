@@ -345,6 +345,13 @@
               "minimum": 0,
               "default": 0,
               "examples": [0, 60000, 3600000]
+            },
+            "time_to_live": {
+              "type": "integer",
+              "description": "Alias for expiry_ms. Message time-to-live in milliseconds. 0 means no expiry.",
+              "minimum": 0,
+              "default": 0,
+              "examples": [0, 60000, 3600000]
             }
           }
         },

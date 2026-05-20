@@ -78,5 +78,19 @@ export class ConfigService {
   resumeQueue(queueName: string): Observable<any> {
     return this.http.post(`${this.apiUrl}/jms/queues/${encodeURIComponent(queueName)}/resume`, {});
   }
+
+  // ---------------------------------------------------------------------------
+  // Database connections
+  // ---------------------------------------------------------------------------
+
+  /** Get all configured databases with provider type and pool statistics */
+  getDatabaseStatus(): Observable<any> {
+    return this.http.get(`${this.apiUrl}/db/status`);
+  }
+
+  /** Get available DB provider drivers and whether they are installed */
+  getDatabaseProviders(): Observable<any> {
+    return this.http.get(`${this.apiUrl}/db/providers`);
+  }
 }
 

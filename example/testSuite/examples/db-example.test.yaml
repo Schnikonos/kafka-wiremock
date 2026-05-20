@@ -1,0 +1,72 @@
+name: "order-db-lifecycle"
+# Demonstrates DB actions in when/then:
+#   1. Seed test data (insert product)
+#   2. Fetch it back (select → generates context keys db.seed_product.*, db.fetch_product.*)
+#   3. Inject a Kafka message referencing the seeded data
+#   4. Assert the downstream Kafka output
+#   5. Verify the DB state (select assertion)
+#   6. Clean up (delete)
+
+when:
+  inject:
+    # Step 1: insert a product row; generated_key stored as db.seed_product.generated_key
+    - id: seed_product
+      type: db
+      db: mysql_orders
+      operation: insert
+      query: "INSERT INTO products (name, price) VALUES ('Widget', 9.99)"
+
+    # Step 2: read it back so we have the real id for later steps
+    - id: fetch_product
+      type: db
+      db: mysql_orders
+      operation: select
+      query: "SELECT id, name, price FROM products WHERE id = {{db.seed_product.generated_key}}"
+
+    # Step 3: send a Kafka event that references the seeded product
+    - message_id: inject_order
+      type: kafka
+      destination: orders.input
+      payload: |
+        {
+          "productId": "{{db.fetch_product.id}}",
+          "name": "{{db.fetch_product.name}}",
+          "price": "{{db.fetch_product.price}}"
+        }
+
+then:
+  expectations:
+    # Step 4: assert Kafka output produced by the rule
+    - type: kafka
+      destination: orders.output
+      wait_ms: 3000
+      match:
+        - type: jsonpath
+          expression: "$.status"
+          value: "CREATED"
+
+    # Step 5: assert the order was written to the DB by the service under test
+    - id: verify_order
+      type: db
+      db: mysql_orders
+      operation: select
+      query: "SELECT status, product_id FROM orders WHERE product_id = {{db.fetch_product.id}}"
+      expected_row_count: 1
+      match:
+        - type: jsonpath
+          expression: "$.status"
+          value: "CREATED"
+
+    # Step 6: clean up the order and the seeded product
+    - id: cleanup_order
+      type: db
+      db: mysql_orders
+      operation: delete
+      query: "DELETE FROM orders WHERE product_id = {{db.fetch_product.id}}"
+
+    - id: cleanup_product
+      type: db
+      db: mysql_orders
+      operation: delete
+      query: "DELETE FROM products WHERE id = {{db.fetch_product.id}}"
+

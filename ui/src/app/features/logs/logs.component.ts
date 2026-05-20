@@ -17,6 +17,7 @@ import { catchError, map } from 'rxjs/operators';
 import { ApiService } from '../../core/services/api.service';
 import { AppConfigService } from '../../core/services/app-config.service';
 import { ExportService } from '../../core/services/export.service';
+import { TruncJsonPipe } from '../../core/pipes/trunc-json.pipe';
 
 interface RunEntry {
   test_name?: string;
@@ -31,6 +32,7 @@ interface RunEntry {
   perfect_match?: any;
   expectations?: any[];
   raw?: string;  // Legacy fallback
+  db_actions?: any[];
 }
 
 interface LogEntry {
@@ -64,6 +66,7 @@ interface LogEntry {
     MatProgressBarModule,
     MatChipsModule,
     MatTooltipModule,
+    TruncJsonPipe,
   ],
   template: `
     <div class="container">
@@ -175,41 +178,96 @@ interface LogEntry {
                         </div>
                       </div>
 
-                      <!-- Sent messages -->
-                      <div *ngIf="run.sent_messages && run.sent_messages.length > 0" class="run-section">
-                        <h5 class="section-title">Sent Messages ({{ run.sent_messages.length }})</h5>
-                        <div *ngFor="let msg of run.sent_messages" class="message-item sent-message">
-                          <div class="msg-topic">→ {{ msg.topic }}</div>
-                          <pre class="msg-payload">{{ msg.payload | json }}</pre>
-                          <div *ngIf="msg.headers" class="msg-headers">Headers: {{ msg.headers | json }}</div>
-                        </div>
+                      <!-- When section: DB actions (when) + sent messages -->
+                      <div *ngIf="getWhenItems(run).length > 0" class="run-section">
+                        <h5 class="section-title">When ({{ getWhenItems(run).length }} item{{ getWhenItems(run).length !== 1 ? 's' : '' }})</h5>
+                        <ng-container *ngFor="let item of getWhenItems(run)">
+                          <div *ngIf="item._type === 'sent'" class="message-item sent-message">
+                            <div class="msg-topic">→ {{ item.topic }}</div>
+                            <pre class="msg-payload">{{ item.payload | json }}</pre>
+                            <div *ngIf="item.headers" class="msg-headers">Headers: {{ item.headers | json }}</div>
+                          </div>
+                          <div *ngIf="item._type === 'db_action'" class="message-item db-action-item">
+                            <div class="db-action-header">
+                              <span class="db-op-badge op-{{item.operation}}">{{ item.operation | uppercase }}</span>
+                              <span class="db-step-id">step: <code>{{ item.step_id }}</code></span>
+                              <span class="db-ref">db: <code>{{ item.db_ref }}</code></span>
+                            </div>
+                            <pre *ngIf="item.query" class="db-query">{{ item.query }}</pre>
+                            <div *ngIf="item.params" class="db-params">params: <code>{{ item.params | json }}</code></div>
+                            <div class="db-action-result">
+                              <span *ngIf="item.rows_affected != null">rows affected: <strong>{{ item.rows_affected }}</strong></span>
+                              <span *ngIf="item.row_count != null">rows returned: <strong>{{ item.row_count }}</strong></span>
+                              <span *ngIf="item.generated_key != null">generated key: <code>{{ item.generated_key }}</code></span>
+                            </div>
+                            <pre *ngIf="item.rows && item.rows.length > 0" class="msg-payload">{{ item.rows | json }}</pre>
+                          </div>
+                        </ng-container>
                       </div>
 
-                      <!-- Received messages (verbose mode) -->
-                      <div *ngIf="run.received_messages && run.received_messages.length > 0" class="run-section">
-                        <h5 class="section-title">Received Messages ({{ run.received_messages.length }})</h5>
-                        <div *ngFor="let msg of run.received_messages" class="message-item received-message">
-                          <div class="msg-topic">← {{ msg.topic }}
-                            <span *ngIf="msg.conditions_matched !== undefined" class="conditions-badge"
-                              [ngClass]="msg.conditions_matched === msg.total_conditions ? 'cond-ok' : 'cond-fail'">
-                              {{ msg.conditions_matched }}/{{ msg.total_conditions }} conditions
-                            </span>
-                          </div>
-                          <pre class="msg-payload">{{ msg.payload | json }}</pre>
-                          <div *ngIf="msg.failed_conditions && msg.failed_conditions.length > 0" class="failed-conditions">
-                            <span class="failed-title">Failed conditions:</span>
-                            <div *ngFor="let fc of msg.failed_conditions" class="failed-condition">
-                              <code>{{ fc.type }}{{ fc.expression ? ' ' + fc.expression : '' }}</code>
-                              expected <code>{{ fc.expected?.value ?? fc.expected?.regex ?? '—' }}</code>
+                      <!-- Then section: DB actions (then) + received messages -->
+                      <div *ngIf="getThenItems(run).length > 0" class="run-section">
+                        <h5 class="section-title">Then ({{ getThenItems(run).length }} item{{ getThenItems(run).length !== 1 ? 's' : '' }})</h5>
+                        <ng-container *ngFor="let item of getThenItems(run)">
+                          <div *ngIf="item._type === 'received'" class="message-item received-message">
+                            <div class="msg-topic">← {{ item.topic }}
+                              <span *ngIf="item.correlation_mismatch" class="corr-mismatch-badge">correlation mismatch</span>
+                              <span *ngIf="!item.correlation_mismatch && item.conditions_matched !== undefined" class="conditions-badge"
+                                [ngClass]="item.conditions_matched === item.total_conditions ? 'cond-ok' : 'cond-fail'">
+                                {{ item.conditions_matched }}/{{ item.total_conditions }} conditions
+                              </span>
+                            </div>
+                            <div *ngIf="item.correlation_mismatch" class="corr-mismatch-detail">
+                              <span class="corr-mismatch-label">Correlation mismatch</span>
+                              <span *ngIf="item.correlation_mismatch.target?.header">header: <code>{{ item.correlation_mismatch.target.header }}</code></span>
+                              <span *ngIf="item.correlation_mismatch.target?.jsonpath">jsonpath: <code>{{ item.correlation_mismatch.target.jsonpath }}</code></span>
+                              <span>expected: <code class="corr-expected">{{ item.correlation_mismatch.expected }}</code></span>
+                              <span>actual: <code class="corr-actual">{{ item.correlation_mismatch.actual ?? '(not found)' }}</code></span>
+                              <span *ngIf="item.correlation_mismatch.error" class="corr-error">error: {{ item.correlation_mismatch.error }}</span>
+                            </div>
+                            <pre class="msg-payload">{{ item.payload | json }}</pre>
+                            <div *ngIf="item.headers && (item.headers | json) !== '{}'" class="msg-headers">Headers: {{ item.headers | json }}</div>
+                            <div *ngIf="item.failed_conditions && item.failed_conditions.length > 0" class="failed-conditions">
+                              <span class="failed-title">Failed conditions:</span>
+                              <div *ngFor="let fc of item.failed_conditions" class="failed-condition">
+                                <span class="fc-type">[{{ fc.type }}]</span>
+                                <span *ngIf="fc.expression" class="fc-expr">{{ fc.expression }}</span>
+                                <span>expected: <code>{{ fc.expected?.value != null ? fc.expected.value : (fc.expected?.regex != null ? '/' + fc.expected.regex + '/' : '—') }}</code></span>
+                                <span>actual: <code>{{ fc.actual | truncJson }}</code></span>
+                              </div>
                             </div>
                           </div>
-                        </div>
+                          <div *ngIf="item._type === 'db_action'" class="message-item db-action-item">
+                            <div class="db-action-header">
+                              <span class="db-op-badge op-{{item.operation}}">{{ item.operation | uppercase }}</span>
+                              <span class="db-step-id">step: <code>{{ item.step_id }}</code></span>
+                              <span class="db-ref">db: <code>{{ item.db_ref }}</code></span>
+                            </div>
+                            <pre *ngIf="item.query" class="db-query">{{ item.query }}</pre>
+                            <div *ngIf="item.params" class="db-params">params: <code>{{ item.params | json }}</code></div>
+                            <div class="db-action-result">
+                              <span *ngIf="item.rows_affected != null">rows affected: <strong>{{ item.rows_affected }}</strong></span>
+                              <span *ngIf="item.row_count != null">rows returned: <strong>{{ item.row_count }}</strong></span>
+                              <span *ngIf="item.generated_key != null">generated key: <code>{{ item.generated_key }}</code></span>
+                            </div>
+                            <pre *ngIf="item.rows && item.rows.length > 0" class="msg-payload">{{ item.rows | json }}</pre>
+                          </div>
+                        </ng-container>
                       </div>
 
                       <!-- Closest / perfect match -->
                       <div *ngIf="run.closest_match" class="run-section match-section">
                         <h5 class="section-title">Closest Match ({{ run.closest_match.tier_name }})</h5>
                         <pre class="msg-payload">{{ run.closest_match.message?.payload | json }}</pre>
+                        <div *ngIf="run.closest_match.message?.failed_conditions?.length > 0" class="failed-conditions">
+                          <span class="failed-title">Failed matchers:</span>
+                          <div *ngFor="let fc of run.closest_match.message.failed_conditions" class="failed-condition">
+                            <span class="fc-type">[{{ fc.type }}]</span>
+                            <span *ngIf="fc.expression" class="fc-expr">{{ fc.expression }}</span>
+                            <span>expected: <code>{{ fc.expected?.value != null ? fc.expected.value : (fc.expected?.regex != null ? '/' + fc.expected.regex + '/' : '—') }}</code></span>
+                            <span>actual: <code>{{ fc.actual | truncJson }}</code></span>
+                          </div>
+                        </div>
                       </div>
 
                       <!-- Raw fallback for legacy format -->
@@ -345,6 +403,25 @@ interface LogEntry {
     }
     .sent-message     { border-left: 3px solid #42a5f5; }
     .received-message { border-left: 3px solid #66bb6a; }
+    .db-action-item   { border-left: 3px solid #ff9800; }
+    .db-action-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+    .db-action-result { font-size: 12px; color: #555; display: flex; gap: 12px; flex-wrap: wrap; }
+    .db-query { font-size: 11px; background: #f5f5f5; padding: 4px 8px; border-radius: 3px; margin: 4px 0; color: #333; white-space: pre-wrap; word-break: break-all; }
+    .db-params { font-size: 11px; color: #666; margin: 2px 0; }
+    .corr-mismatch-badge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 3px; background: #fff3e0; color: #e65100; border: 1px solid #ffb74d; }
+    .corr-mismatch-detail { font-size: 11px; background: #fff8f0; border: 1px solid #ffcc80; border-radius: 4px; padding: 5px 8px; margin: 4px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .corr-mismatch-label { font-weight: 700; color: #e65100; }
+    .corr-expected { color: #2e7d32; }
+    .corr-actual { color: #c62828; }
+    .corr-error { color: #b71c1c; font-style: italic; }
+    .db-phase-badge { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: #e3f2fd; color: #0d47a1; }
+    .phase-then { background: #fce4ec; color: #880e4f; }
+    .db-op-badge { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+    .op-select { background: #e8f5e9; color: #1b5e20; }
+    .op-insert { background: #e3f2fd; color: #0d47a1; }
+    .op-update { background: #fff3e0; color: #e65100; }
+    .op-delete { background: #ffebee; color: #b71c1c; }
+    .db-step-id, .db-ref { font-size: 11px; color: #777; }
 
     .msg-topic { font-size: 12px; font-weight: 600; color: #555; margin-bottom: 4px; }
     .msg-headers { font-size: 11px; color: #888; margin-top: 4px; }
@@ -362,9 +439,12 @@ interface LogEntry {
     .cond-fail { background: #ffcdd2; color: #b71c1c; }
 
     .failed-conditions { margin-top: 6px; font-size: 12px; }
-    .failed-title { font-weight: 600; color: #c62828; }
-    .failed-condition { color: #666; margin-left: 8px; line-height: 1.6; }
-    .failed-condition code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; }
+    .failed-title { font-weight: 600; color: #c62828; display: block; margin-bottom: 2px; }
+    .failed-condition { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 2px 0; border-bottom: 1px solid #fce4e4; color: #555; line-height: 1.6; }
+    .failed-condition:last-child { border-bottom: none; }
+    .failed-condition code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; color: #333; }
+    .fc-type { font-weight: 700; color: #b71c1c; min-width: 70px; }
+    .fc-expr { font-style: italic; color: #555; }
 
     .match-section { background: #fffde7; padding: 8px; border-radius: 4px; border-left: 3px solid #ffd54f; }
 
@@ -488,6 +568,30 @@ export class LogsComponent implements OnInit {
 
   getStatusCount(status: string): number {
     return this.filteredLogs.filter(log => log.status === status).length;
+  }
+
+  getWhenItems(run: any): any[] {
+    const items: any[] = [];
+    for (const msg of (run.sent_messages || [])) {
+      items.push({ ...msg, _type: 'sent' });
+    }
+    for (const a of (run.db_actions || [])) {
+      if (a.phase === 'when') items.push({ ...a, _type: 'db_action' });
+    }
+    items.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+    return items;
+  }
+
+  getThenItems(run: any): any[] {
+    const items: any[] = [];
+    for (const msg of (run.received_messages || [])) {
+      items.push({ ...msg, _type: 'received' });
+    }
+    for (const a of (run.db_actions || [])) {
+      if (a.phase === 'then') items.push({ ...a, _type: 'db_action' });
+    }
+    items.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+    return items;
   }
 
   copyRun(run: RunEntry) {

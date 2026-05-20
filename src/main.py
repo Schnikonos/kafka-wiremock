@@ -38,7 +38,7 @@ from .http.mock_server import HttpMockServer
 from .http.mock_server_registry import HttpMockServerRegistry
 
 # Import API routers and setter functions
-from .api import health, kafka_injection, rules, custom_placeholders, dependencies_mgmt, results, app_settings, config, jms as jms_api
+from .api import health, kafka_injection, rules, custom_placeholders, dependencies_mgmt, results, app_settings, config, jms as jms_api, db as db_api
 from .api.tests import discovery, execution, jobs, logs, bulk, load as load_tests
 from .api.send import discovery as send_discovery, execution as send_execution, bulk as send_bulk
 from .api.debug import decode, match, topics, cache, template
@@ -75,12 +75,14 @@ mock_server_config_loader: Optional[MockServerConfigLoader] = None
 http_stub_cache: Optional[HttpStubCache] = None
 mock_dispatch_handler: Optional[MockDispatchHandler] = None
 mock_server_registry: Optional[HttpMockServerRegistry] = None
+db_config_loader = None
+db_registry = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager for startup and shutdown."""
-    global config_loader, app_settings_loader, qm_config_loader, jms_config_loader, jms_registry, kafka_client, listener_engine, jms_listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager, message_cache, test_listener_manager, send_loader, send_executor, http_executor, results_db, mock_server_config_loader, http_stub_cache, mock_dispatch_handler, mock_server_registry
+    global config_loader, app_settings_loader, qm_config_loader, jms_config_loader, jms_registry, kafka_client, listener_engine, jms_listener_engine, custom_placeholder_registry, test_loader, test_suite_runner, test_job_manager, dependency_manager, message_cache, test_listener_manager, send_loader, send_executor, http_executor, results_db, mock_server_config_loader, http_stub_cache, mock_dispatch_handler, mock_server_registry, db_config_loader, db_registry
     # Startup
     logger.info("Starting Kafka Wiremock...")
     try:
@@ -217,7 +219,8 @@ async def lifespan(app: FastAPI):
             message_cache=message_cache,
             topic_metadata_manager=topic_metadata_manager,
             schema_registry=schema_registry,
-            http_executor=http_executor  # wired after creation below
+            http_executor=http_executor,  # wired after creation below
+            topic_config_loader=config_loader.topic_config_loader,  # correlation support
         )
          # Start listener engines
         listener_engine.start()
@@ -251,6 +254,78 @@ async def lifespan(app: FastAPI):
         if jms_listener_engine is not None:
             jms_listener_engine.http_executor = http_executor
 
+        # Initialise DB components (optional — skipped if databases.yaml absent)
+        try:
+            from .db.config_loader import DBConfigLoader
+            from .db.registry import DBRegistry
+            from .db.pool import DBConnectionPool, DBPoolConfig
+            from .db.providers.factory import DBProviderFactory
+            from .db.executor import DBExecutor
+
+            db_config_dir = os.getenv("DB_CONFIG_DIR", f"{config_dir}/db-config")
+            db_provider_dir = os.getenv("DB_PROVIDER_DIR", f"{config_dir}/db_provider")
+            db_config_loader = DBConfigLoader(
+                config_dir=db_config_dir,
+                provider_dir=db_provider_dir,
+                scan_interval=30,
+            )
+            # Load external provider files before creating DB instances
+            db_config_loader.start_hot_reload()
+
+            db_registry = DBRegistry()
+            db_configs = db_config_loader.load()
+
+            for db_name, db_cfg in db_configs.items():
+                try:
+                    provider_cfg = db_cfg.to_provider_config()
+                    provider = DBProviderFactory.create(db_cfg.provider, provider_cfg)
+
+                    def _make_factory(p=provider):
+                        def factory():
+                            if not p.is_connected():
+                                p.connect()
+                            return p
+                        return factory
+
+                    pool = DBConnectionPool(
+                        provider_factory=_make_factory(),
+                        config=db_cfg.pool,
+                        db_name=db_name,
+                    )
+                    # Redact password from stored config
+                    safe_cfg = {k: v for k, v in provider_cfg.items() if k != "password"}
+                    safe_cfg["provider"] = db_cfg.provider
+                    db_registry.add_database(db_name, pool, config=safe_cfg)
+                    logger.info(f"Registered DB: '{db_name}' (provider={db_cfg.provider})")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to initialise DB '{db_name}': {e}. "
+                        f"This database will be unavailable."
+                    )
+
+            # Create shared DBExecutor — always created when registry exists,
+            # even if no pools are up yet (providers connect lazily on first query).
+            db_executor_instance = DBExecutor(db_registry)
+
+            if not db_registry.is_empty():
+                logger.info(
+                    f"Initialised {len(db_registry.get_all_names())} database(s): "
+                    f"{', '.join(db_registry.get_all_names())}"
+                )
+                # Wire db_registry into listener engine
+                listener_engine.db_registry = db_registry
+            else:
+                logger.info("No databases configured (db-config/databases.yaml absent or empty)")
+        except Exception as e:
+            logger.warning(f"DB subsystem initialisation failed: {e}")
+            # Still create a registry and executor so DB actions report a proper
+            # error at runtime rather than silently being skipped.
+            if db_registry is None:
+                from .db.registry import DBRegistry as _DBR
+                db_registry = _DBR()
+            from .db.executor import DBExecutor as _DBE
+            db_executor_instance = _DBE(db_registry)
+
         # Initialize HTTP Mock Servers (http-config/mock-servers/*.yaml)
         http_stub_cache = HttpStubCache()
         mock_server_config_loader = MockServerConfigLoader(config_dir=config_dir)
@@ -273,7 +348,7 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("No HTTP mock servers configured (http-config/mock-servers/ is empty or absent)")
 
-        # Pass listener_engine, message_cache, jms_registry, http_executor and stub_cache to test suite runner
+        # Pass listener_engine, message_cache, jms_registry, http_executor, stub_cache and db_executor to test suite runner
         test_suite_runner = TestSuiteRunner(
             kafka_client,
             custom_placeholder_registry,
@@ -283,6 +358,9 @@ async def lifespan(app: FastAPI):
             jms_registry=jms_registry,
             http_executor=http_executor,
             stub_cache=http_stub_cache,
+            db_executor=db_executor_instance,
+            topic_config_loader=config_loader.topic_config_loader,  # correlation support
+            jms_config_loader=jms_config_loader,                    # correlation support
         )
         test_job_manager = TestJobManager()
 
@@ -302,7 +380,8 @@ async def lifespan(app: FastAPI):
             custom_placeholder_registry,
             send_dir=send_dir,
             jms_registry=jms_registry,
-            http_executor=http_executor  # NEW: HTTP support in sends
+            http_executor=http_executor,  # NEW: HTTP support in sends
+            db_executor=db_executor_instance,  # NEW: DB support in sends
         )
 
         # Set references in API modules
@@ -342,6 +421,7 @@ async def lifespan(app: FastAPI):
         send_bulk.set_send_executor(send_executor)
         send_bulk.set_results_db(results_db)
         results.set_results_db(results_db)
+        db_api.set_db_registry(db_registry)
 
         logger.info("Kafka Wiremock started successfully")
     except Exception as e:
@@ -369,6 +449,10 @@ async def lifespan(app: FastAPI):
             jms_registry.close_all()
         if mock_server_registry:
             mock_server_registry.stop_all()
+        if db_config_loader:
+            db_config_loader.stop()
+        if db_registry:
+            db_registry.close_all()
         logger.info("Kafka Wiremock shutdown successfully")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
@@ -417,6 +501,7 @@ app.include_router(topics.router, prefix="/api")
 app.include_router(cache.router, prefix="/api")
 app.include_router(template.router, prefix="/api")
 app.include_router(results.router, prefix="/api")
+app.include_router(db_api.router, prefix="/api")
 
 # ...existing code...
 
